@@ -15,7 +15,9 @@ export class Embedder {
   async embed(texts: string[]): Promise<number[][]> {
     const { provider } = this.config;
 
-    if (provider === 'openclaw') {
+    if (provider === 'minimax') {
+      return this.embedMinimax(texts);
+    } else if (provider === 'openclaw') {
       return this.embedOpenClaw(texts);
     } else if (provider === 'ollama') {
       return this.embedOllama(texts);
@@ -33,7 +35,7 @@ export class Embedder {
     return vectors[0];
   }
 
-  // ---- OpenClaw: uses already-configured provider (Minimax etc.) ----
+  // ---- OpenClaw/Minimax: uses already-configured provider ----
   private async embedOpenClaw(texts: string[]): Promise<number[][]> {
     const baseURL = this.config.baseURL || 'https://api.minimaxi.com/v1';
     const apiKey = this.config.apiKey || process.env.MINIMAX_API_KEY || '';
@@ -45,16 +47,51 @@ export class Embedder {
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: this.config.model || 'embedding-minimax',
-        input: texts,
+        model: this.config.model || 'embedding-2-normal',
+        type: 'db',
+        texts: texts,
       }),
     });
 
     if (!resp.ok) {
-      throw new Error(`OpenClaw embedding error: ${resp.status} ${await resp.text()}`);
+      const errText = await resp.text();
+      throw new Error(`OpenClaw/Minimax embedding error: ${resp.status} ${errText}`);
     }
     const data = await resp.json() as any;
-    return data.data.map((item: any) => item.embedding);
+    if (!data.vectors || !data.vectors[0]) {
+      throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
+    }
+    return data.vectors;
+  }
+
+  // ---- OpenAI ----
+  // ---- Minimax embeddings ----
+  private async embedMinimax(texts: string[]): Promise<number[][]> {
+    const baseURL = this.config.baseURL || 'https://api.minimaxi.com/v1';
+    const apiKey = this.config.apiKey || process.env.MINIMAX_API_KEY || '';
+
+    const resp = await fetch(`${baseURL}/embeddings`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: this.config.model || 'embedding-2-normal',
+        type: 'db',
+        texts: texts,
+      }),
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`Minimax embedding error: ${resp.status} ${errText}`);
+    }
+    const data = await resp.json() as any;
+    if (!data.vectors || !data.vectors[0]) {
+      throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
+    }
+    return data.vectors;
   }
 
   // ---- OpenAI ----

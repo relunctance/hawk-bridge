@@ -98,24 +98,27 @@ export async function getConfig(): Promise<HawkConfig> {
 
   const config: HawkConfig = { ...DEFAULT_CONFIG };
 
+  // Read MINIMAX_API_KEY from env (user provided)
+  const minimaxApiKey = process.env.MINIMAX_API_KEY || '';
+
   // Auto-detect from openclaw.json
   const provider = getConfiguredProvider('minimax');
   if (provider) {
-    config.embedding.baseURL = provider.baseUrl || '';
-    // For Minimax embeddings: use their embeddings endpoint
-    // Base URL is for anthropic messages API, embeddings use /v1/embeddings
-    const baseForEmbed = (provider.baseUrl || '').replace('/anthropic', '/v1');
-    config.embedding.baseURL = baseForEmbed;
-    config.embedding.model = 'embedding-minimax'; // Minimax's embedding model
-    config.embedding.provider = 'openclaw';
-    config.llm.baseURL = provider.baseUrl || '';
-    config.llm.model = getDefaultModelId();
+    config.llm.baseURL = provider.baseUrl || 'https://api.minimaxi.com/anthropic';
+    config.llm.model = getDefaultModelId() || 'MiniMax-M2.7';
     config.llm.provider = 'openclaw';
   }
 
-  // Env var overrides
-  if (process.env.HAWK_EMBEDDING_PROVIDER) {
-    config.embedding.provider = process.env.HAWK_EMBEDDING_PROVIDER;
+  // Env var overrides — priority: explicit env vars
+  if (minimaxApiKey) {
+    // Use Minimax for both LLM and embedding
+    config.embedding.provider = 'minimax';
+    config.embedding.apiKey = minimaxApiKey;
+    config.embedding.baseURL = 'https://api.minimaxi.com/v1';
+    config.embedding.model = 'embedding-2-normal';
+    config.embedding.dimensions = 1024;
+    config.llm.apiKey = minimaxApiKey;
+    config.llm.provider = 'minimax';
   }
   if (process.env.OLLAMA_BASE_URL) {
     config.embedding.provider = 'ollama';
