@@ -6,7 +6,8 @@
   "main": "src/index.ts",
   "dependencies": {
     "@lancedb/lancedb": "^0.26.2",
-    "openai": "^6.21.0"
+    "openai": "^6.21.0",
+    "rank_bm25": "^1.2.0"
   },
   "openclaw": {
     "hooks": [

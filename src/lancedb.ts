@@ -147,4 +147,35 @@ export class HawkDB {
     if (!this.table) await this.init();
     return await this.table.countRows();
   }
+
+  async getAllTexts(): Promise<Array<{ id: string; text: string }>> {
+    if (!this.table) await this.init();
+    const rows = await this.table.query().limit(10000).toList();
+    return rows.map((r: any) => ({ id: r.id, text: r.text }));
+  }
+
+  async getById(id: string): Promise<(Omit<MemoryEntry, 'accessCount' | 'lastAccessedAt'> & { vector: number[] }) | null> {
+    if (!this.table) await this.init();
+    try {
+      const rows = await this.table
+        .query()
+        .where(`id = '${id}'`)
+        .limit(1)
+        .toList();
+      if (!rows.length) return null;
+      const r = rows[0];
+      return {
+        id: r.id,
+        text: r.text,
+        vector: r.vector,
+        category: r.category,
+        scope: r.scope,
+        importance: r.importance,
+        timestamp: r.timestamp,
+        metadata: JSON.parse(r.metadata || '{}'),
+      };
+    } catch {
+      return null;
+    }
+  }
 }
