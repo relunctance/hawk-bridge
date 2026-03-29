@@ -138,11 +138,11 @@ function callExtractor(conversationText: string, config: any): Promise<any[]> {
 }
 
 function buildExtractorScript(conversation: string, apiKey: string, model: string, provider: string, baseURL: string): string {
-  // Inline the extractor script to avoid file I/O
+  // Import from context-hawk workspace (canonical Python source)
   const escaped = conversation.replace(/'/g, "'\\''").replace(/\n/g, '\\n');
   return `
 import sys, json, os
-sys.path.insert(0, '${__dirname.replace(/'/g, "'\\''")}')
+sys.path.insert(0, os.path.expanduser('~/.openclaw/workspace/hawk-bridge/python'))
 try:
     from hawk_memory import extract_memories
     result = extract_memories('${escaped}', '${apiKey}', '${model}', '${provider}', '${baseURL}')

@@ -1,23 +1,23 @@
 """
-hawk_memory — hawk-bridge Python core shim
+hawk_memory — thin wrapper that imports from context-hawk workspace
 
-This package re-exports from context-hawk for hawk-bridge plugin use.
-The actual implementation lives in: /home/gql/.openclaw/workspace/context-hawk/hawk/
+The canonical source is: ~/.openclaw/workspace/context-hawk/hawk/
 
-For standalone Python use, install context-hawk separately:
-  pip install context-hawk
-
-Or import directly from context-hawk:
-  from hawk.memory import MemoryManager
+This shim allows hawk-bridge's TypeScript hooks to call Python code
+by importing from the context-hawk workspace copy.
 """
 
-import sys
-import os
+import sys, os
 
-# Add context-hawk to path if available
-_context_hawk_path = os.path.expanduser("~/.openclaw/workspace/context-hawk/hawk")
-if os.path.exists(_context_hawk_path) and _context_hawk_path not in sys.path:
-    sys.path.insert(0, _context_hawk_path)
+_CONTEXT_HAWK_PATHS = [
+    os.path.expanduser("~/.openclaw/workspace/context-hawk/hawk"),
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "context-hawk", "hawk"),
+    os.path.join(os.getcwd(), "context-hawk", "hawk"),
+]
+
+for _p in _CONTEXT_HAWK_PATHS:
+    if os.path.exists(_p) and _p not in sys.path:
+        sys.path.insert(0, os.path.dirname(_p))
 
 try:
     from hawk.memory import MemoryManager
@@ -28,27 +28,12 @@ try:
     from hawk.markdown_importer import MarkdownImporter
     from hawk.governance import Governance
     from hawk.extractor import extract_memories
-    _FROM_CONTEXT_HAWK = True
-except ImportError:
-    # Fallback: import from local hawk_memory directory (legacy/bundled)
-    from .memory import MemoryManager
-    from .compressor import ContextCompressor
-    from .config import Config
-    from .self_improving import SelfImproving
-    from .vector_retriever import VectorRetriever, RetrievedChunk
-    from .markdown_importer import MarkdownImporter
-    from .governance import Governance
-    from .extractor import extract_memories
-    _FROM_CONTEXT_HAWK = False
 
-__all__ = [
-    "MemoryManager",
-    "ContextCompressor",
-    "Config",
-    "SelfImproving",
-    "VectorRetriever",
-    "RetrievedChunk",
-    "MarkdownImporter",
-    "Governance",
-    "extract_memories",
-]
+    __all__ = [
+        "MemoryManager", "ContextCompressor", "Config", "SelfImproving",
+        "VectorRetriever", "RetrievedChunk", "MarkdownImporter", "Governance", "extract_memories",
+    ]
+except ImportError as e:
+    import sys
+    print(f"[hawk_memory] Import failed: {e}", file=sys.stderr)
+    raise
