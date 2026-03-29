@@ -1,0 +1,56 @@
+{
+  "id": "hawk-bridge",
+  "name": "hawk-bridge",
+  "description": "Hook bridge: OpenClaw Gateway events → hawk Python memory system. Provides autoCapture (agent_end equivalent) and autoRecall (before_agent_start equivalent).",
+  "version": "1.0.0",
+  "hooks": [
+    {
+      "name": "hawk-recall",
+      "events": ["agent:bootstrap"],
+      "description": "Inject relevant hawk memories before agent starts"
+    },
+    {
+      "name": "hawk-capture",
+      "events": ["message:sent"],
+      "description": "Auto-extract and store memories after agent responds"
+    }
+  ],
+  "config": {
+    "type": "object",
+    "properties": {
+      "embedding": {
+        "type": "object",
+        "properties": {
+          "provider": { "type": "string", "enum": ["openai", "jina"], "default": "openai" },
+          "apiKey": { "type": "string" },
+          "model": { "type": "string" },
+          "baseURL": { "type": "string" },
+          "dimensions": { "type": "number", "default": 1536 }
+        }
+      },
+      "recall": {
+        "type": "object",
+        "properties": {
+          "topK": { "type": "number", "default": 5 },
+          "minScore": { "type": "number", "default": 0.6 },
+          "injectEmoji": { "type": "string", "default": "🦅" }
+        }
+      },
+      "capture": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true },
+          "maxChunks": { "type": "number", "default": 3 },
+          "importanceThreshold": { "type": "number", "default": 0.5 }
+        }
+      },
+      "python": {
+        "type": "object",
+        "properties": {
+          "pythonPath": { "type": "string", "default": "python3.12" },
+          "hawkDir": { "type": "string", "default": "~/.openclaw/hawk" }
+        }
+      }
+    }
+  }
+}

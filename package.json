@@ -1,0 +1,17 @@
+{
+  "name": "hawk-bridge",
+  "version": "1.0.0",
+  "description": "OpenClaw hook bridge to hawk Python memory system - autoCapture + autoRecall",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@lancedb/lancedb": "^0.26.2",
+    "openai": "^6.21.0"
+  },
+  "openclaw": {
+    "hooks": [
+      "./src/hooks/recall.ts",
+      "./src/hooks/capture.ts"
+    ]
+  }
+}
