@@ -8,11 +8,11 @@ const PLUGIN_ID = 'hawk-bridge';
 
 const DEFAULT_CONFIG: HawkConfig = {
   embedding: {
-    provider: 'openai',
-    apiKey: process.env.OPENAI_API_KEY || '',
-    model: 'text-embedding-3-small',
-    baseURL: 'https://api.openai.com/v1',
-    dimensions: 1536,
+    provider: 'ollama',      // Default: Ollama (free local, no key needed)
+    apiKey: '',
+    model: 'nomic-embed-text',
+    baseURL: 'http://localhost:11434',
+    dimensions: 768,
   },
   recall: {
     topK: 5,
@@ -38,46 +38,40 @@ export async function getConfig(): Promise<HawkConfig> {
   const config: HawkConfig = { ...DEFAULT_CONFIG };
 
   try {
-    // Try to read from openclaw.json plugins.entries.hawk-bridge.config
-    const pluginConfig = await getConfigValue(
-      `plugins.entries.${PLUGIN_ID}.config`
-    );
-
+    const pluginConfig = await getConfigValue(`plugins.entries.${PLUGIN_ID}.config`);
     if (pluginConfig && typeof pluginConfig === 'object') {
-      // Merge with defaults
       const pc = pluginConfig as any;
-
       if (pc.embedding) {
-        config.embedding = {
-          ...config.embedding,
-          ...pc.embedding,
-          apiKey: pc.embedding.apiKey || DEFAULT_CONFIG.embedding.apiKey,
-        };
+        config.embedding = { ...config.embedding, ...pc.embedding };
       }
-      if (pc.recall) {
-        config.recall = { ...config.recall, ...pc.recall };
-      }
-      if (pc.capture) {
-        config.capture = { ...config.capture, ...pc.capture };
-      }
-      if (pc.python) {
-        config.python = { ...config.python, ...pc.python };
-      }
+      if (pc.recall) config.recall = { ...config.recall, ...pc.recall };
+      if (pc.capture) config.capture = { ...config.capture, ...pc.capture };
+      if (pc.python) config.python = { ...config.python, ...pc.python };
     }
-  } catch {
-    // Config not found, use defaults + env vars
-  }
+  } catch { /* no config */ }
 
   // Env var overrides
-  if (process.env.OPENAI_API_KEY) {
-    config.embedding.apiKey = process.env.OPENAI_API_KEY;
+  if (process.env.HAWK_EMBEDDING_PROVIDER) {
+    config.embedding.provider = process.env.HAWK_EMBEDDING_PROVIDER;
+  }
+  if (process.env.HAWK_EMBEDDING_API_KEY) {
+    config.embedding.apiKey = process.env.HAWK_EMBEDDING_API_KEY;
+  }
+  if (process.env.OLLAMA_BASE_URL) {
+    config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
+    config.embedding.provider = 'ollama';
   }
   if (process.env.JINA_API_KEY) {
     config.embedding.provider = 'jina';
     config.embedding.apiKey = process.env.JINA_API_KEY;
-    config.embedding.model = 'jina-embeddings-v5-text-small';
-    config.embedding.baseURL = 'https://api.jina.ai/v1';
-    config.embedding.dimensions = 1024;
+  }
+  if (process.env.COHERE_API_KEY) {
+    config.embedding.provider = 'cohere';
+    config.embedding.apiKey = process.env.COHERE_API_KEY;
+  }
+  if (process.env.LLM_PROVIDER) {
+    // Used by python extractor
+    process.env.LLM_PROVIDER = process.env.LLM_PROVIDER;
   }
 
   cachedConfig = config;

@@ -1,8 +1,8 @@
 {
   "id": "hawk-bridge",
   "name": "hawk-bridge",
-  "description": "Hook bridge: OpenClaw Gateway events → hawk Python memory system. Provides autoCapture (agent_end equivalent) and autoRecall (before_agent_start equivalent).",
-  "version": "1.0.0",
+  "description": "AutoCapture + AutoRecall bridge to hawk Python memory system. Zero-config with Ollama defaults.",
+  "version": "1.1.0",
   "hooks": [
     {
       "name": "hawk-recall",
@@ -20,12 +20,36 @@
     "properties": {
       "embedding": {
         "type": "object",
+        "description": "Embedding provider settings",
         "properties": {
-          "provider": { "type": "string", "enum": ["openai", "jina"], "default": "openai" },
+          "provider": {
+            "type": "string",
+            "enum": ["ollama", "openai", "jina", "cohere"],
+            "default": "ollama",
+            "description": "ollama=local free (default), openai=paid, jina=free tier, cohere=free tier"
+          },
+          "apiKey": { "type": "string", "description": "API key (not needed for ollama)" },
+          "model": {
+            "type": "string",
+            "description": "Embedding model name",
+            "default": "nomic-embed-text (ollama) | text-embedding-3-small (openai) | jina-embeddings-v5-small (jina)"
+          },
+          "baseURL": { "type": "string", "description": "Custom API base URL (e.g. http://localhost:11434 for ollama)" },
+          "dimensions": { "type": "number", "default": 768 }
+        }
+      },
+      "llm": {
+        "type": "object",
+        "description": "LLM provider for memory extraction (Python side)",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": ["ollama", "groq", "openai", "openrouter"],
+            "default": "groq",
+            "description": "groq=free Llama-3 (no key), ollama=local free, openai=paid"
+          },
           "apiKey": { "type": "string" },
-          "model": { "type": "string" },
-          "baseURL": { "type": "string" },
-          "dimensions": { "type": "number", "default": 1536 }
+          "model": { "type": "string", "default": "llama-3.3-70b-versatile (groq) | llama3 (ollama)" }
         }
       },
       "recall": {
