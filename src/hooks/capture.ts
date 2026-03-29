@@ -98,12 +98,14 @@ const captureHandler = async (event: HookEvent) => {
 
 function callExtractor(conversationText: string, config: any): Promise<any[]> {
   return new Promise((resolve, reject) => {
-    const apiKey = config.embedding.apiKey || process.env.OPENAI_API_KEY || '';
-    const model = config.embedding.model || 'gpt-4o-mini';
+    const apiKey = config.embedding.apiKey || process.env.OPENAI_API_KEY || process.env.MINIMAX_API_KEY || '';
+    const model = config.llm?.model || process.env.MINIMAX_MODEL || 'MiniMax-M2.7';
+    const provider = config.llm?.provider || 'openclaw';
+    const baseURL = config.llm?.baseURL || process.env.MINIMAX_BASE_URL || '';
 
     const proc = spawn(
       config.python.pythonPath,
-      ['-c', buildExtractorScript(conversationText, apiKey, model)],
+      ['-c', buildExtractorScript(conversationText, apiKey, model, provider, baseURL)],
       { timeout: 30000 }
     );
 
@@ -135,7 +137,7 @@ function callExtractor(conversationText: string, config: any): Promise<any[]> {
   });
 }
 
-function buildExtractorScript(conversation: string, apiKey: string, model: string): string {
+function buildExtractorScript(conversation: string, apiKey: string, model: string, provider: string, baseURL: string): string {
   // Inline the extractor script to avoid file I/O
   const escaped = conversation.replace(/'/g, "'\\''").replace(/\n/g, '\\n');
   return `
@@ -143,7 +145,7 @@ import sys, json, os
 sys.path.insert(0, '${__dirname.replace(/'/g, "'\\''")}')
 try:
     from hawk_memory import extract_memories
-    result = extract_memories('${escaped}', '${apiKey}', '${model}')
+    result = extract_memories('${escaped}', '${apiKey}', '${model}', '${provider}', '${baseURL}')
     print(json.dumps(result))
 except Exception as e:
     print(json.dumps({"error": str(e)}))

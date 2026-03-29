@@ -1,18 +1,79 @@
-// Config loader — reads hawk-bridge config from openclaw.json
-// Falls back to environment variables and defaults
+// Config Provider — auto-reads OpenClaw's built-in model config
+// No extra API keys needed, uses whatever is already configured in openclaw.json
 
-import { getConfigValue } from '../../../.npm-global/lib/node_modules/openclaw/dist/v10/shared/config.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import type { HawkConfig } from './types.js';
 
-const PLUGIN_ID = 'hawk-bridge';
+const OPENCLAW_CONFIG_PATH = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+
+export interface OpenClawModelProvider {
+  id: string;
+  baseUrl: string;
+  apiKey?: string;
+  api?: string;
+  authHeader?: boolean;
+  models?: Array<{
+    id: string;
+    name: string;
+    input?: string[];
+    contextWindow?: number;
+    maxTokens?: number;
+  }>;
+}
+
+export interface OpenClawConfig {
+  models?: {
+    mode?: string;
+    providers?: Record<string, OpenClawModelProvider>;
+  };
+  auth?: {
+    profiles?: Record<string, { provider: string; mode: string; apiKey?: string }>;
+  };
+}
+
+let cachedOpenClawConfig: OpenClawConfig | null = null;
+
+function loadOpenClawConfig(): OpenClawConfig | null {
+  if (cachedOpenClawConfig) return cachedOpenClawConfig;
+  try {
+    const raw = fs.readFileSync(OPENCLAW_CONFIG_PATH, 'utf-8');
+    cachedOpenClawConfig = JSON.parse(raw);
+    return cachedOpenClawConfig;
+  } catch {
+    return null;
+  }
+}
+
+export function getConfiguredProvider(providerName: string = 'minimax'): OpenClawModelProvider | null {
+  const config = loadOpenClawConfig();
+  if (!config?.models?.providers) return null;
+  return config.models.providers[providerName] || null;
+}
+
+export function getDefaultModelId(): string {
+  const config = loadOpenClawConfig();
+  if (!config?.models?.providers) return 'MiniMax-M2.7';
+  const prov = config.models.providers['minimax'];
+  if (!prov?.models?.length) return 'MiniMax-M2.7';
+  // Return first model (usually the latest/default)
+  return prov.models[0].id;
+}
 
 const DEFAULT_CONFIG: HawkConfig = {
   embedding: {
-    provider: 'ollama',      // Default: Ollama (free local, no key needed)
+    provider: 'openclaw', // New: uses openclaw's configured provider
     apiKey: '',
-    model: 'nomic-embed-text',
-    baseURL: 'http://localhost:11434',
-    dimensions: 768,
+    model: 'text-embedding-3-small',
+    baseURL: '',
+    dimensions: 1536,
+  },
+  llm: {
+    provider: 'openclaw',
+    apiKey: '',
+    model: '',
+    baseURL: '',
   },
   recall: {
     topK: 5,
@@ -37,41 +98,32 @@ export async function getConfig(): Promise<HawkConfig> {
 
   const config: HawkConfig = { ...DEFAULT_CONFIG };
 
-  try {
-    const pluginConfig = await getConfigValue(`plugins.entries.${PLUGIN_ID}.config`);
-    if (pluginConfig && typeof pluginConfig === 'object') {
-      const pc = pluginConfig as any;
-      if (pc.embedding) {
-        config.embedding = { ...config.embedding, ...pc.embedding };
-      }
-      if (pc.recall) config.recall = { ...config.recall, ...pc.recall };
-      if (pc.capture) config.capture = { ...config.capture, ...pc.capture };
-      if (pc.python) config.python = { ...config.python, ...pc.python };
-    }
-  } catch { /* no config */ }
+  // Auto-detect from openclaw.json
+  const provider = getConfiguredProvider('minimax');
+  if (provider) {
+    config.embedding.baseURL = provider.baseUrl || '';
+    // For Minimax embeddings: use their embeddings endpoint
+    // Base URL is for anthropic messages API, embeddings use /v1/embeddings
+    const baseForEmbed = (provider.baseUrl || '').replace('/anthropic', '/v1');
+    config.embedding.baseURL = baseForEmbed;
+    config.embedding.model = 'embedding-minimax'; // Minimax's embedding model
+    config.embedding.provider = 'openclaw';
+    config.llm.baseURL = provider.baseUrl || '';
+    config.llm.model = getDefaultModelId();
+    config.llm.provider = 'openclaw';
+  }
 
   // Env var overrides
   if (process.env.HAWK_EMBEDDING_PROVIDER) {
     config.embedding.provider = process.env.HAWK_EMBEDDING_PROVIDER;
   }
-  if (process.env.HAWK_EMBEDDING_API_KEY) {
-    config.embedding.apiKey = process.env.HAWK_EMBEDDING_API_KEY;
-  }
   if (process.env.OLLAMA_BASE_URL) {
-    config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
     config.embedding.provider = 'ollama';
+    config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
   }
   if (process.env.JINA_API_KEY) {
     config.embedding.provider = 'jina';
     config.embedding.apiKey = process.env.JINA_API_KEY;
-  }
-  if (process.env.COHERE_API_KEY) {
-    config.embedding.provider = 'cohere';
-    config.embedding.apiKey = process.env.COHERE_API_KEY;
-  }
-  if (process.env.LLM_PROVIDER) {
-    // Used by python extractor
-    process.env.LLM_PROVIDER = process.env.LLM_PROVIDER;
   }
 
   cachedConfig = config;

@@ -1,7 +1,8 @@
-// Embeddings module — handles vectorization for recall and storage
-// Supports: OpenAI, Jina AI, Ollama (local, free), Cohere
+// Embeddings module — handles vectorization
+// Supports: OpenClaw (auto-config), Ollama (local free), Jina AI, Cohere, OpenAI
 
 import { HawkConfig } from './types.js';
+import { getConfig } from './config.js';
 
 export class Embedder {
   private config: HawkConfig['embedding'];
@@ -11,20 +12,12 @@ export class Embedder {
     this.config = config;
   }
 
-  private async getClient() {
-    if (this.openai) return this.openai;
-    const { OpenAI } = await import('openai');
-    this.openai = new OpenAI({
-      apiKey: this.config.apiKey || 'free-tier',
-      baseURL: this.config.baseURL || undefined,
-    });
-    return this.openai;
-  }
-
   async embed(texts: string[]): Promise<number[][]> {
     const { provider } = this.config;
 
-    if (provider === 'ollama') {
+    if (provider === 'openclaw') {
+      return this.embedOpenClaw(texts);
+    } else if (provider === 'ollama') {
       return this.embedOllama(texts);
     } else if (provider === 'jina') {
       return this.embedJina(texts);
@@ -40,20 +33,44 @@ export class Embedder {
     return vectors[0];
   }
 
+  // ---- OpenClaw: uses already-configured provider (Minimax etc.) ----
+  private async embedOpenClaw(texts: string[]): Promise<number[][]> {
+    const baseURL = this.config.baseURL || 'https://api.minimaxi.com/v1';
+    const apiKey = this.config.apiKey || process.env.MINIMAX_API_KEY || '';
+
+    const resp = await fetch(`${baseURL}/embeddings`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: this.config.model || 'embedding-minimax',
+        input: texts,
+      }),
+    });
+
+    if (!resp.ok) {
+      throw new Error(`OpenClaw embedding error: ${resp.status} ${await resp.text()}`);
+    }
+    const data = await resp.json() as any;
+    return data.data.map((item: any) => item.embedding);
+  }
+
+  // ---- OpenAI ----
   private async embedOpenAI(texts: string[]): Promise<number[][]> {
-    const client = await this.getClient();
+    const { OpenAI } = await import('openai');
+    const client = new OpenAI({ apiKey: this.config.apiKey || process.env.OPENAI_API_KEY });
     const model = this.config.model || 'text-embedding-3-small';
     const resp = await client.embeddings.create({ model, input: texts });
     return resp.data.map((item: any) => item.embedding);
   }
 
+  // ---- Jina AI (free tier) ----
   private async embedJina(texts: string[]): Promise<number[][]> {
-    // Jina AI free tier (no key needed for basic use, or use key)
     const apiKey = this.config.apiKey || process.env.JINA_API_KEY || '';
     const model = this.config.model || 'jina-embeddings-v5-small';
-    const url = 'https://api.jina.ai/v1/embeddings';
-
-    const resp = await fetch(url, {
+    const resp = await fetch('https://api.jina.ai/v1/embeddings', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -61,37 +78,35 @@ export class Embedder {
       },
       body: JSON.stringify({ model, input: texts }),
     });
-
-    if (!resp.ok) throw new Error(`Jina API error: ${resp.status}`);
+    if (!resp.ok) throw new Error(`Jina error: ${resp.status}`);
     const data = await resp.json() as any;
     return data.data.map((item: any) => item.embedding);
   }
 
+  // ---- Cohere (free tier) ----
   private async embedCohere(texts: string[]): Promise<number[][]> {
-    // Cohere free embed v3 (1M tokens/month free)
     const apiKey = this.config.apiKey || process.env.COHERE_API_KEY || '';
-    const model = 'embed-english-v3.0';
-    const url = 'https://api.cohere.ai/v1/embed';
-
-    const resp = await fetch(url, {
+    const resp = await fetch('https://api.cohere.ai/v1/embed', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({ model, texts, input_type: 'search_document' }),
+      body: JSON.stringify({
+        model: 'embed-english-v3.0',
+        texts,
+        input_type: 'search_document',
+      }),
     });
-
-    if (!resp.ok) throw new Error(`Cohere API error: ${resp.status}`);
+    if (!resp.ok) throw new Error(`Cohere error: ${resp.status}`);
     const data = await resp.json() as any;
     return data.embeddings;
   }
 
+  // ---- Ollama (local free) ----
   private async embedOllama(texts: string[]): Promise<number[][]> {
-    // Ollama local embeddings (completely free, no internet)
     const baseURL = this.config.baseURL || 'http://localhost:11434';
     const model = this.config.model || 'nomic-embed-text';
-
     const results: number[][] = [];
     for (const text of texts) {
       const resp = await fetch(`${baseURL}/api/embed`, {
@@ -107,7 +122,6 @@ export class Embedder {
   }
 }
 
-// Build the recall prompt that gets injected into context
 export function formatRecallForContext(
   memories: Array<{ text: string; score: number; category: string }>,
   emoji: string = '🦅'

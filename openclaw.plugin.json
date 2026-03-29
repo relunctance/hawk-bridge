@@ -24,9 +24,9 @@
         "properties": {
           "provider": {
             "type": "string",
-            "enum": ["ollama", "openai", "jina", "cohere"],
-            "default": "ollama",
-            "description": "ollama=local free (default), openai=paid, jina=free tier, cohere=free tier"
+            "enum": ["openclaw", "ollama", "openai", "jina", "cohere"],
+            "default": "openclaw",
+            "description": "openclaw=auto-use configured provider (default, no key needed), ollama=local free, openai=paid, jina/cohere=free tier"
           },
           "apiKey": { "type": "string", "description": "API key (not needed for ollama)" },
           "model": {

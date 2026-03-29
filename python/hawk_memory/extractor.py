@@ -56,9 +56,25 @@ FORMAT_EXAMPLE = json.dumps([
 ])
 
 
-def get_llm_client(provider: str, api_key: str):
+def get_llm_client(provider: str, api_key: str, base_url: str = "", model: str = ""):
     """Get LLM client based on provider"""
-    if provider == 'groq':
+    if provider == 'openclaw':
+        # Uses OpenClaw's configured provider (Minimax etc.)
+        base_url = base_url or os.environ.get("MINIMAX_BASE_URL", "https://api.minimaxi.com/anthropic")
+        api_key = api_key or os.environ.get("MINIMAX_API_KEY", "")
+        model = model or os.environ.get("MINIMAX_MODEL", "MiniMax-M2.7")
+        try:
+            from openai import OpenAI
+            return OpenAI(api_key=api_key, base_url=base_url)
+        except ImportError:
+            import urllib.request
+            class OpenAIClient:
+                def __init__(self, key, base, m):
+                    self.key = key; self.base = base; self.model = m
+                def chat(self):
+                    pass
+            return OpenAIClient(api_key, base_url, model)
+    elif provider == 'groq':
         # Groq free tier - no API key needed for free models
         try:
             from groq import Groq
@@ -98,16 +114,18 @@ def get_llm_client(provider: str, api_key: str):
         return OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY", ""))
 
 
-def extract_memories(conversation_text: str, api_key: str = "", model: str = "", provider: str = "openai") -> list[ExtractedMemory]:
+def extract_memories(conversation_text: str, api_key: str = "", model: str = "", provider: str = "openai", base_url: str = "") -> list[ExtractedMemory]:
     """使用配置的 LLM 从对话中提取记忆"""
-    api_key = api_key or os.environ.get("OPENAI_API_KEY") or os.environ.get("GROQ_API_KEY") or ""
+    api_key = api_key or os.environ.get("OPENAI_API_KEY") or os.environ.get("GROQ_API_KEY") or os.environ.get("MINIMAX_API_KEY") or ""
 
     prompt = EXTRACTION_PROMPT.format(
         conversation=conversation_text,
         format_example=FORMAT_EXAMPLE
     )
 
-    if provider == 'groq':
+    if provider == 'openclaw':
+        return extract_with_openclaw(prompt, api_key, model or os.environ.get("MINIMAX_MODEL", "MiniMax-M2.7"), base_url)
+    elif provider == 'groq':
         return extract_with_groq(prompt, api_key, model or "llama-3.3-70b-versatile")
     elif provider == 'ollama':
         return extract_with_ollama(prompt, model or "llama3")
@@ -224,6 +242,47 @@ def extract_with_openrouter(prompt: str, api_key: str, model: str) -> list[Extra
         return parse_and_validate(content)
 
 
+def extract_with_openclaw(prompt: str, api_key: str, model: str, base_url: str) -> list[ExtractedMemory]:
+    """OpenClaw's configured provider (Minimax etc.) — uses OpenAI-compatible endpoint"""
+    try:
+        from openai import OpenAI
+    except ImportError:
+        import urllib.request
+        data = json.dumps({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "你是一个精确的记忆提取引擎。只输出JSON数组，不输出任何其他内容。"},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.1,
+            "max_tokens": 2000,
+        }).encode()
+        req = urllib.request.Request(
+            f"{base_url}/chat/completions",
+            data=data,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+            content = result["choices"][0]["message"]["content"]
+            return parse_and_validate(content)
+
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": "你是一个精确的记忆提取引擎。只输出JSON数组，不输出任何其他内容。"},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.1,
+        max_tokens=2000,
+    )
+    return parse_and_validate(response.choices[0].message.content)
+
+
 def parse_and_validate(content: str) -> list[ExtractedMemory]:
     """Parse and validate extracted memories"""
     # Strip markdown code blocks
@@ -258,11 +317,11 @@ def parse_and_validate(content: str) -> list[ExtractedMemory]:
 
 def main():
     parser = argparse.ArgumentParser(description="hawk-bridge memory extractor")
-    parser.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", ""))
-    parser.add_argument("--model", default=os.environ.get("LLM_MODEL", "gpt-4o-mini"))
+    parser.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", "") or os.environ.get("MINIMAX_API_KEY", ""))
+    parser.add_argument("--model", default=os.environ.get("LLM_MODEL", "") or os.environ.get("MINIMAX_MODEL", "MiniMax-M2.7"))
     parser.add_argument("--provider", default=os.environ.get("LLM_PROVIDER", "openai"),
-                        choices=["openai", "groq", "ollama", "openrouter"])
-    parser.add_argument("--base-url", default=os.environ.get("LLM_BASE_URL", ""))
+                        choices=["openai", "groq", "ollama", "openrouter", "openclaw"])
+    parser.add_argument("--base-url", default=os.environ.get("LLM_BASE_URL", "") or os.environ.get("MINIMAX_BASE_URL", ""))
     args = parser.parse_args()
 
     conversation = sys.stdin.read()
@@ -271,7 +330,7 @@ def main():
         return
 
     try:
-        memories = extract_memories(conversation, args.api_key, args.model, args.provider)
+        memories = extract_memories(conversation, args.api_key, args.model, args.provider, args.base_url)
         print(json.dumps(memories, ensure_ascii=False))
     except Exception as e:
         print(json.dumps({"error": str(e)}), file=sys.stderr)
