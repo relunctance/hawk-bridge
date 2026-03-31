@@ -9,6 +9,8 @@
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-brightgreen)](https://nodejs.org)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue)](https://python.org)
 
+**[English](README.md)** | 中文
+
 ---
 
 ## 它做什么？
