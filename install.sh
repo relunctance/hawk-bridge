@@ -15,7 +15,7 @@ if [ -f package.json ]; then
 fi
 
 # 2. 安装 Python 依赖
-$PYTHON_PATH -m pip install lancedb openai tiktoken path rank-bm25 --break-system-packages -q 2>&1 | tail -2
+$PYTHON_PATH -m pip install lancedb openai tiktoken path rank-bm25 sentence-transformers --break-system-packages -q 2>&1 | tail -2
 
 # 3. 克隆 context-hawk workspace（hawk Python 核心）
 CONTEXT_HAWK_DIR="$HOME/.openclaw/workspace/context-hawk"
