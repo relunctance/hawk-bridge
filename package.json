@@ -13,6 +13,9 @@
     "typescript": "^6.0.2"
   },
   "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
     "hooks": [
       "./dist/hooks/hawk-recall",
       "./dist/hooks/hawk-capture"
