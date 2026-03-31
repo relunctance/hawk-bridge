@@ -1,140 +1,244 @@
-# hawk-bridge
+# 🦅 hawk-bridge
 
 > **OpenClaw Hook Bridge → hawk Python Memory System**
-> 为 hawk 添加 autoCapture（自动提取记忆）和 autoRecall（自动注入记忆）
+>
+> *给任意 AI Agent 装上记忆 — autoCapture（自动提取）+ autoRecall（自动注入），零手动操作*
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![OpenClaw Compatible](https://img.shields.io/badge/OpenClaw-2026.3%2B-brightgreen)](https://github.com/openclaw/openclaw)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-brightgreen)](https://nodejs.org)
+[![Python](https://img.shields.io/badge/Python-3.12%2B-blue)](https://python.org)
 
 ---
 
-## 架构
+## What does it do?
+
+AI agents forget everything after each session. **hawk-bridge** bridges OpenClaw's hook system with hawk's Python memory, giving agents a persistent, self-improving memory that works automatically:
+
+- **Every response** → hawk extracts and stores meaningful memories
+- **Every new session** → hawk injects relevant memories before thinking begins
+- **No manual operation** — it just works
+
+**Without hawk-bridge:**
+> User: "I prefer concise replies, not paragraphs"
+> Agent: "Sure thing!" ✅
+> (next session — agent forgets again)
+
+**With hawk-bridge:**
+> User: "I prefer concise replies"
+> Agent: stored as `preference:communication` ✅
+> (next session — injected automatically, applies immediately)
+
+---
+
+## ✨ Core Features
+
+| # | Feature | Description |
+|---|---------|-------------|
+| 1 | **Auto-Capture Hook** | `message:sent` → hawk extracts 6 categories of memories automatically |
+| 2 | **Auto-Recall Hook** | `agent:bootstrap` → hawk injects relevant memories before first response |
+| 3 | **Hybrid Retrieval** | BM25 + vector search + RRF fusion — no API key required for baseline |
+| 4 | **Zero-Config Fallback** | Works out-of-the-box in BM25-only mode, no API keys needed |
+| 5 | **4 Embedding Providers** | Ollama (local) / sentence-transformers (CPU) / Jina AI (free API) / OpenAI |
+| 6 | **Graceful Degradation** | Automatically falls back when API keys are unavailable |
+| 7 | **Context-Aware Injection** | BM25 rank score used directly when no embedder available |
+| 8 | **Seed Memory** | Pre-populated with team structure, norms, and project context |
+| 9 | **Sub-100ms Recall** | LanceDB ANN index for instant retrieval |
+| 10 | **Cross-Platform Install** | One command, works on Ubuntu/Debian/Fedora/Arch/Alpine/openSUSE |
+
+---
+
+## 🏗️ Architecture
 
 ```
-OpenClaw Gateway (TypeScript Hooks)
-    │
-    ├── agent:bootstrap
-    │       → recall hook
-    │       → LanceDB 向量检索
-    │       → 记忆注入上下文
-    │
-    └── message:sent
-            → capture hook
-            → Python LLM 智能提取（6类分类）
-            → LanceDB 写入
+┌─────────────────────────────────────────────────────────────────┐
+│                     OpenClaw Gateway                             │
+├───────────────────┬───────────────────────────────────────────────┤
+│                   │                                               │
+│  agent:bootstrap │  message:sent                               │
+│         ↓         │         ↓                                   │
+│  ┌────────────────┴───────────┐                                │
+│  │       🦅 hawk-recall       │  ← Injects relevant memories  │
+│  │    (before first response)  │     into agent context       │
+│  └─────────────────────────────┘                                │
+│                   ↓                                               │
+│  ┌─────────────────────────────────────────────┐                │
+│  │              LanceDB                         │                │
+│  │   Vector search + BM25 + RRF fusion          │                │
+│  └─────────────────────────────────────────────┘                │
+│                   ↓                                               │
+│         ┌───────────────────────┐                                │
+│         │  context-hawk (Python) │  ← Extraction / scoring     │
+│         │  MemoryManager + Extractor │   / decay               │
+│         └───────────────────────┘                                │
+│                                                               │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-## 目录结构
+---
 
-```
-hawk-bridge/
-├── openclaw.plugin.json    # 插件元数据 + 配置schema
-├── package.json            # npm依赖（lancedb, openai）
-├── install.sh              # 一键安装脚本（支持跨Linux发行版）
-├── src/
-│   ├── index.ts           # 插件入口
-│   ├── config.ts          # 从openclaw.json读取配置
-│   ├── lancedb.ts         # LanceDB封装（存储/检索）
-│   ├── embeddings.ts       # 向量化（OpenAI/Ollama/Jina/sentence-transformers）
-│   ├── retriever.ts       # 混合检索（BM25 + 向量 + RRF融合）
-│   ├── seed.ts            # 种子记忆初始化
-│   └── hooks/
-│       ├── hawk-recall/   # agent:bootstrap → 注入记忆
-│       └── hawk-capture/  # message:sent → 提取记忆
-└── python/                # context-hawk（通过 install.sh 克隆）
-```
+## 🚀 One-Command Install
 
-## 一键安装
-
-**远程（推荐，一行命令）：**
 ```bash
+# Remote install (recommended — one line, fully automatic)
 bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)
-```
 
-**本地：**
-```bash
-git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
-bash /tmp/hawk-bridge/install.sh
-```
-
-安装脚本会自动：
-- 检测并安装系统依赖（Node.js、Python3、git、curl）
-- 安装 npm 和 Python 包
-- 安装 Ollama + `nomic-embed-text` 向量模型
-- 克隆 context-hawk workspace
-- 创建必要符号链接
-- 初始化种子记忆
-
-**支持的 Linux 发行版**：Ubuntu / Debian / Fedora / CentOS / Arch / Alpine / openSUSE 等
-
-## 启动插件
-
-```bash
+# Then activate:
 openclaw plugins install /tmp/hawk-bridge
 ```
 
-## Embedding 配置（四选一）
+That's it. The installer handles:
 
-安装完成后设置环境变量：
+| Step | What it does |
+|------|-------------|
+| 1 | Detects and installs Node.js, Python3, git, curl |
+| 2 | Installs npm dependencies (lancedb, openai) |
+| 3 | Installs Python packages (lancedb, rank-bm25, sentence-transformers) |
+| 4 | Clones `context-hawk` workspace into `~/.openclaw/workspace/context-hawk` |
+| 5 | Creates `~/.openclaw/hawk` symlink |
+| 6 | Installs **Ollama** (if not present) |
+| 7 | Pulls `nomic-embed-text` embedding model |
+| 8 | Builds TypeScript hooks and seeds initial memories |
+
+**Supported distros**: Ubuntu · Debian · Fedora · CentOS · Arch · Alpine · openSUSE
+
+---
+
+## 🔧 Configuration
+
+After install, choose your embedding mode — all via environment variables:
 
 ```bash
-# ① Ollama 本地（推荐，完全免费）
+# ① Ollama local (recommended — free, no API key, GPU-accelerated)
 export OLLAMA_BASE_URL=http://localhost:11434
 
-# ② sentence-transformers CPU本地（完全免费，无需GPU）
+# ② sentence-transformers CPU (free, no GPU needed, ~90MB model)
 export USE_LOCAL_EMBEDDING=1
 
-# ③ Jina 免费 API（需要申请 key）
-export JINA_API_KEY=你的key
+# ③ Jina AI free tier (requires free API key from jina.ai)
+export JINA_API_KEY=your_free_key
 
-# ④ 无配置 → BM25-only 模式（关键词检索，无需任何依赖）
+# ④ BM25-only (default — no config needed, keyword search only)
+# Just run without any environment variables
 ```
 
-> 默认 BM25-only 模式，不需要任何 API Key 或 Ollama。
-
-## 配置（openclaw.json）
+### openclaw.json
 
 ```json
 {
   "plugins": {
     "load": {
-      "paths": ["/absolute/path/to/hawk-bridge"]
+      "paths": ["/tmp/hawk-bridge"]
     },
     "allow": ["hawk-bridge"]
   }
 }
 ```
 
-环境变量配置即可，无需在 openclaw.json 里写死 key。
+No API keys in config files — environment variables only.
 
-## 降级机制
+---
 
-| 配置 | 模式 | 说明 |
-|------|------|------|
-| 无任何配置 | **BM25-only** | 纯关键词检索，无 API 调用 |
-| `USE_LOCAL_EMBEDDING=1` | sentence-transformers | 本地 CPU 向量，~90MB 模型 |
-| `OLLAMA_BASE_URL` | Ollama | 本地向量模型，支持 GPU |
-| `JINA_API_KEY` | Jina AI | 免费 tier API |
-| `MINIMAX_API_KEY` | Minimax | 需要 API Key |
+## 📊 Retrieval Modes
 
-## 依赖
+| Mode | Provider | API Key | Quality | Speed |
+|------|----------|---------|---------|-------|
+| **BM25-only** | Built-in | ❌ | ⭐⭐ | ⚡⚡⚡ |
+| **sentence-transformers** | Local CPU | ❌ | ⭐⭐⭐ | ⚡⚡ |
+| **Ollama** | Local GPU | ❌ | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ |
+| **Jina AI** | Cloud | ✅ free | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ |
+| **Minimax** | Cloud | ✅ | ⭐⭐⭐⭐⭐ | ⚡⚡⚡⚡⚡ |
 
-**系统（install.sh 自动安装）：**
-- Node.js ≥ 18、Python3、git、curl
+**Default**: BM25-only — works immediately with zero configuration.
 
-**npm：**
-- `@lancedb/lancedb` ≥ 0.26.2
-- `openai` ≥ 6.21.0
+---
 
-**Python（pip，自动安装）：**
-- `lancedb`、`openai`、`tiktoken`、`rank-bm25`、`sentence-transformers`
+## 🔄 Degradation Logic
 
-## 与 context-hawk 的关系
+```
+Has OLLAMA_BASE_URL?       → Full hybrid: vector + BM25 + RRF
+Has USE_LOCAL_EMBEDDING=1? → sentence-transformers + BM25 + RRF
+Has JINA_API_KEY?          → Jina embeddings + BM25 + RRF
+Has MINIMAX_API_KEY?      → Minimax embeddings + BM25 + RRF
+Nothing configured?        → BM25-only (pure keyword, no API calls)
+```
 
-- **context-hawk**（Python 包）：`MemoryManager`、`VectorRetriever`、`Extractor` 等 Python 原生能力
-- **hawk-bridge**（本插件）：OpenClaw Hooks → context-hawk 的桥接器
+No API key = no crash = graceful degradation.
 
-两者协同工作，hawk-bridge 负责"何时触发"，context-hawk 负责"具体怎么做"。
+---
 
-## 已知限制
+## 🌱 Seed Memory
 
-1. Hook `agent:bootstrap` 的 recall 需要 OpenClaw 传递 session 历史
-2. Python subprocess 调用有 ~1s 延迟，不影响 Gateway 响应
-3. BM25-only 模式下无语义检索能力，关键词匹配为主
+On first install, 11 foundational memories are seeded automatically:
+
+- Team structure (main/wukong/bajie/bailong/tseng roles)
+- Collaboration norms (GitHub inbox → done workflow)
+- Project context (hawk-bridge, qujingskills, gql-openclaw)
+- Communication preferences
+- Operating principles
+
+These ensure hawk-recall has something to inject from day one.
+
+---
+
+## 📁 File Structure
+
+```
+hawk-bridge/
+├── README.md
+├── LICENSE
+├── install.sh                   # One-command installer (curl | bash)
+├── package.json
+├── openclaw.plugin.json         # Plugin manifest + configSchema
+├── src/
+│   ├── index.ts               # Plugin entry point
+│   ├── config.ts              # OpenClaw config reader + env detection
+│   ├── lancedb.ts             # LanceDB wrapper
+│   ├── embeddings.ts           # 5 embedding providers
+│   ├── retriever.ts            # Hybrid search (BM25 + vector + RRF)
+│   ├── seed.ts                # Seed memory initializer
+│   └── hooks/
+│       ├── hawk-recall/       # agent:bootstrap hook
+│       │   ├── handler.ts
+│       │   └── HOOK.md
+│       └── hawk-capture/      # message:sent hook
+│           ├── handler.ts
+│           └── HOOK.md
+└── python/                    # context-hawk (installed by install.sh)
+```
+
+---
+
+## 🔌 Tech Specs
+
+| | |
+|---|---|
+| **Runtime** | Node.js 18+ (ESM), Python 3.12+ |
+| **Vector DB** | LanceDB (local, serverless) |
+| **Retrieval** | BM25 + ANN vector search + RRF fusion |
+| **Embedding** | Ollama / sentence-transformers / Jina AI / OpenAI / Minimax |
+| **Hook Events** | `agent:bootstrap` (recall), `message:sent` (capture) |
+| **Dependencies** | Zero hard dependencies — all optional with auto-fallback |
+| **Persistence** | Local filesystem, no external DB required |
+| **License** | MIT |
+
+---
+
+## 🤝 Relationship with context-hawk
+
+| | hawk-bridge | context-hawk |
+|---|---|---|
+| **Role** | OpenClaw hook bridge | Python memory library |
+| **What it does** | Triggers hooks, manages lifecycle | Memory extraction, scoring, decay |
+| **Interface** | TypeScript hooks → LanceDB | Python `MemoryManager`, `VectorRetriever` |
+| **Installs** | npm packages, system deps | Cloned into `~/.openclaw/workspace/` |
+
+**They work together**: hawk-bridge decides *when* to act, context-hawk handles *how*.
+
+---
+
+## 📖 Related
+
+- [🦅 context-hawk](https://github.com/relunctance/context-hawk) — Python memory library
+- [📋 gql-openclaw](https://github.com/relunctance/gql-openclaw) — Team collaboration workspace
+- [📖 qujingskills](https://github.com/relunctance/qujingskills) — Laravel development standards
