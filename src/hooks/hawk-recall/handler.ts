@@ -2,11 +2,11 @@
 // Triggered on: agent:bootstrap
 // Action: Hybrid search (vector + BM25 + RRF + rerank + noise filter) → inject memories
 
-import type { HookEvent } from '../../../../.npm-global/lib/node_modules/openclaw/dist/v10/types/hooks.js';
-import { HawkDB } from '../lancedb.js';
-import { Embedder, formatRecallForContext } from '../embeddings.js';
-import { HybridRetriever } from '../retriever.js';
-import { getConfig } from '../config.js';
+import type { HookEvent } from '../../../../../.npm-global/lib/node_modules/openclaw/dist/v10/types/hooks.js';
+import { HawkDB } from '../../lancedb.js';
+import { Embedder, formatRecallForContext } from '../../embeddings.js';
+import { HybridRetriever } from '../../retriever.js';
+import { getConfig } from '../../config.js';
 
 let retriever: HybridRetriever | null = null;
 

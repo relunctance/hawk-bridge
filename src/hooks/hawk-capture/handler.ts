@@ -4,11 +4,11 @@
 
 import { spawn } from 'child_process';
 import { promisify } from 'util';
-import type { HookEvent } from '../../../.npm-global/lib/node_modules/openclaw/dist/v10/types/hooks.js';
-import { HawkDB } from '../lancedb.js';
-import { Embedder } from '../embeddings.js';
-import { getConfig } from '../config.js';
-import type { RetrievedMemory } from '../types.js';
+import type { HookEvent } from '../../../../../.npm-global/lib/node_modules/openclaw/dist/v10/types/hooks.js';
+import { HawkDB } from '../../lancedb.js';
+import { Embedder } from '../../embeddings.js';
+import { getConfig } from '../../config.js';
+import type { RetrievedMemory } from '../../types.js';
 
 const exec = promisify((require('child_process').exec));
 
