@@ -34,7 +34,29 @@ if [ ! -L "$HOME/.openclaw/hawk" ]; then
   echo "✅ 符号链接已创建: ~/.openclaw/hawk → $CONTEXT_HAWK_DIR/hawk"
 fi
 
-# 5. 初始化种子记忆
+# 5. Ollama 本地向量模型（可选）
+echo ""
+echo "检查 Ollama..."
+if command -v ollama &> /dev/null; then
+  echo "✅ Ollama 已安装: $(ollama --version 2>&1 | head -1)"
+else
+  echo "安装 Ollama..."
+  curl -fsSL https://ollama.com/install.sh | sh 2>&1 | tail -5
+  echo "✅ Ollama 安装完成"
+fi
+
+# 6. 下载 nomic-embed-text 向量模型（用于本地 embedding）
+echo ""
+echo "下载 nomic-embed-text 向量模型（用于本地向量生成）..."
+OLLAMA_MODEL="${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
+if ollama list 2>&1 | grep -q "$OLLAMA_MODEL"; then
+  echo "✅ 模型 $OLLAMA_MODEL 已存在"
+else
+  ollama pull "$OLLAMA_MODEL" 2>&1 | tail -5
+  echo "✅ 模型 $OLLAMA_MODEL 下载完成"
+fi
+
+# 7. 初始化种子记忆
 echo ""
 echo "初始化记忆数据..."
 cd "$HAWK_BRIDGE_DIR"
@@ -43,22 +65,22 @@ if [ -f "dist/seed.js" ]; then
 else
   echo "跳过 seed（尚未 build，请先运行 npm run build）"
 fi
-echo "下一步：配置 openclaw.json"
-echo ""
-echo "需要在 openclaw.json 中添加："
-cat << 'EOF'
-{
-  "plugins": {
-    "load": {
-      "paths": ["PATH_TO_HAWK_BRIDGE"]
-    },
-    "allow": ["hawk-bridge"]
-  }
-}
-EOF
 
 echo ""
-echo "将 PATH_TO_HAWK_BRIDGE 替换为: $HAWK_BRIDGE_DIR"
+echo "========================================"
+echo "✅ hawk-bridge 安装完成！"
+echo "========================================"
 echo ""
-echo "示例："
+echo "配置说明："
+echo ""
+echo "【方式1】Ollama 本地（免费，推荐）"
+echo "  export OLLAMA_BASE_URL=http://localhost:11434"
+echo "  export OLLAMA_EMBED_MODEL=nomic-embed-text"
+echo ""
+echo "【方式2】Jina 免费 API"
+echo "  export JINA_API_KEY=你的key"
+echo ""
+echo "【方式3】无配置（默认 BM25-only 模式）"
+echo ""
+echo "启动后运行："
 echo "  openclaw plugins install $HAWK_BRIDGE_DIR"

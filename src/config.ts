@@ -129,6 +129,13 @@ export async function getConfig(): Promise<HawkConfig> {
     config.embedding.apiKey = process.env.JINA_API_KEY;
   }
 
+  // Ollama: auto-detect from env or explicit config
+  if (process.env.OLLAMA_BASE_URL || config.embedding.provider === 'ollama') {
+    config.embedding.provider = 'ollama';
+    config.embedding.baseURL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+    config.embedding.model = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
+  }
+
   cachedConfig = config;
   return config;
 }

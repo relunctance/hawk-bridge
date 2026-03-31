@@ -291,20 +291,25 @@ var Embedder = class {
   }
   // ---- Ollama (local free) ----
   async embedOllama(texts) {
-    const baseURL = this.config.baseURL || "http://localhost:11434";
-    const model = this.config.model || "nomic-embed-text";
+    const baseURL = (this.config.baseURL || process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
+    const model = this.config.model || process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
     const results = [];
-    for (const text of texts) {
-      const resp = await fetch(`${baseURL}/api/embed`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model, input: text })
-      });
-      if (!resp.ok) throw new Error(`Ollama error: ${resp.status}`);
-      const data = await resp.json();
-      results.push(data.embeddings);
+    const resp = await fetch(`${baseURL}/api/embed`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, input: texts })
+    });
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`Ollama embedding error: ${resp.status} ${errText}`);
     }
-    return results;
+    const data = await resp.json();
+    if (Array.isArray(data.embeddings) && Array.isArray(data.embeddings[0])) {
+      return data.embeddings;
+    } else if (Array.isArray(data.embeddings)) {
+      return [data.embeddings];
+    }
+    throw new Error(`Unexpected Ollama response: ${JSON.stringify(data)}`);
   }
 };
 
@@ -393,6 +398,11 @@ async function getConfig() {
   if (process.env.JINA_API_KEY) {
     config.embedding.provider = "jina";
     config.embedding.apiKey = process.env.JINA_API_KEY;
+  }
+  if (process.env.OLLAMA_BASE_URL || config.embedding.provider === "ollama") {
+    config.embedding.provider = "ollama";
+    config.embedding.baseURL = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
+    config.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
   }
   cachedConfig = config;
   return config;

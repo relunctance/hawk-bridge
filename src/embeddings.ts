@@ -142,20 +142,28 @@ export class Embedder {
 
   // ---- Ollama (local free) ----
   private async embedOllama(texts: string[]): Promise<number[][]> {
-    const baseURL = this.config.baseURL || 'http://localhost:11434';
-    const model = this.config.model || 'nomic-embed-text';
+    const baseURL = (this.config.baseURL || process.env.OLLAMA_BASE_URL || 'http://localhost:11434').replace(/\/$/, '');
+    const model = this.config.model || process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
     const results: number[][] = [];
-    for (const text of texts) {
-      const resp = await fetch(`${baseURL}/api/embed`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, input: text }),
-      });
-      if (!resp.ok) throw new Error(`Ollama error: ${resp.status}`);
-      const data = await resp.json() as any;
-      results.push(data.embeddings);
+
+    // Ollama /api/embed accepts { model, input } where input is a string OR array
+    const resp = await fetch(`${baseURL}/api/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, input: texts }),
+    });
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`Ollama embedding error: ${resp.status} ${errText}`);
     }
-    return results;
+    const data = await resp.json() as any;
+    // Response: { embeddings: number[][] } or { embeddings: number[] }
+    if (Array.isArray(data.embeddings) && Array.isArray(data.embeddings[0])) {
+      return data.embeddings;
+    } else if (Array.isArray(data.embeddings)) {
+      return [data.embeddings];
+    }
+    throw new Error(`Unexpected Ollama response: ${JSON.stringify(data)}`);
   }
 }
 
