@@ -119,6 +119,203 @@ That's it. The installer handles:
 
 ---
 
+## 🔧 Manual Install (per Distro)
+
+If you prefer to install manually instead of using the one-command script:
+
+### Ubuntu / Debian
+
+```bash
+# 1. System deps
+sudo apt-get update && sudo apt-get install -y nodejs npm python3 python3-pip git curl
+
+# 2. Clone repo
+git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
+cd /tmp/hawk-bridge
+
+# 3. Python deps
+pip3 install lancedb openai tiktoken rank-bm25 sentence-transformers --break-system-packages
+
+# 4. Ollama (optional)
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull nomic-embed-text
+
+# 5. context-hawk
+git clone git@github.com:relunctance/context-hawk.git ~/.openclaw/workspace/context-hawk
+ln -sf ~/.openclaw/workspace/context-hawk/hawk ~/.openclaw/hawk
+
+# 6. npm + build
+npm install && npm run build
+
+# 7. Seed memory
+node dist/seed.js
+
+# 8. Activate
+openclaw plugins install /tmp/hawk-bridge
+```
+
+### Fedora / RHEL / CentOS / Rocky / AlmaLinux
+
+```bash
+# 1. System deps
+sudo dnf install -y nodejs npm python3 python3-pip git curl
+
+# 2. Clone repo
+git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
+cd /tmp/hawk-bridge
+
+# 3. Python deps
+pip3 install lancedb openai tiktoken rank-bm25 sentence-transformers --break-system-packages
+
+# 4. Ollama (optional)
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull nomic-embed-text
+
+# 5. context-hawk
+git clone git@github.com:relunctance/context-hawk.git ~/.openclaw/workspace/context-hawk
+ln -sf ~/.openclaw/workspace/context-hawk/hawk ~/.openclaw/hawk
+
+# 6. npm + build
+npm install && npm run build
+
+# 7. Seed memory
+node dist/seed.js
+
+# 8. Activate
+openclaw plugins install /tmp/hawk-bridge
+```
+
+### Arch / Manjaro / EndeavourOS
+
+```bash
+# 1. System deps
+sudo pacman -Sy --noconfirm nodejs npm python python-pip git curl
+
+# 2. Clone repo
+git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
+cd /tmp/hawk-bridge
+
+# 3. Python deps
+pip3 install lancedb openai tiktoken rank-bm25 sentence-transformers --break-system-packages
+
+# 4. Ollama (optional)
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull nomic-embed-text
+
+# 5. context-hawk
+git clone git@github.com:relunctance/context-hawk.git ~/.openclaw/workspace/context-hawk
+ln -sf ~/.openclaw/workspace/context-hawk/hawk ~/.openclaw/hawk
+
+# 6. npm + build
+npm install && npm run build
+
+# 7. Seed memory
+node dist/seed.js
+
+# 8. Activate
+openclaw plugins install /tmp/hawk-bridge
+```
+
+### Alpine
+
+```bash
+# 1. System deps
+apk add --no-cache nodejs npm python3 py3-pip git curl
+
+# 2. Clone repo
+git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
+cd /tmp/hawk-bridge
+
+# 3. Python deps
+pip3 install lancedb openai tiktoken rank-bm25 sentence-transformers --break-system-packages
+
+# 4. Ollama (optional)
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull nomic-embed-text
+
+# 5. context-hawk
+git clone git@github.com:relunctance/context-hawk.git ~/.openclaw/workspace/context-hawk
+ln -sf ~/.openclaw/workspace/context-hawk/hawk ~/.openclaw/hawk
+
+# 6. npm + build
+npm install && npm run build
+
+# 7. Seed memory
+node dist/seed.js
+
+# 8. Activate
+openclaw plugins install /tmp/hawk-bridge
+```
+
+### openSUSE / SUSE Linux Enterprise
+
+```bash
+# 1. System deps
+sudo zypper install -y nodejs npm python3 python3-pip git curl
+
+# 2. Clone repo
+git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
+cd /tmp/hawk-bridge
+
+# 3. Python deps
+pip3 install lancedb openai tiktoken rank-bm25 sentence-transformers --break-system-packages
+
+# 4. Ollama (optional)
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull nomic-embed-text
+
+# 5. context-hawk
+git clone git@github.com:relunctance/context-hawk.git ~/.openclaw/workspace/context-hawk
+ln -sf ~/.openclaw/workspace/context-hawk/hawk ~/.openclaw/hawk
+
+# 6. npm + build
+npm install && npm run build
+
+# 7. Seed memory
+node dist/seed.js
+
+# 8. Activate
+openclaw plugins install /tmp/hawk-bridge
+```
+
+### macOS
+
+```bash
+# 1. Install Homebrew (if not present)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# 2. System deps
+brew install node python git curl
+
+# 3. Clone repo
+git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
+cd /tmp/hawk-bridge
+
+# 4. Python deps
+pip3 install lancedb openai tiktoken rank-bm25 sentence-transformers
+
+# 5. Ollama (optional)
+brew install ollama
+ollama pull nomic-embed-text
+
+# 6. context-hawk
+git clone git@github.com:relunctance/context-hawk.git ~/.openclaw/workspace/context-hawk
+ln -sf ~/.openclaw/workspace/context-hawk/hawk ~/.openclaw/hawk
+
+# 7. npm + build
+npm install && npm run build
+
+# 8. Seed memory
+node dist/seed.js
+
+# 9. Activate
+openclaw plugins install /tmp/hawk-bridge
+```
+
+> **Note**: `pip install --break-system-packages` is required on Linux to bypass PEP 668. Ollama install script auto-detects macOS and uses Homebrew if available.
+
+---
+
 ## 🔧 Configuration
 
 After install, choose your embedding mode — all via environment variables:

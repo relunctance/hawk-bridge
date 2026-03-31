@@ -119,6 +119,203 @@ openclaw plugins install /tmp/hawk-bridge
 
 ---
 
+## 🔧 各系统手动安装
+
+如果你不想用一键脚本，可以手动逐步安装：
+
+### Ubuntu / Debian
+
+```bash
+# 1. 系统依赖
+sudo apt-get update && sudo apt-get install -y nodejs npm python3 python3-pip git curl
+
+# 2. 克隆仓库
+git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
+cd /tmp/hawk-bridge
+
+# 3. Python 依赖
+pip3 install lancedb openai tiktoken rank-bm25 sentence-transformers --break-system-packages
+
+# 4. Ollama（可选）
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull nomic-embed-text
+
+# 5. context-hawk
+git clone git@github.com:relunctance/context-hawk.git ~/.openclaw/workspace/context-hawk
+ln -sf ~/.openclaw/workspace/context-hawk/hawk ~/.openclaw/hawk
+
+# 6. npm + 构建
+npm install && npm run build
+
+# 7. 初始化种子记忆
+node dist/seed.js
+
+# 8. 激活插件
+openclaw plugins install /tmp/hawk-bridge
+```
+
+### Fedora / RHEL / CentOS / Rocky / AlmaLinux
+
+```bash
+# 1. 系统依赖
+sudo dnf install -y nodejs npm python3 python3-pip git curl
+
+# 2. 克隆仓库
+git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
+cd /tmp/hawk-bridge
+
+# 3. Python 依赖
+pip3 install lancedb openai tiktoken rank-bm25 sentence-transformers --break-system-packages
+
+# 4. Ollama（可选）
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull nomic-embed-text
+
+# 5. context-hawk
+git clone git@github.com:relunctance/context-hawk.git ~/.openclaw/workspace/context-hawk
+ln -sf ~/.openclaw/workspace/context-hawk/hawk ~/.openclaw/hawk
+
+# 6. npm + 构建
+npm install && npm run build
+
+# 7. 初始化种子记忆
+node dist/seed.js
+
+# 8. 激活插件
+openclaw plugins install /tmp/hawk-bridge
+```
+
+### Arch / Manjaro / EndeavourOS
+
+```bash
+# 1. 系统依赖
+sudo pacman -Sy --noconfirm nodejs npm python python-pip git curl
+
+# 2. 克隆仓库
+git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
+cd /tmp/hawk-bridge
+
+# 3. Python 依赖
+pip3 install lancedb openai tiktoken rank-bm25 sentence-transformers --break-system-packages
+
+# 4. Ollama（可选）
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull nomic-embed-text
+
+# 5. context-hawk
+git clone git@github.com:relunctance/context-hawk.git ~/.openclaw/workspace/context-hawk
+ln -sf ~/.openclaw/workspace/context-hawk/hawk ~/.openclaw/hawk
+
+# 6. npm + 构建
+npm install && npm run build
+
+# 7. 初始化种子记忆
+node dist/seed.js
+
+# 8. 激活插件
+openclaw plugins install /tmp/hawk-bridge
+```
+
+### Alpine
+
+```bash
+# 1. 系统依赖
+apk add --no-cache nodejs npm python3 py3-pip git curl
+
+# 2. 克隆仓库
+git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
+cd /tmp/hawk-bridge
+
+# 3. Python 依赖
+pip3 install lancedb openai tiktoken rank-bm25 sentence-transformers --break-system-packages
+
+# 4. Ollama（可选）
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull nomic-embed-text
+
+# 5. context-hawk
+git clone git@github.com:relunctance/context-hawk.git ~/.openclaw/workspace/context-hawk
+ln -sf ~/.openclaw/workspace/context-hawk/hawk ~/.openclaw/hawk
+
+# 6. npm + 构建
+npm install && npm run build
+
+# 7. 初始化种子记忆
+node dist/seed.js
+
+# 8. 激活插件
+openclaw plugins install /tmp/hawk-bridge
+```
+
+### openSUSE / SUSE Linux Enterprise
+
+```bash
+# 1. 系统依赖
+sudo zypper install -y nodejs npm python3 python3-pip git curl
+
+# 2. 克隆仓库
+git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
+cd /tmp/hawk-bridge
+
+# 3. Python 依赖
+pip3 install lancedb openai tiktoken rank-bm25 sentence-transformers --break-system-packages
+
+# 4. Ollama（可选）
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull nomic-embed-text
+
+# 5. context-hawk
+git clone git@github.com:relunctance/context-hawk.git ~/.openclaw/workspace/context-hawk
+ln -sf ~/.openclaw/workspace/context-hawk/hawk ~/.openclaw/hawk
+
+# 6. npm + 构建
+npm install && npm run build
+
+# 7. 初始化种子记忆
+node dist/seed.js
+
+# 8. 激活插件
+openclaw plugins install /tmp/hawk-bridge
+```
+
+### macOS
+
+```bash
+# 1. 安装 Homebrew（如果没有）
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# 2. 系统依赖
+brew install node python git curl
+
+# 3. 克隆仓库
+git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
+cd /tmp/hawk-bridge
+
+# 4. Python 依赖
+pip3 install lancedb openai tiktoken rank-bm25 sentence-transformers
+
+# 5. Ollama（可选）
+brew install ollama
+ollama pull nomic-embed-text
+
+# 6. context-hawk
+git clone git@github.com:relunctance/context-hawk.git ~/.openclaw/workspace/context-hawk
+ln -sf ~/.openclaw/workspace/context-hawk/hawk ~/.openclaw/hawk
+
+# 7. npm + 构建
+npm install && npm run build
+
+# 8. 初始化种子记忆
+node dist/seed.js
+
+# 9. 激活插件
+openclaw plugins install /tmp/hawk-bridge
+```
+
+> **注意**：Linux 上需要 `--break-system-packages` 来绕过 PEP 668（禁止系统 Python 安装包）。macOS 不需要此参数。Ollama 安装脚本在 macOS 上会自动使用 Homebrew。
+
+---
+
 ## 🔧 配置
 
 安装完成后，通过环境变量选择向量模式：
