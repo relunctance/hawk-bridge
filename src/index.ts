@@ -6,13 +6,15 @@ import captureHandler from './hooks/hawk-capture/handler.js';
 
 export { recallHandler as 'hawk-recall', captureHandler as 'hawk-capture' };
 
-export default {
-  id: 'hawk-bridge',
-  name: 'hawk-bridge',
-  version: '1.0.0',
-  description: 'AutoCapture + AutoRecall bridge to hawk Python memory system',
-  hooks: {
-    'hawk-recall': recallHandler,
-    'hawk-capture': captureHandler,
-  },
-};
+function register(api: any) {
+  api.registerHook(['agent:bootstrap'], recallHandler, {
+    name: 'hawk-recall',
+    description: 'Inject relevant hawk memories before agent starts',
+  });
+  api.registerHook(['message:sent'], captureHandler, {
+    name: 'hawk-capture',
+    description: 'Auto-extract and store memories after agent responds',
+  });
+}
+
+export default { register };

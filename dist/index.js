@@ -747,16 +747,17 @@ function generateId() {
 var handler_default2 = captureHandler;
 
 // src/index.ts
-var index_default = {
-  id: "hawk-bridge",
-  name: "hawk-bridge",
-  version: "1.0.0",
-  description: "AutoCapture + AutoRecall bridge to hawk Python memory system",
-  hooks: {
-    "hawk-recall": handler_default,
-    "hawk-capture": handler_default2
-  }
-};
+function register(api) {
+  api.registerHook(["agent:bootstrap"], handler_default, {
+    name: "hawk-recall",
+    description: "Inject relevant hawk memories before agent starts"
+  });
+  api.registerHook(["message:sent"], handler_default2, {
+    name: "hawk-capture",
+    description: "Auto-extract and store memories after agent responds"
+  });
+}
+var index_default = { register };
 export {
   index_default as default,
   handler_default2 as "hawk-capture",
