@@ -13,16 +13,12 @@
     "typescript": "^6.0.2"
   },
   "openclaw": {
-    "extensions": [
-      "./dist/hooks/hawk-recall/handler.js",
-      "./dist/hooks/hawk-capture/handler.js"
-    ],
     "hooks": [
       "./dist/hooks/hawk-recall",
       "./dist/hooks/hawk-capture"
     ]
   },
   "scripts": {
-    "build": "node -e \"const e=require('esbuild');e.build({entryPoints:['src/hooks/hawk-recall/handler.ts','src/hooks/hawk-capture/handler.ts'],bundle:true,outdir:'dist/hooks',platform:'node',format:'esm',external:['openclaw','lancedb','@lancedb/*','openai','rank_bm25']}).then(()=>{require('fs').cpSync('src/hooks/hawk-recall/HOOK.md','dist/hooks/hawk-recall/HOOK.md');require('fs').cpSync('src/hooks/hawk-capture/HOOK.md','dist/hooks/hawk-capture/HOOK.md');console.log('Built successfully')}).catch(e=>{console.error(e.message);process.exit(1)})\""
+    "build": "node -e \"const e=require('esbuild');Promise.all([e.build({entryPoints:['src/hooks/hawk-recall/handler.ts'],bundle:true,outfile:'dist/hooks/hawk-recall/hawk-recall.js',platform:'node',format:'esm',external:['openclaw','lancedb','@lancedb/*','openai','rank_bm25']}),e.build({entryPoints:['src/hooks/hawk-capture/handler.ts'],bundle:true,outfile:'dist/hooks/hawk-capture/hawk-capture.js',platform:'node',format:'esm',external:['openclaw','lancedb','@lancedb/*','openai','rank_bm25']})]).then(()=>{require('fs').cpSync('src/hooks/hawk-recall/HOOK.md','dist/hooks/hawk-recall/HOOK.md');require('fs').cpSync('src/hooks/hawk-capture/HOOK.md','dist/hooks/hawk-capture/HOOK.md');console.log('Built successfully')}).catch(e=>{console.error(e.message);process.exit(1)})\""
   }
 }
