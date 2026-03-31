@@ -1,8 +1,8 @@
 // hawk-bridge plugin entry point
 // Bridges OpenClaw Gateway hooks to hawk Python memory system
 
-import recallHandler from './hooks/recall.js';
-import captureHandler from './hooks/capture.js';
+import recallHandler from './hooks/hawk-recall/handler.js';
+import captureHandler from './hooks/hawk-capture/handler.js';
 
 export { recallHandler as 'hawk-recall', captureHandler as 'hawk-capture' };
 
