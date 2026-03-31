@@ -104,6 +104,19 @@ openclaw plugins install /tmp/hawk-bridge
 
 **支持的发行版**：Ubuntu · Debian · Fedora · CentOS · Arch · Alpine · openSUSE
 
+### 各系统快速开始
+
+| 发行版 | 安装命令 |
+|--------|---------|
+| **Ubuntu / Debian** | `bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)` |
+| **Fedora / RHEL / CentOS** | `bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)` |
+| **Arch / Manjaro** | `bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)` |
+| **Alpine** | `bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)` |
+| **openSUSE** | `bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)` |
+| **macOS** | `bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)` |
+
+> 所有发行版使用同一命令，安装脚本自动检测系统并选择正确的包管理器。
+
 ---
 
 ## 🔧 配置

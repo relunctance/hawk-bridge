@@ -104,6 +104,19 @@ That's it. The installer handles:
 
 **Supported distros**: Ubuntu · Debian · Fedora · CentOS · Arch · Alpine · openSUSE
 
+### Distro-Specific Quick Start
+
+| Distro | Install Command |
+|--------|---------------|
+| **Ubuntu / Debian** | `bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)` |
+| **Fedora / RHEL / CentOS** | `bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)` |
+| **Arch / Manjaro** | `bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)` |
+| **Alpine** | `bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)` |
+| **openSUSE** | `bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)` |
+| **macOS** | `bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)` |
+
+> The same command works across all distros. The installer auto-detects your system and uses the right package manager.
+
 ---
 
 ## 🔧 Configuration
