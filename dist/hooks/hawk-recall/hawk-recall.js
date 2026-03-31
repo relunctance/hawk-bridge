@@ -2,19 +2,6 @@
 import * as path from "path";
 import * as os from "os";
 var TABLE_NAME = "hawk_memories";
-var SCHEMA_FIELDS = [
-  { name: "id", type: "string" },
-  { name: "text", type: "string" },
-  { name: "vector", type: "vector", vectorType: "float32" },
-  { name: "category", type: "string" },
-  { name: "scope", type: "string" },
-  { name: "importance", type: "float32" },
-  { name: "timestamp", type: "int64" },
-  { name: "access_count", type: "int32" },
-  { name: "last_accessed_at", type: "int64" },
-  { name: "metadata", type: "string" }
-  // JSON string
-];
 var HawkDB = class {
   db = null;
   table = null;
@@ -29,11 +16,22 @@ var HawkDB = class {
       this.db = await lancedb.connect(this.dbPath);
       const tableNames = await this.db.tableNames();
       if (!tableNames.includes(TABLE_NAME)) {
-        const schema = {
-          vectorType: "float32",
-          fields: SCHEMA_FIELDS
-        };
-        this.table = await this.db.createTable(TABLE_NAME, { schema });
+        const { makeArrowTable } = lancedb;
+        const sampleRow = this._makeRow({
+          id: "__init__",
+          text: "__init__",
+          vector: new Float32Array(0),
+          category: "fact",
+          scope: "system",
+          importance: 0,
+          timestamp: Date.now(),
+          access_count: 0,
+          last_accessed_at: Date.now(),
+          metadata: "{}"
+        });
+        const table = makeArrowTable([sampleRow]);
+        this.table = await this.db.createTable(TABLE_NAME, table);
+        await this.table.delete(`id = '__init__'`);
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
       }
@@ -42,10 +40,25 @@ var HawkDB = class {
       throw err;
     }
   }
+  _makeRow(data) {
+    const vec = data.vector.length > 0 ? Array.from(data.vector) : new Array(384).fill(0);
+    return {
+      id: data.id,
+      text: data.text,
+      vector: vec,
+      category: data.category,
+      scope: data.scope,
+      importance: data.importance,
+      timestamp: BigInt(data.timestamp),
+      access_count: data.access_count,
+      last_accessed_at: BigInt(data.last_accessed_at),
+      metadata: data.metadata
+    };
+  }
   async store(entry) {
     if (!this.table) await this.init();
     const now = Date.now();
-    const row = {
+    const row = this._makeRow({
       id: entry.id,
       text: entry.text,
       vector: entry.vector,
@@ -56,7 +69,7 @@ var HawkDB = class {
       access_count: 0,
       last_accessed_at: now,
       metadata: JSON.stringify(entry.metadata || {})
-    };
+    });
     await this.table.add([row]);
   }
   async search(queryVector, topK, minScore, scope) {
@@ -85,10 +98,13 @@ var HawkDB = class {
   }
   async incrementAccess(id) {
     try {
-      await this.table.update({ where: `id = '${id}'`, updates: {
-        access_count: this.db.util().scalar("access_count + 1"),
-        last_accessed_at: Date.now()
-      } });
+      await this.table.update({
+        where: `id = '${id}'`,
+        updates: {
+          access_count: this.db.util().scalar("access_count + 1"),
+          last_accessed_at: BigInt(Date.now())
+        }
+      });
     } catch {
     }
   }
@@ -98,13 +114,13 @@ var HawkDB = class {
     return rows.map((r) => ({
       id: r.id,
       text: r.text,
-      vector: r.vector,
+      vector: r.vector || [],
       category: r.category,
       scope: r.scope,
       importance: r.importance,
-      timestamp: r.timestamp,
+      timestamp: Number(r.timestamp),
       accessCount: r.access_count,
-      lastAccessedAt: r.last_accessed_at,
+      lastAccessedAt: Number(r.last_accessed_at),
       metadata: JSON.parse(r.metadata || "{}")
     }));
   }
@@ -126,11 +142,11 @@ var HawkDB = class {
       return {
         id: r.id,
         text: r.text,
-        vector: r.vector,
+        vector: r.vector || [],
         category: r.category,
         scope: r.scope,
         importance: r.importance,
-        timestamp: r.timestamp,
+        timestamp: Number(r.timestamp),
         metadata: JSON.parse(r.metadata || "{}")
       };
     } catch {
@@ -542,13 +558,13 @@ var HybridRetriever = class {
           if (this.isNoise(memory.vector)) continue;
           noiseFiltered.push({ ...item, text: memory.text, vector: memory.vector });
         }
-        const candidates2 = noiseFiltered.slice(0, topK * 3).map((item) => ({
+        const candidates = noiseFiltered.slice(0, topK * 3).map((item) => ({
           id: item.id,
           text: item.text,
           score: item.rrfScore
         }));
-        const reranked2 = await this.rerank(query, candidates2, topK);
-        const idToRerank = new Map(reranked2.map((r) => [r.id, r.rerankScore]));
+        const reranked = await this.rerank(query, candidates, topK);
+        const idToRerank = new Map(reranked.map((r) => [r.id, r.rerankScore]));
         const results2 = [];
         for (const item of noiseFiltered) {
           const rerankScore = idToRerank.get(item.id);
@@ -572,9 +588,7 @@ var HybridRetriever = class {
     console.log("[hawk-bridge] Running in BM25-only mode (no embedding API)");
     const bm25Scores = this.bm25Score(query);
     const bm25Ranked = this.corpusIds.map((id, i) => ({ id, score: bm25Scores[i], text: this.corpus[i] })).filter((item) => item.score > 0).sort((a, b) => b.score - a.score).slice(0, topK * 3);
-    const candidates = bm25Ranked.map((item) => ({ id: item.id, text: item.text, score: item.score }));
-    const reranked = await this.rerank(query, candidates, topK);
-    const idToScore = new Map(reranked.map((r) => [r.id, r.rerankScore]));
+    const idToScore = new Map(bm25Ranked.map((item) => [item.id, item.score]));
     const results = [];
     for (const item of bm25Ranked) {
       const score = idToScore.get(item.id);

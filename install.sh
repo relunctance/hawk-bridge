@@ -33,7 +33,16 @@ if [ ! -L "$HOME/.openclaw/hawk" ]; then
   ln -sf "$CONTEXT_HAWK_DIR/hawk" "$HOME/.openclaw/hawk"
   echo "✅ 符号链接已创建: ~/.openclaw/hawk → $CONTEXT_HAWK_DIR/hawk"
 fi
+
+# 5. 初始化种子记忆
 echo ""
+echo "初始化记忆数据..."
+cd "$HAWK_BRIDGE_DIR"
+if [ -f "dist/seed.js" ]; then
+  node dist/seed.js 2>&1 || echo "seed 失败（可忽略，LancerDB 可能已初始化）"
+else
+  echo "跳过 seed（尚未 build，请先运行 npm run build）"
+fi
 echo "下一步：配置 openclaw.json"
 echo ""
 echo "需要在 openclaw.json 中添加："

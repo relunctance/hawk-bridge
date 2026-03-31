@@ -258,7 +258,7 @@ export class HybridRetriever {
       }
     }
 
-    // Degraded mode: BM25-only + cosine similarity rerank
+    // Degraded mode: pure BM25 score, no embedding needed
     console.log('[hawk-bridge] Running in BM25-only mode (no embedding API)');
     const bm25Scores = this.bm25Score(query);
     const bm25Ranked = this.corpusIds
@@ -267,9 +267,8 @@ export class HybridRetriever {
       .sort((a, b) => b.score - a.score)
       .slice(0, topK * 3);
 
-    const candidates = bm25Ranked.map(item => ({ id: item.id, text: item.text, score: item.score }));
-    const reranked = await this.rerank(query, candidates, topK);
-    const idToScore = new Map(reranked.map(r => [r.id, r.rerankScore]));
+    // No rerank needed - just use BM25 scores directly
+    const idToScore = new Map(bm25Ranked.map(item => [item.id, item.score]));
 
     const results: RetrievedMemory[] = [];
     for (const item of bm25Ranked) {

@@ -7,20 +7,6 @@ import type { MemoryEntry, RetrievedMemory } from './types.js';
 
 const TABLE_NAME = 'hawk_memories';
 
-// Schema: matches memory-lancedb-pro for potential future compatibility
-const SCHEMA_FIELDS = [
-  { name: 'id', type: 'string' },
-  { name: 'text', type: 'string' },
-  { name: 'vector', type: 'vector', vectorType: 'float32' },
-  { name: 'category', type: 'string' },
-  { name: 'scope', type: 'string' },
-  { name: 'importance', type: 'float32' },
-  { name: 'timestamp', type: 'int64' },
-  { name: 'access_count', type: 'int32' },
-  { name: 'last_accessed_at', type: 'int64' },
-  { name: 'metadata', type: 'string' }, // JSON string
-];
-
 export class HawkDB {
   private db: any = null;
   private table: any = null;
@@ -38,12 +24,24 @@ export class HawkDB {
 
       const tableNames = await this.db.tableNames();
       if (!tableNames.includes(TABLE_NAME)) {
-        // Create table with schema
-        const schema = {
-          vectorType: 'float32',
-          fields: SCHEMA_FIELDS,
-        };
-        this.table = await this.db.createTable(TABLE_NAME, { schema });
+        // Use makeArrowTable to create table with schema inferred from sample data
+        const { makeArrowTable } = lancedb;
+        const sampleRow = this._makeRow({
+          id: '__init__',
+          text: '__init__',
+          vector: new Float32Array(0),
+          category: 'fact',
+          scope: 'system',
+          importance: 0,
+          timestamp: Date.now(),
+          access_count: 0,
+          last_accessed_at: Date.now(),
+          metadata: '{}',
+        });
+        const table = makeArrowTable([sampleRow]);
+        this.table = await this.db.createTable(TABLE_NAME, table);
+        // Remove the init row
+        await this.table.delete(`id = '__init__'`);
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
       }
@@ -53,10 +51,38 @@ export class HawkDB {
     }
   }
 
+  private _makeRow(data: {
+    id: string;
+    text: string;
+    vector: Float32Array | number[];
+    category: string;
+    scope: string;
+    importance: number;
+    timestamp: number;
+    access_count: number;
+    last_accessed_at: number;
+    metadata: string;
+  }): any {
+    // Use a dummy vector of 384 zeros if empty (embedding dimension placeholder)
+    const vec = data.vector.length > 0 ? Array.from(data.vector) : new Array(384).fill(0);
+    return {
+      id: data.id,
+      text: data.text,
+      vector: vec,
+      category: data.category,
+      scope: data.scope,
+      importance: data.importance,
+      timestamp: BigInt(data.timestamp),
+      access_count: data.access_count,
+      last_accessed_at: BigInt(data.last_accessed_at),
+      metadata: data.metadata,
+    };
+  }
+
   async store(entry: Omit<MemoryEntry, 'accessCount' | 'lastAccessedAt'>): Promise<void> {
     if (!this.table) await this.init();
     const now = Date.now();
-    const row = {
+    const row = this._makeRow({
       id: entry.id,
       text: entry.text,
       vector: entry.vector,
@@ -67,7 +93,7 @@ export class HawkDB {
       access_count: 0,
       last_accessed_at: now,
       metadata: JSON.stringify(entry.metadata || {}),
-    };
+    });
     await this.table.add([row]);
   }
 
@@ -81,17 +107,16 @@ export class HawkDB {
 
     let results = await this.table
       .search(queryVector)
-      .limit(topK * 2) // over-fetch for filtering
+      .limit(topK * 2)
       .toList();
 
-    // Optional scope filter
     if (scope) {
       results = results.filter((r: any) => r.scope === scope);
     }
 
     const retrieved: RetrievedMemory[] = [];
     for (const row of results) {
-      const score = 1 - (row._distance ?? 0); // LanceDB uses L2 distance
+      const score = 1 - (row._distance ?? 0);
       if (score < minScore) continue;
       retrieved.push({
         id: row.id,
@@ -103,7 +128,6 @@ export class HawkDB {
       if (retrieved.length >= topK) break;
     }
 
-    // Update access counts
     for (const r of retrieved) {
       await this.incrementAccess(r.id);
     }
@@ -113,11 +137,13 @@ export class HawkDB {
 
   private async incrementAccess(id: string): Promise<void> {
     try {
-      await this.table
-        .update({ where: `id = '${id}'`, updates: {
+      await this.table.update({
+        where: `id = '${id}'`,
+        updates: {
           access_count: this.db.util().scalar('access_count + 1'),
-          last_accessed_at: Date.now(),
-        }});
+          last_accessed_at: BigInt(Date.now()),
+        }
+      });
     } catch {
       // Non-critical if update fails
     }
@@ -125,20 +151,17 @@ export class HawkDB {
 
   async listRecent(limit: number = 10): Promise<MemoryEntry[]> {
     if (!this.table) await this.init();
-    const rows = await this.table
-      .query()
-      .limit(limit)
-      .toList();
+    const rows = await this.table.query().limit(limit).toList();
     return rows.map((r: any) => ({
       id: r.id,
       text: r.text,
-      vector: r.vector,
+      vector: r.vector || [],
       category: r.category,
       scope: r.scope,
       importance: r.importance,
-      timestamp: r.timestamp,
+      timestamp: Number(r.timestamp),
       accessCount: r.access_count,
-      lastAccessedAt: r.last_accessed_at,
+      lastAccessedAt: Number(r.last_accessed_at),
       metadata: JSON.parse(r.metadata || '{}'),
     }));
   }
@@ -157,21 +180,17 @@ export class HawkDB {
   async getById(id: string): Promise<(Omit<MemoryEntry, 'accessCount' | 'lastAccessedAt'> & { vector: number[] }) | null> {
     if (!this.table) await this.init();
     try {
-      const rows = await this.table
-        .query()
-        .where(`id = '${id}'`)
-        .limit(1)
-        .toList();
+      const rows = await this.table.query().where(`id = '${id}'`).limit(1).toList();
       if (!rows.length) return null;
       const r = rows[0];
       return {
         id: r.id,
         text: r.text,
-        vector: r.vector,
+        vector: r.vector || [],
         category: r.category,
         scope: r.scope,
         importance: r.importance,
-        timestamp: r.timestamp,
+        timestamp: Number(r.timestamp),
         metadata: JSON.parse(r.metadata || '{}'),
       };
     } catch {
