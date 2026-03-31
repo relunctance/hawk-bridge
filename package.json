@@ -1,6 +1,6 @@
 {
   "name": "hawk-bridge",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "OpenClaw hook bridge to hawk Python memory system - autoCapture + autoRecall",
   "type": "module",
   "main": "src/index.ts",
@@ -8,10 +8,21 @@
     "@lancedb/lancedb": "^0.26.2",
     "openai": "^6.21.0"
   },
+  "devDependencies": {
+    "esbuild": "^0.27.4",
+    "typescript": "^6.0.2"
+  },
   "openclaw": {
+    "extensions": [
+      "./dist/hooks/hawk-recall/handler.js",
+      "./dist/hooks/hawk-capture/handler.js"
+    ],
     "hooks": [
-      "./src/hooks/hawk-recall",
-      "./src/hooks/hawk-capture"
+      "./dist/hooks/hawk-recall/handler.js",
+      "./dist/hooks/hawk-capture/handler.js"
     ]
+  },
+  "scripts": {
+    "build": "node -e \"const e=require('esbuild');e.build({entryPoints:['src/hooks/hawk-recall/handler.ts','src/hooks/hawk-capture/handler.ts'],bundle:true,outdir:'dist/hooks',platform:'node',format:'esm',external:['openclaw','lancedb','@lancedb/*','openai','rank_bm25']}).then(()=>console.log('Built successfully')).catch(e=>{console.error(e.message);process.exit(1)})\""
   }
 }
