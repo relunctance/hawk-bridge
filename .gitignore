@@ -5,3 +5,6 @@ package-lock.json
 config.local.json
 node_modules/
 *.log
+
+# Build output
+dist/
