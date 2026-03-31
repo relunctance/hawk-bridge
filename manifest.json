@@ -1,0 +1,86 @@
+{
+  "id": "hawk-bridge",
+  "name": "hawk-bridge",
+  "description": "AutoCapture + AutoRecall bridge to hawk Python memory system. Zero-config with Ollama defaults.",
+  "version": "1.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "hooks": [
+    {
+      "name": "hawk-recall",
+      "events": ["agent:bootstrap"],
+      "description": "Inject relevant hawk memories before agent starts"
+    },
+    {
+      "name": "hawk-capture",
+      "events": ["message:sent"],
+      "description": "Auto-extract and store memories after agent responds"
+    }
+  ],
+  "config": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "embedding": {
+        "type": "object",
+        "description": "Embedding provider settings",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": ["minimax", "openclaw", "ollama", "openai", "jina", "cohere"],
+            "default": "minimax",
+            "description": "minimax=use MINIMAX_API_KEY (default), openclaw=auto, ollama=local free, openai=paid, jina/cohere=free tier"
+          },
+          "apiKey": { "type": "string", "description": "API key (not needed for ollama)" },
+          "model": {
+            "type": "string",
+            "description": "Embedding model name",
+            "default": "nomic-embed-text (ollama) | text-embedding-3-small (openai) | jina-embeddings-v5-small (jina)"
+          },
+          "baseURL": { "type": "string", "description": "Custom API base URL (e.g. http://localhost:11434 for ollama)" },
+          "dimensions": { "type": "number", "default": 768 }
+        }
+      },
+      "llm": {
+        "type": "object",
+        "description": "LLM provider for memory extraction (Python side)",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": ["ollama", "groq", "openai", "openrouter"],
+            "default": "groq",
+            "description": "groq=free Llama-3 (no key), ollama=local free, openai=paid"
+          },
+          "apiKey": { "type": "string" },
+          "model": { "type": "string", "default": "llama-3.3-70b-versatile (groq) | llama3 (ollama)" }
+        }
+      },
+      "recall": {
+        "type": "object",
+        "properties": {
+          "topK": { "type": "number", "default": 5 },
+          "minScore": { "type": "number", "default": 0.6 },
+          "injectEmoji": { "type": "string", "default": "🦅" }
+        }
+      },
+      "capture": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true },
+          "maxChunks": { "type": "number", "default": 3 },
+          "importanceThreshold": { "type": "number", "default": 0.5 }
+        }
+      },
+      "python": {
+        "type": "object",
+        "properties": {
+          "pythonPath": { "type": "string", "default": "python3.12" },
+          "hawkDir": { "type": "string", "default": "~/.openclaw/hawk" }
+        }
+      }
+    }
+  }
+}
