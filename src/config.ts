@@ -132,3 +132,7 @@ export async function getConfig(): Promise<HawkConfig> {
   cachedConfig = config;
   return config;
 }
+
+export function hasEmbeddingProvider(): boolean {
+  return !!(process.env.MINIMAX_API_KEY || process.env.OLLAMA_BASE_URL || process.env.JINA_API_KEY);
+}

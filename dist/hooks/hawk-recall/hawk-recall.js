@@ -289,190 +289,6 @@ function formatRecallForContext(memories, emoji = "\u{1F985}") {
   return lines.join("\n");
 }
 
-// src/retriever.ts
-var HybridRetriever = class {
-  db;
-  embedder;
-  bm25 = null;
-  // rank_bm25.BM25Okapi
-  corpus = [];
-  corpusIds = [];
-  noisePrototypes = [];
-  constructor(db, embedder) {
-    this.db = db;
-    this.embedder = embedder;
-  }
-  // ---------- BM25 Setup ----------
-  async buildBm25Index() {
-    try {
-      const { BM25Okapi } = await import("rank_bm25");
-      const allMemories = await this.db.getAllTexts();
-      if (!allMemories.length) return;
-      this.corpusIds = allMemories.map((m) => m.id);
-      this.corpus = allMemories.map((m) => m.text.toLowerCase());
-      this.bm25 = new BM25Okapi(this.corpus);
-    } catch (e) {
-      console.warn("[hawk-bridge] rank_bm25 not available, BM25 disabled");
-    }
-  }
-  bm25Score(query) {
-    if (!this.bm25) return this.corpus.map(() => 0);
-    const tokens = query.toLowerCase().split(/\s+/);
-    return this.bm25.getScores(tokens);
-  }
-  // ---------- Noise Prototype Setup ----------
-  async buildNoisePrototypes() {
-    const noiseTexts = [
-      "\u597D\u7684\uFF0C\u660E\u767D\u4E86",
-      "\u6536\u5230\uFF0C\u8C22\u8C22",
-      "ok",
-      "\u597D\u7684",
-      "\u4E86\u89E3",
-      "\u6CA1\u95EE\u9898",
-      "\u5BF9",
-      "\u662F\u7684",
-      "\u54C8\u54C8",
-      "\u55EF\u55EF",
-      "\u597D\u7684\u597D\u7684",
-      "\u6536\u5230\u6536\u5230",
-      "OK",
-      "\u{1F44D}",
-      "\u2705",
-      "\u597D\u7684\uFF0C\u8F9B\u82E6\u4E86"
-    ];
-    if (!this.noisePrototypes.length) {
-      this.noisePrototypes = await this.embedder.embed(noiseTexts);
-    }
-  }
-  isNoise(embedding, threshold = 0.82) {
-    if (!this.noisePrototypes.length) return false;
-    for (const prototype of this.noisePrototypes) {
-      const sim = cosineSimilarity(embedding, prototype);
-      if (sim >= threshold) return true;
-    }
-    return false;
-  }
-  // ---------- RRF Fusion ----------
-  rrfFusion(vectorResults, bm25Results, k = 60) {
-    const rrfMap = /* @__PURE__ */ new Map();
-    for (let rank = 0; rank < vectorResults.length; rank++) {
-      const item = vectorResults[rank];
-      const score = 1 / (k + rank + 1);
-      const existing = rrfMap.get(item.id) || { rrfScore: 0, vectorScore: 0, bm25Score: 0 };
-      rrfMap.set(item.id, {
-        rrfScore: existing.rrfScore + score * 0.7,
-        // vector weight
-        vectorScore: item.score,
-        bm25Score: existing.bm25Score
-      });
-    }
-    for (let rank = 0; rank < bm25Results.length; rank++) {
-      const item = bm25Results[rank];
-      const score = 1 / (k + rank + 1);
-      const existing = rrfMap.get(item.id) || { rrfScore: 0, vectorScore: 0, bm25Score: 0 };
-      rrfMap.set(item.id, {
-        rrfScore: existing.rrfScore + score * 0.3,
-        // BM25 weight
-        vectorScore: existing.vectorScore,
-        bm25Score: item.score
-      });
-    }
-    return Array.from(rrfMap.entries()).map(([id, v]) => ({ id, ...v }));
-  }
-  // ---------- Cross-encoder Rerank ----------
-  async rerank(query, candidates, topN) {
-    if (candidates.length <= 2) return candidates.map((c) => ({ id: c.id, text: c.text, rerankScore: c.score }));
-    try {
-      const apiKey = process.env.JINA_RERANKER_API_KEY || process.env.OPENAI_API_KEY;
-      const useJina = !!process.env.JINA_RERANKER_API_KEY;
-      if (useJina) {
-        const resp = await fetch("https://api.jina.ai/v1/rerank", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${apiKey}`
-          },
-          body: JSON.stringify({
-            model: "jina-reranker-v1-base-en",
-            query,
-            documents: candidates.map((c) => c.text),
-            top_n: Math.min(topN * 2, candidates.length)
-          })
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          return data.results.map((r) => ({
-            id: candidates[r.index].id,
-            text: candidates[r.index].text,
-            rerankScore: r.relevance_score
-          }));
-        }
-      }
-      const queryVec = await this.embedder.embedQuery(query);
-      const docVecs = await this.embedder.embed(candidates.map((c) => c.text));
-      const scored = candidates.map((c, i) => ({
-        id: c.id,
-        text: c.text,
-        rerankScore: cosineSimilarity(queryVec, docVecs[i])
-      }));
-      return scored.sort((a, b) => b.rerankScore - a.rerankScore).slice(0, topN * 2);
-    } catch (e) {
-      console.warn("[hawk-bridge] rerank failed, using RRF scores:", e);
-      return candidates.slice(0, topN).map((c) => ({ id: c.id, text: c.text, rerankScore: c.score }));
-    }
-  }
-  // ---------- Main Search Pipeline ----------
-  async search(query, topK = 5, scope) {
-    if (!this.bm25) await this.buildBm25Index();
-    if (!this.noisePrototypes.length) await this.buildNoisePrototypes();
-    const queryVector = await this.embedder.embedQuery(query);
-    const vectorResults = await this.db.search(queryVector, topK * 4, 0, scope);
-    const vectorRanked = vectorResults.map((r, i) => ({ id: r.id, score: 1 - i * 0.01, text: r.text })).sort((a, b) => b.score - a.score);
-    const bm25Scores = this.bm25Score(query);
-    const bm25Ranked = this.corpusIds.map((id, i) => ({ id, score: bm25Scores[i], text: this.corpus[i] })).filter((item) => item.score > 0).sort((a, b) => b.score - a.score).slice(0, topK * 4);
-    const fused = this.rrfFusion(vectorRanked, bm25Ranked);
-    const noiseFiltered = [];
-    for (const item of fused) {
-      const memory = await this.db.getById(item.id);
-      if (!memory) continue;
-      if (this.isNoise(memory.vector)) continue;
-      noiseFiltered.push({ ...item, text: memory.text, vector: memory.vector });
-    }
-    const candidates = noiseFiltered.slice(0, topK * 3).map((item) => ({
-      id: item.id,
-      text: item.text,
-      score: item.rrfScore
-    }));
-    const reranked = await this.rerank(query, candidates, topK);
-    const idToRerank = new Map(reranked.map((r) => [r.id, r.rerankScore]));
-    const results = [];
-    for (const item of noiseFiltered) {
-      const rerankScore = idToRerank.get(item.id);
-      if (rerankScore === void 0) continue;
-      const memory = await this.db.getById(item.id);
-      if (!memory) continue;
-      results.push({
-        id: item.id,
-        text: memory.text,
-        score: rerankScore,
-        category: memory.category,
-        metadata: memory.metadata
-      });
-      if (results.length >= topK) break;
-    }
-    return results;
-  }
-};
-function cosineSimilarity(a, b) {
-  let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
 // src/config.ts
 import * as fs from "fs";
 import * as path2 from "path";
@@ -561,6 +377,230 @@ async function getConfig() {
   }
   cachedConfig = config;
   return config;
+}
+function hasEmbeddingProvider() {
+  return !!(process.env.MINIMAX_API_KEY || process.env.OLLAMA_BASE_URL || process.env.JINA_API_KEY);
+}
+
+// src/retriever.ts
+var HybridRetriever = class {
+  db;
+  embedder;
+  bm25 = null;
+  // rank_bm25.BM25Okapi
+  corpus = [];
+  corpusIds = [];
+  noisePrototypes = [];
+  constructor(db, embedder) {
+    this.db = db;
+    this.embedder = embedder;
+  }
+  // ---------- BM25 Setup ----------
+  async buildBm25Index() {
+    try {
+      const { BM25Okapi } = await import("rank_bm25");
+      const allMemories = await this.db.getAllTexts();
+      if (!allMemories.length) return;
+      this.corpusIds = allMemories.map((m) => m.id);
+      this.corpus = allMemories.map((m) => m.text.toLowerCase());
+      this.bm25 = new BM25Okapi(this.corpus);
+    } catch (e) {
+      console.warn("[hawk-bridge] rank_bm25 not available, BM25 disabled");
+    }
+  }
+  bm25Score(query) {
+    if (!this.bm25) return this.corpus.map(() => 0);
+    const tokens = query.toLowerCase().split(/\s+/);
+    return this.bm25.getScores(tokens);
+  }
+  // ---------- Noise Prototype Setup ----------
+  async buildNoisePrototypes() {
+    if (!hasEmbeddingProvider()) {
+      console.log("[hawk-bridge] No embedding provider, skipping noise prototypes");
+      return;
+    }
+    const noiseTexts = [
+      "\u597D\u7684\uFF0C\u660E\u767D\u4E86",
+      "\u6536\u5230\uFF0C\u8C22\u8C22",
+      "ok",
+      "\u597D\u7684",
+      "\u4E86\u89E3",
+      "\u6CA1\u95EE\u9898",
+      "\u5BF9",
+      "\u662F\u7684",
+      "\u54C8\u54C8",
+      "\u55EF\u55EF",
+      "\u597D\u7684\u597D\u7684",
+      "\u6536\u5230\u6536\u5230",
+      "OK",
+      "\u{1F44D}",
+      "\u2705",
+      "\u597D\u7684\uFF0C\u8F9B\u82E6\u4E86"
+    ];
+    try {
+      if (!this.noisePrototypes.length) {
+        this.noisePrototypes = await this.embedder.embed(noiseTexts);
+      }
+    } catch (e) {
+      console.warn("[hawk-bridge] Noise prototype embedding failed, skipping:", e);
+    }
+  }
+  isNoise(embedding, threshold = 0.82) {
+    if (!this.noisePrototypes.length) return false;
+    for (const prototype of this.noisePrototypes) {
+      const sim = cosineSimilarity(embedding, prototype);
+      if (sim >= threshold) return true;
+    }
+    return false;
+  }
+  // ---------- RRF Fusion ----------
+  rrfFusion(vectorResults, bm25Results, k = 60) {
+    const rrfMap = /* @__PURE__ */ new Map();
+    for (let rank = 0; rank < vectorResults.length; rank++) {
+      const item = vectorResults[rank];
+      const score = 1 / (k + rank + 1);
+      const existing = rrfMap.get(item.id) || { rrfScore: 0, vectorScore: 0, bm25Score: 0 };
+      rrfMap.set(item.id, {
+        rrfScore: existing.rrfScore + score * 0.7,
+        // vector weight
+        vectorScore: item.score,
+        bm25Score: existing.bm25Score
+      });
+    }
+    for (let rank = 0; rank < bm25Results.length; rank++) {
+      const item = bm25Results[rank];
+      const score = 1 / (k + rank + 1);
+      const existing = rrfMap.get(item.id) || { rrfScore: 0, vectorScore: 0, bm25Score: 0 };
+      rrfMap.set(item.id, {
+        rrfScore: existing.rrfScore + score * 0.3,
+        // BM25 weight
+        vectorScore: existing.vectorScore,
+        bm25Score: item.score
+      });
+    }
+    return Array.from(rrfMap.entries()).map(([id, v]) => ({ id, ...v }));
+  }
+  // ---------- Cross-encoder Rerank ----------
+  async rerank(query, candidates, topN) {
+    if (candidates.length <= 2) return candidates.map((c) => ({ id: c.id, text: c.text, rerankScore: c.score }));
+    try {
+      const apiKey = process.env.JINA_RERANKER_API_KEY || process.env.OPENAI_API_KEY;
+      const useJina = !!process.env.JINA_RERANKER_API_KEY;
+      if (useJina) {
+        const resp = await fetch("https://api.jina.ai/v1/rerank", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model: "jina-reranker-v1-base-en",
+            query,
+            documents: candidates.map((c) => c.text),
+            top_n: Math.min(topN * 2, candidates.length)
+          })
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          return data.results.map((r) => ({
+            id: candidates[r.index].id,
+            text: candidates[r.index].text,
+            rerankScore: r.relevance_score
+          }));
+        }
+      }
+      const queryVec = await this.embedder.embedQuery(query);
+      const docVecs = await this.embedder.embed(candidates.map((c) => c.text));
+      const scored = candidates.map((c, i) => ({
+        id: c.id,
+        text: c.text,
+        rerankScore: cosineSimilarity(queryVec, docVecs[i])
+      }));
+      return scored.sort((a, b) => b.rerankScore - a.rerankScore).slice(0, topN * 2);
+    } catch (e) {
+      console.warn("[hawk-bridge] rerank failed, using RRF scores:", e);
+      return candidates.slice(0, topN).map((c) => ({ id: c.id, text: c.text, rerankScore: c.score }));
+    }
+  }
+  // ---------- Main Search Pipeline ----------
+  async search(query, topK = 5, scope) {
+    if (!this.bm25) await this.buildBm25Index();
+    if (!this.noisePrototypes.length) await this.buildNoisePrototypes();
+    const hasEmbedding = hasEmbeddingProvider();
+    if (hasEmbedding) {
+      try {
+        const queryVector = await this.embedder.embedQuery(query);
+        const vectorResults = await this.db.search(queryVector, topK * 4, 0, scope);
+        const vectorRanked = vectorResults.map((r, i) => ({ id: r.id, score: 1 - i * 0.01, text: r.text })).sort((a, b) => b.score - a.score);
+        const bm25Scores2 = this.bm25Score(query);
+        const bm25Ranked2 = this.corpusIds.map((id, i) => ({ id, score: bm25Scores2[i], text: this.corpus[i] })).filter((item) => item.score > 0).sort((a, b) => b.score - a.score).slice(0, topK * 4);
+        const fused = this.rrfFusion(vectorRanked, bm25Ranked2);
+        const noiseFiltered = [];
+        for (const item of fused) {
+          const memory = await this.db.getById(item.id);
+          if (!memory) continue;
+          if (this.isNoise(memory.vector)) continue;
+          noiseFiltered.push({ ...item, text: memory.text, vector: memory.vector });
+        }
+        const candidates2 = noiseFiltered.slice(0, topK * 3).map((item) => ({
+          id: item.id,
+          text: item.text,
+          score: item.rrfScore
+        }));
+        const reranked2 = await this.rerank(query, candidates2, topK);
+        const idToRerank = new Map(reranked2.map((r) => [r.id, r.rerankScore]));
+        const results2 = [];
+        for (const item of noiseFiltered) {
+          const rerankScore = idToRerank.get(item.id);
+          if (rerankScore === void 0) continue;
+          const memory = await this.db.getById(item.id);
+          if (!memory) continue;
+          results2.push({
+            id: item.id,
+            text: memory.text,
+            score: rerankScore,
+            category: memory.category,
+            metadata: memory.metadata
+          });
+          if (results2.length >= topK) break;
+        }
+        return results2;
+      } catch (err) {
+        console.warn("[hawk-bridge] Vector search failed, falling back to BM25-only:", err);
+      }
+    }
+    console.log("[hawk-bridge] Running in BM25-only mode (no embedding API)");
+    const bm25Scores = this.bm25Score(query);
+    const bm25Ranked = this.corpusIds.map((id, i) => ({ id, score: bm25Scores[i], text: this.corpus[i] })).filter((item) => item.score > 0).sort((a, b) => b.score - a.score).slice(0, topK * 3);
+    const candidates = bm25Ranked.map((item) => ({ id: item.id, text: item.text, score: item.score }));
+    const reranked = await this.rerank(query, candidates, topK);
+    const idToScore = new Map(reranked.map((r) => [r.id, r.rerankScore]));
+    const results = [];
+    for (const item of bm25Ranked) {
+      const score = idToScore.get(item.id);
+      if (score === void 0) continue;
+      const memory = await this.db.getById(item.id);
+      if (!memory) continue;
+      results.push({
+        id: item.id,
+        text: memory.text,
+        score,
+        category: memory.category,
+        metadata: memory.metadata
+      });
+      if (results.length >= topK) break;
+    }
+    return results;
+  }
+};
+function cosineSimilarity(a, b) {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
 // src/hooks/hawk-recall/handler.ts

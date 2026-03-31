@@ -6,7 +6,7 @@
 
 import { HawkDB } from './lancedb.js';
 import { Embedder } from './embeddings.js';
-import { getConfig } from './config.js';
+import { getConfig, hasEmbeddingProvider } from './config.js';
 import type { RetrievedMemory } from './types.js';
 
 export class HybridRetriever {
@@ -49,6 +49,11 @@ export class HybridRetriever {
   // ---------- Noise Prototype Setup ----------
 
   async buildNoisePrototypes(): Promise<void> {
+    if (!hasEmbeddingProvider()) {
+      console.log('[hawk-bridge] No embedding provider, skipping noise prototypes');
+      return;
+    }
+
     // Predefined noise prototype embeddings (jina-embeddings-v5 compatible)
     // These represent typical "noise" patterns: acknowledgements, greetings, etc.
     const noiseTexts = [
@@ -70,8 +75,12 @@ export class HybridRetriever {
       '好的，辛苦了',
     ];
 
-    if (!this.noisePrototypes.length) {
-      this.noisePrototypes = await this.embedder.embed(noiseTexts);
+    try {
+      if (!this.noisePrototypes.length) {
+        this.noisePrototypes = await this.embedder.embed(noiseTexts);
+      }
+    } catch (e) {
+      console.warn('[hawk-bridge] Noise prototype embedding failed, skipping:', e);
     }
   }
 
@@ -189,57 +198,89 @@ export class HybridRetriever {
     if (!this.bm25) await this.buildBm25Index();
     if (!this.noisePrototypes.length) await this.buildNoisePrototypes();
 
-    // Step 1: Vector search
-    const queryVector = await this.embedder.embedQuery(query);
-    const vectorResults = await this.db.search(queryVector, topK * 4, 0.0, scope); // low threshold, filter later
+    const hasEmbedding = hasEmbeddingProvider();
 
-    const vectorRanked = vectorResults
-      .map((r, i) => ({ id: r.id, score: 1 - i * 0.01, text: r.text }))
-      .sort((a, b) => b.score - a.score);
+    if (hasEmbedding) {
+      // Full pipeline: vector + BM25 + RRF + rerank
+      try {
+        const queryVector = await this.embedder.embedQuery(query);
+        const vectorResults = await this.db.search(queryVector, topK * 4, 0.0, scope);
 
-    // Step 2: BM25 search
+        const vectorRanked = vectorResults
+          .map((r, i) => ({ id: r.id, score: 1 - i * 0.01, text: r.text }))
+          .sort((a, b) => b.score - a.score);
+
+        const bm25Scores = this.bm25Score(query);
+        const bm25Ranked = this.corpusIds
+          .map((id, i) => ({ id, score: bm25Scores[i], text: this.corpus[i] }))
+          .filter(item => item.score > 0)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, topK * 4);
+
+        const fused = this.rrfFusion(vectorRanked, bm25Ranked);
+        const noiseFiltered = [];
+
+        for (const item of fused) {
+          const memory = await this.db.getById(item.id);
+          if (!memory) continue;
+          if (this.isNoise(memory.vector)) continue;
+          noiseFiltered.push({ ...item, text: memory.text, vector: memory.vector });
+        }
+
+        const candidates = noiseFiltered.slice(0, topK * 3).map(item => ({
+          id: item.id,
+          text: item.text,
+          score: item.rrfScore,
+        }));
+
+        const reranked = await this.rerank(query, candidates, topK);
+        const idToRerank = new Map(reranked.map(r => [r.id, r.rerankScore]));
+        const results: RetrievedMemory[] = [];
+
+        for (const item of noiseFiltered) {
+          const rerankScore = idToRerank.get(item.id);
+          if (rerankScore === undefined) continue;
+          const memory = await this.db.getById(item.id);
+          if (!memory) continue;
+          results.push({
+            id: item.id,
+            text: memory.text,
+            score: rerankScore,
+            category: memory.category,
+            metadata: memory.metadata,
+          });
+          if (results.length >= topK) break;
+        }
+
+        return results;
+      } catch (err) {
+        console.warn('[hawk-bridge] Vector search failed, falling back to BM25-only:', err);
+      }
+    }
+
+    // Degraded mode: BM25-only + cosine similarity rerank
+    console.log('[hawk-bridge] Running in BM25-only mode (no embedding API)');
     const bm25Scores = this.bm25Score(query);
     const bm25Ranked = this.corpusIds
       .map((id, i) => ({ id, score: bm25Scores[i], text: this.corpus[i] }))
       .filter(item => item.score > 0)
       .sort((a, b) => b.score - a.score)
-      .slice(0, topK * 4);
+      .slice(0, topK * 3);
 
-    // Step 3: RRF Fusion
-    const fused = this.rrfFusion(vectorRanked, bm25Ranked);
-
-    // Step 4: Noise filter
-    const noiseFiltered = [];
-    for (const item of fused) {
-      const memory = await this.db.getById(item.id);
-      if (!memory) continue;
-      if (this.isNoise(memory.vector)) continue;
-      noiseFiltered.push({ ...item, text: memory.text, vector: memory.vector });
-    }
-
-    // Step 5: Build candidates for rerank
-    const candidates = noiseFiltered.slice(0, topK * 3).map(item => ({
-      id: item.id,
-      text: item.text,
-      score: item.rrfScore,
-    }));
-
-    // Step 6: Cross-encoder rerank
+    const candidates = bm25Ranked.map(item => ({ id: item.id, text: item.text, score: item.score }));
     const reranked = await this.rerank(query, candidates, topK);
+    const idToScore = new Map(reranked.map(r => [r.id, r.rerankScore]));
 
-    // Step 7: Build final results with rerank scores
-    const idToRerank = new Map(reranked.map(r => [r.id, r.rerankScore]));
     const results: RetrievedMemory[] = [];
-
-    for (const item of noiseFiltered) {
-      const rerankScore = idToRerank.get(item.id);
-      if (rerankScore === undefined) continue;
+    for (const item of bm25Ranked) {
+      const score = idToScore.get(item.id);
+      if (score === undefined) continue;
       const memory = await this.db.getById(item.id);
       if (!memory) continue;
       results.push({
         id: item.id,
         text: memory.text,
-        score: rerankScore,
+        score,
         category: memory.category,
         metadata: memory.metadata,
       });

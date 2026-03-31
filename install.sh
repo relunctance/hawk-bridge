@@ -15,7 +15,7 @@ if [ -f package.json ]; then
 fi
 
 # 2. 安装 Python 依赖
-$PYTHON_PATH -m pip install lancedb openai tiktoken path --break-system-packages -q 2>&1 | tail -2
+$PYTHON_PATH -m pip install lancedb openai tiktoken path rank-bm25 --break-system-packages -q 2>&1 | tail -2
 
 # 3. 克隆 context-hawk workspace（hawk Python 核心）
 CONTEXT_HAWK_DIR="$HOME/.openclaw/workspace/context-hawk"
@@ -27,7 +27,12 @@ if [ ! -d "$CONTEXT_HAWK_DIR/hawk" ]; then
   git clone git@github.com:relunctance/context-hawk.git "$CONTEXT_HAWK_DIR" 2>&1 | tail -3
 fi
 
-# 4. 注册到 openclaw.json
+# 4. 创建 hawk 符号链接
+if [ ! -L "$HOME/.openclaw/hawk" ]; then
+  mkdir -p "$HOME/.openclaw"
+  ln -sf "$CONTEXT_HAWK_DIR/hawk" "$HOME/.openclaw/hawk"
+  echo "✅ 符号链接已创建: ~/.openclaw/hawk → $CONTEXT_HAWK_DIR/hawk"
+fi
 echo ""
 echo "下一步：配置 openclaw.json"
 echo ""
