@@ -35,16 +35,23 @@ AI agents forget everything after each session. **hawk-bridge** bridges OpenClaw
 
 ## 🦅 What problem does it solve?
 
-**Without hawk-bridge:** AI only knows what was said in the current session. It forgets everything after the session ends.
+**Without hawk-bridge:** AI agents forget everything — across sessions, across agents, and spend too much on LLM tokens.
 
-**With hawk-bridge:** AI remembers across all sessions through persistent memory.
+**With hawk-bridge:** Persistent memory, shared context, and lower costs.
 
-| Scenario | Without | With |
-|----------|---------|------|
-| First time: "I'm a full-stack engineer" | ✅ Remembers | ✅ Remembers |
-| Second time: "What's my role?" | ❌ Forgets (not in current session) | ✅ Injected via hawk-recall |
-| Days later: "What did we decide?" | ❌ Forgets | ✅ Retrieved from LanceDB |
-| "Remember I like concise replies" | ❌ Forgets | ✅ Stored as importance=0.8 |
+### Pain Points hawk-bridge Solves
+
+| Pain Point | Without hawk-bridge | With hawk-bridge |
+|-----------|-------------------|-----------------|
+| **AI forgets everything after session ends** | New session starts blank | Cross-session memory injection |
+| **Team context lost** | Each agent starts fresh | Shared LanceDB, all agents access same memories |
+| **Multiple agents repeat same mistakes** | Agent A doesn't know Agent B's decisions | Memory is shared, not siloed |
+| **LLM costs spiral out of control** | Unlimited context growth | Compression + dedup + MMR shrinks context |
+| **Context overflow / token limit hit** | Session history keeps growing until crash | Auto-pruning + 4-tier decay keeps context lean |
+| **Important decisions forgotten** | Only in old session, lost forever | Stored in LanceDB with importance scoring |
+| **Duplicate memories pile up** | Same info stored many times | SimHash dedup, 64-bit fingerprint |
+| **Repetitive recall** | "Tell me about X" → 5 similar memories, all injected | MMR ensures diverse, non-repeating injection |
+| **No self-improving memory** | Nothing gets better over time | importance + access_count tracking → smart promotion |
 
 ### hawk-bridge solves 5 core problems:
 
@@ -56,17 +63,17 @@ Context has a token limit (e.g. 32k). Long history crowds out important content.
 When a session ends, context disappears. Next conversation starts fresh.
 → hawk-recall injects memories from LanceDB before every new session.
 
-**Problem 3: Context grows too large before sending to LLM**
+**Problem 3: Multiple agents share nothing**
+Agent A knows nothing about Agent B's context. Decisions made by one agent are invisible to others.
+→ Shared LanceDB memory: all agents read/write to the same store. No silos.
+
+**Problem 4: Context grows too large before sending to LLM**
 Recall without optimization = large, repetitive context.
 → After compression + SimHash dedup + MMR: context is **much smaller** before LLM is called, saving tokens and cost.
 
-**Problem 4: Memory never self-manages**
+**Problem 5: Memory never self-manages**
 Without hawk-bridge: all messages pile up in session history until context overflows.
 → hawk-capture auto-extracts → LanceDB. Unimportant → delete. Important → promote to long-term.
-
-**Problem 5: Redundant recall**
-Naive retrieval returns a flood of similar memories, wasting context space.
-→ MMR (Maximal Marginal Relevance) ensures both relevant AND diverse recall.
 
 ---
 
