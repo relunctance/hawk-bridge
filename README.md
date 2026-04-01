@@ -33,6 +33,39 @@ AI agents forget everything after each session. **hawk-bridge** bridges OpenClaw
 
 ---
 
+## 🦅 What problem does it solve?
+
+**Without hawk-bridge:** AI only knows what was said in the current session. It forgets everything after the session ends.
+
+**With hawk-bridge:** AI remembers across all sessions through persistent memory.
+
+| Scenario | Without | With |
+|----------|---------|------|
+| First time: "I'm a full-stack engineer" | ✅ Remembers | ✅ Remembers |
+| Second time: "What's my role?" | ❌ Forgets (not in current session) | ✅ Injected via hawk-recall |
+| Days later: "What did we decide?" | ❌ Forgets | ✅ Retrieved from LanceDB |
+| "Remember I like concise replies" | ❌ Forgets | ✅ Stored as importance=0.8 |
+
+### hawk-bridge solves 4 core problems:
+
+**Problem 1: Session context window limits**
+Context has a token limit (e.g. 32k). Long history crowds out important content.
+→ hawk-bridge compresses/archives, injects only the most relevant.
+
+**Problem 2: AI forgets across sessions**
+When a session ends, context disappears. Next conversation starts fresh.
+→ hawk-recall injects memories from LanceDB before every new session.
+
+**Problem 3: Memory never self-manages**
+Without hawk-bridge: all messages pile up in session history until context overflows.
+→ hawk-capture auto-extracts → LanceDB. Unimportant → delete. Important → promote to long-term.
+
+**Problem 4: Redundant recall**
+Naive retrieval returns a flood of similar memories, wasting context space.
+→ MMR (Maximal Marginal Relevance) ensures both relevant AND diverse recall.
+
+---
+
 ## ✨ Core Features
 
 | # | Feature | Description |

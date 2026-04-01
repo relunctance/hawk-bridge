@@ -33,6 +33,39 @@ AI Agent 每次会话结束就会遗忘一切。**hawk-bridge** 将 OpenClaw 的
 
 ---
 
+## 🦅 解决了什么问题？
+
+**没有它：** AI 只知道"这次对话"里说过什么，Session 结束就全忘了。
+
+**有了它：** AI 通过持久化记忆记住"所有对话"里说过的事。
+
+| 场景 | 没有 hawk-bridge | 有 hawk-bridge |
+|------|----------------|----------------|
+| 第一次说"我是全栈工程师" | ✅ 记住了 | ✅ 记住了 |
+| 第二次问"我是做什么的" | ❌ 忘了（不在当前Session） | ✅ 通过 hawk-recall 注入记忆 |
+| 三天后问上次项目的决策 | ❌ 忘了 | ✅ LanceDB 里有 |
+| 说"记住我喜欢简洁回复" | ❌ 忘了 | ✅ importance=0.8 存住了 |
+
+### hawk-bridge 解决 4 个核心问题
+
+**问题1：Session 有上下文窗口限制**
+Context 有 Token 上限（比如 32k）。Session 历史太长会挤掉其他重要内容。
+→ hawk-bridge 帮你压缩/归档，只注入最相关的。
+
+**问题2：AI 跨 Session 就忘**
+Session 结束，Context 消失。下次对话：AI 完全不记得上次说了什么。
+→ hawk-recall 每次启动前从 LanceDB 注入相关记忆。
+
+**问题3：记忆不会自动管理**
+没有 hawk-bridge：所有消息都堆在 Session 里，越积越多，最后 Context 溢出。
+→ hawk-capture 自动提取重要信息 → 存 LanceDB。不重要的自动 delete，重要的 promote 到 long 层。
+
+**问题4：召回重复内容**
+没有优化：召回一堆相似内容，浪费 Context 空间。
+→ MMR（最大边缘相关性）：既相关，又多样，节省 Context 空间。
+
+---
+
 ## ✨ 核心功能
 
 | # | 功能 | 说明 |
