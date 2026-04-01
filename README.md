@@ -1,6 +1,6 @@
 # 🦅 hawk-bridge
 
-> **Your AI still has "goldfish memory"?**
+> **Your OpenClaw still has "goldfish memory"?**
 >
 > Session ends → forgets everything. Cross-agent → memory lost. Context explodes → 💸 token bill skyrockets.
 > hawk-bridge gives your AI persistent memory: autoCapture + autoRecall, zero manual work.

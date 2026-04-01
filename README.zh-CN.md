@@ -1,6 +1,6 @@
 # 🦅 hawk-bridge
 
-> **你的 AI 还在当"金鱼"？**
+> **你的 OpenClaw 还在当"金鱼"？**
 >
 > Session 结束就忘、跨 Agent 就失忆、Context 爆了 Token 烧光——
 > hawk-bridge 给 AI 装上持久记忆，autoCapture + autoRecall，零手动，帮你省 Token 省钱。
