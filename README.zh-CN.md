@@ -46,7 +46,7 @@ AI Agent 每次会话结束就会遗忘一切。**hawk-bridge** 将 OpenClaw 的
 | **Session 结束就忘** | ❌ 新 Session 从零开始 | ✅ 跨 Session 记忆注入 |
 | **团队信息孤岛** | ❌ 每个 Agent 各自为战 | ✅ 共享 LanceDB，全员可读 |
 | **多 Agent 重复犯错** | ❌ Agent A 不知道 Agent B 的决策 | ✅ 记忆共享，不重蹈覆辙 |
-| **LLM 费用失控** | ❌ 无限制 Context 膨胀 | ✅ 压缩 + 去重 + MMR，Context 变小 |
+| **LLM 费用失控** | ❌ 无限制 Context 膨胀，<span style="color:red">**token太烧钱**</span> | ✅ 压缩 + 去重 + MMR，Context 变小 |
 | **Context 溢出 / 爆 Token** | ❌ Session 历史无限堆积直到崩溃 | ✅ 自动裁剪 + 4 层衰减 |
 | **重要决策被遗忘** | ❌ 只存在旧 Session 里，永远丢失 | ✅ 带 importance 存 LanceDB |
 | **重复记忆堆积** | ❌ 同样内容存了 N 份 | ✅ SimHash 去重，64位指纹 |

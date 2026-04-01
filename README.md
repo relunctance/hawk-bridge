@@ -46,7 +46,7 @@ AI agents forget everything after each session. **hawk-bridge** bridges OpenClaw
 | **AI forgets everything after session ends** | ❌ New session starts blank | ✅ Cross-session memory injection |
 | **Team context lost** | ❌ Each agent starts fresh | ✅ Shared LanceDB, all agents access same memories |
 | **Multiple agents repeat same mistakes** | ❌ Agent A doesn't know Agent B's decisions | ✅ Memory is shared, not siloed |
-| **LLM costs spiral out of control** | ❌ Unlimited context growth | ✅ Compression + dedup + MMR shrinks context |
+| **LLM costs spiral out of control** | ❌ Unlimited context growth, 💸 token bills explode | ✅ Compression + dedup + MMR shrinks context |
 | **Context overflow / token limit hit** | ❌ Session history grows until crash | ✅ Auto-pruning + 4-tier decay keeps context lean |
 | **Important decisions forgotten** | ❌ Only in old session, lost forever | ✅ Stored in LanceDB with importance scoring |
 | **Duplicate memories pile up** | ❌ Same info stored many times | ✅ SimHash dedup, 64-bit fingerprint |
