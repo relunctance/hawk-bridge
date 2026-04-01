@@ -333,6 +333,20 @@ export JINA_API_KEY=你的免费key
 # ④ 无配置 → BM25-only 模式（默认，关键词检索，无需任何依赖）
 ```
 
+### 🔑 获取免费 Jina API Key（推荐）
+
+Jina AI 提供**免费额度**，足够个人使用，无需信用卡：
+
+1. **注册账号**：访问 https://jina.ai/（支持 GitHub 登录）
+2. **获取 Key**：进入 https://jina.ai/settings/ → API Keys → Create API Key
+3. **复制 Key**：以 `jina_` 开头的字符串
+4. **配置**：
+```bash
+export JINA_API_KEY=jina_你的KEY
+```
+
+> **为什么用 Jina？** 免费额度大（每月 100 万 tokens），质量好，OpenAI 兼容格式，配置最简单。
+
 ### openclaw.json
 
 ```json

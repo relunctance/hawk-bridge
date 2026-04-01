@@ -334,6 +334,20 @@ export JINA_API_KEY=your_free_key
 # Just run without any environment variables
 ```
 
+### 🔑 Get Your Free Jina API Key (Recommended)
+
+Jina AI offers a **generous free tier** — no credit card required:
+
+1. **Register** at https://jina.ai/ (GitHub login supported)
+2. **Get Key**: Go to https://jina.ai/settings/ → API Keys → Create API Key
+3. **Copy Key**: starts with `jina_`
+4. **Configure**:
+```bash
+export JINA_API_KEY=jina_YOUR_KEY_HERE
+```
+
+> **Why Jina?** 1M tokens/month free, great quality, OpenAI-compatible, easiest to set up.
+
 ### openclaw.json
 
 ```json
