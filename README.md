@@ -66,6 +66,38 @@ Naive retrieval returns a flood of similar memories, wasting context space.
 
 ---
 
+## 🔄 hawk-bridge in the Session/Context Lifecycle
+
+```
+Session (persistent, on disk)
+    │
+    └─► History messages
+            │
+            ▼
+    Context Assembly (in memory)
+            │
+            ├──► hawk-recall injects memories ← from LanceDB
+            │
+            ├──► Skills descriptions
+            ├──► Tools list
+            └──► System Prompt
+                    │
+                    ▼
+                LLM Reply
+                    │
+                    ▼
+            hawk-capture extracts → stored in LanceDB
+```
+
+**How it works:**
+1. Every response → `hawk-capture` extracts meaningful content → saves to LanceDB
+2. Every new session → `hawk-recall` retrieves relevant memories → injects into context
+3. Old memories → auto-managed via 4-tier decay (Working → Short → Long → Archive)
+4. Duplicate memories → SimHash dedup prevents storage waste
+5. Redundant recall → MMR ensures diverse, non-repetitive injection
+
+---
+
 ## ✨ Core Features
 
 | # | Feature | Description |
