@@ -1,3 +1,30 @@
+---
+name: hawk-bridge
+description: 'OpenClaw Hook Bridge + context-hawk Python Memory Engine. Auto-capture memories on every reply, auto-inject relevant memories before each response. Supports 4-tier decay, hybrid vector + BM25 search, and Markdown import.'
+metadata:
+  {
+    "openclaw":
+      {
+        "emoji": "🦅",
+        "requires": { "anyBins": ["node", "python3.12"] },
+        "install": [
+          {
+            "id": "node-deps",
+            "kind": "npm",
+            "package": "@lancedb/lancedb",
+            "label": "Install LanceDB (npm)"
+          },
+          {
+            "id": "python-deps",
+            "kind": "pip",
+            "package": "lancedb openai rank-bm25",
+            "label": "Install Python deps"
+          }
+        ]
+      },
+  }
+---
+
 # hawk-bridge — OpenClaw 记忆系统 Skill
 
 > **OpenClaw Hook Bridge + context-hawk Python Memory Engine**

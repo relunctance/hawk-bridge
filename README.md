@@ -9,7 +9,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-brightgreen)](https://nodejs.org)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue)](https://python.org)
 
-**[English](README.md)** | [中文](README.zh-CN.md)
+**[English](README.md)** | [中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Français](README.fr.md) | [Español](README.es.md) | [Deutsch](README.de.md) | [Italiano](README.it.md) | [Русский](README.ru.md) | [Português (Brasil)](README.pt-BR.md)** |
 
 ---
 
@@ -82,11 +82,13 @@ AI agents forget everything after each session. **hawk-bridge** bridges OpenClaw
 ## 🚀 One-Command Install
 
 ```bash
-# Remote install (recommended — one line, fully automatic)
-bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)
+# Recommended: Install via ClawHub (easiest)
+clawhub install hawk-bridge
+# or
+openclaw skills install hawk-bridge
 
-# Then activate:
-openclaw plugins install /tmp/hawk-bridge
+# Alternative: Clone and install manually
+bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)
 ```
 
 That's it. The installer handles:

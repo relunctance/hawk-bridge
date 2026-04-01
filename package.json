@@ -13,6 +13,9 @@
     "typescript": "^6.0.2"
   },
   "openclaw": {
+    "compat": {
+      "pluginApi": "1.0"
+    },
     "extensions": [
       "./dist/index.js"
     ],

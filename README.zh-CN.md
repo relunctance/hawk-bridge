@@ -9,7 +9,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-brightgreen)](https://nodejs.org)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue)](https://python.org)
 
-**[English](README.md)** | 中文
+**[English](README.md)** | [中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Français](README.fr.md) | [Español](README.es.md) | [Deutsch](README.de.md) | [Italiano](README.it.md) | [Русский](README.ru.md) | [Português (Brasil)](README.pt-BR.md)**
 
 ---
 
@@ -82,11 +82,13 @@ AI Agent 每次会话结束就会遗忘一切。**hawk-bridge** 将 OpenClaw 的
 ## 🚀 一键安装
 
 ```bash
-# 远程安装（推荐 — 一行命令，全自动）
-bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)
+# 推荐：使用 ClawHub 安装（最简单）
+clawhub install hawk-bridge
+# 或
+openclaw skills install hawk-bridge
 
-# 然后激活插件：
-openclaw plugins install /tmp/hawk-bridge
+# 备选：克隆安装
+bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)
 ```
 
 安装脚本自动完成：
