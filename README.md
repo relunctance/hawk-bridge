@@ -44,7 +44,7 @@ AI agents forget everything after each session. **hawk-bridge** bridges OpenClaw
 | 5 | **4 Embedding Providers** | Ollama (local) / sentence-transformers (CPU) / Jina AI (free API) / OpenAI |
 | 6 | **Graceful Degradation** | Automatically falls back when API keys are unavailable |
 | 7 | **Context-Aware Injection** | BM25 rank score used directly when no embedder available |
-| 8 | **Seed Memory** | Pre-populated with team structure, norms, and project context |
+| 8 | **Seed Memory** | Pre-populated with generic AI agent team concepts — customize after install |
 | 9 | **Sub-100ms Recall** | LanceDB ANN index for instant retrieval |
 | 10 | **Cross-Platform Install** | One command, works on Ubuntu/Debian/Fedora/Arch/Alpine/openSUSE |
 
