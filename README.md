@@ -331,6 +331,8 @@ export USE_LOCAL_EMBEDDING=1
 
 # ③ Jina AI free tier (requires free API key from jina.ai)
 export JINA_API_KEY=your_free_key
+# ⚠️ Proxy required in China: set HTTP/SOCKS proxy below
+export HTTPS_PROXY=http://YOUR_PROXY_HOST:PORT
 
 # ④ BM25-only (default — no config needed, keyword search only)
 # Just run without any environment variables
@@ -344,11 +346,30 @@ Jina AI offers a **generous free tier** — no credit card required:
 2. **Get Key**: Go to https://jina.ai/settings/ → API Keys → Create API Key
 3. **Copy Key**: starts with `jina_`
 4. **Configure**:
-```bash
-export JINA_API_KEY=jina_YOUR_KEY_HERE
+
+> ⚠️ **Important: Jina AI requires a proxy in China (api.jina.ai is blocked).** Set `HTTPS_PROXY` to your proxy URL (e.g. `http://192.168.1.109:10808`).
+
+### ~/.hawk/config.json (Recommended for Jina)
+
+For best results with Jina, create `~/.hawk/config.json`:
+
+```json
+{
+  "openai_api_key": "jina_YOUR_KEY_HERE",
+  "embedding_model": "jina-embeddings-v3",
+  "embedding_dimensions": 1024,
+  "base_url": "https://api.jina.ai/v1",
+  "proxy": "http://YOUR_PROXY_HOST:PORT"
+}
 ```
 
-> **Why Jina?** 1M tokens/month free, great quality, OpenAI-compatible, easiest to set up.
+| Field | Description |
+|-------|-------------|
+| `openai_api_key` | Your Jina API key (starts with `jina_`) |
+| `embedding_model` | Model name: `jina-embeddings-v3` (recommended) |
+| `embedding_dimensions` | Vector size: 1024 for jina-embeddings-v3 |
+| `base_url` | Must be `https://api.jina.ai/v1` |
+| `proxy` | HTTP proxy URL (required in China) |
 
 ### openclaw.json
 

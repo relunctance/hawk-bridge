@@ -331,6 +331,8 @@ export USE_LOCAL_EMBEDDING=1
 
 # ③ Jina AI 免费额度（需从 jina.ai 申请免费 Key）
 export JINA_API_KEY=你的免费key
+# ⚠️ 中国大陆需要代理：设置 HTTP/SOCKS 代理
+export HTTPS_PROXY=http://你的代理地址:端口
 
 # ④ 无配置 → BM25-only 模式（默认，关键词检索，无需任何依赖）
 ```
@@ -342,12 +344,31 @@ Jina AI 提供**免费额度**，足够个人使用，无需信用卡：
 1. **注册账号**：访问 https://jina.ai/（支持 GitHub 登录）
 2. **获取 Key**：进入 https://jina.ai/settings/ → API Keys → Create API Key
 3. **复制 Key**：以 `jina_` 开头的字符串
-4. **配置**：
-```bash
-export JINA_API_KEY=jina_你的KEY
+4. **配置**
+
+> ⚠️ **重要：中国大陆需要代理才能访问 Jina API（api.jina.ai 被墙）。** 设置 `HTTPS_PROXY` 为你的代理地址（如 `http://192.168.1.109:10808`）。
+
+### ~/.hawk/config.json（推荐配置方式）
+
+推荐创建 `~/.hawk/config.json`：
+
+```json
+{
+  "openai_api_key": "jina_你的KEY",
+  "embedding_model": "jina-embeddings-v3",
+  "embedding_dimensions": 1024,
+  "base_url": "https://api.jina.ai/v1",
+  "proxy": "http://你的代理地址:端口"
+}
 ```
 
-> **为什么用 Jina？** 免费额度大（每月 100 万 tokens），质量好，OpenAI 兼容格式，配置最简单。
+| 字段 | 说明 |
+|------|------|
+| `openai_api_key` | 你的 Jina API Key（以 `jina_` 开头） |
+| `embedding_model` | 模型名：`jina-embeddings-v3`（推荐） |
+| `embedding_dimensions` | 向量维度：1024（jina-embeddings-v3） |
+| `base_url` | 固定填 `https://api.jina.ai/v1` |
+| `proxy` | HTTP 代理地址（**中国大陆必填**） |
 
 ### openclaw.json
 
