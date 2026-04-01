@@ -41,7 +41,7 @@ AI Agent 每次会话结束就会遗忘一切。**hawk-bridge** 将 OpenClaw 的
 | 2 | **Auto-Recall Hook** | `agent:bootstrap` → hawk 在首次回复前注入相关记忆 |
 | 3 | **混合检索** | BM25 + 向量搜索 + RRF 融合，零 API Key 也能跑 |
 | 4 | **零配置降级** | BM25-only 模式开箱即用，无需任何 API Key |
-| 5 | **4 种向量 Provider** | Ollama（本地）/ sentence-transformers（CPU）/ Jina AI（免费API）/ OpenAI |
+| 5 | **4 种向量 Provider** | sentence-transformers（默认，CPU本地）/ Ollama（本地GPU）/ Jina AI（免费API）/ OpenAI |
 | 6 | **优雅降级** | API Key 不可用时自动切换到备用方案 |
 | 7 | **无 Embedder 时仍可检索** | 直接用 BM25 分数作为排序依据 |
 | 8 | **种子记忆** | 预置团队结构、规范、项目背景等 11 条初始记忆 |
@@ -367,18 +367,18 @@ openclaw plugins install /tmp/hawk-bridge
 安装完成后，通过环境变量选择向量模式：
 
 ```bash
-# ① Ollama 本地（推荐，完全免费，支持 GPU）
-export OLLAMA_BASE_URL=http://localhost:11434
+# ① 默认：sentence-transformers（本地 CPU，无需 API Key，开箱即用）
+# 无需任何环境变量！
 
-# ② sentence-transformers CPU 本地（完全免费，无需 GPU，约 90MB 模型）
-export USE_LOCAL_EMBEDDING=1
+# ② Ollama 本地 GPU（推荐，完全免费）
+export OLLAMA_BASE_URL=http://localhost:11434
 
 # ③ Jina AI 免费额度（需从 jina.ai 申请免费 Key）
 export JINA_API_KEY=你的免费key
 # ⚠️ 中国大陆需要代理：设置 HTTP/SOCKS 代理
 export HTTPS_PROXY=http://你的代理地址:端口
 
-# ④ 无配置 → BM25-only 模式（默认，关键词检索，无需任何依赖）
+# ④ 无配置 → BM25-only 模式（纯关键词检索，无需任何依赖）
 ```
 
 ### 🔑 获取免费 Jina API Key（推荐）

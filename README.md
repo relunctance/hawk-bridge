@@ -476,19 +476,19 @@ openclaw plugins install /tmp/hawk-bridge
 After install, choose your embedding mode — all via environment variables:
 
 ```bash
-# ① Ollama local (recommended — free, no API key, GPU-accelerated)
-export OLLAMA_BASE_URL=http://localhost:11434
+# ① Default: sentence-transformers (local CPU, no API key needed — works out of the box)
+# No environment variables needed!
 
-# ② sentence-transformers CPU (free, no GPU needed, ~90MB model)
-export USE_LOCAL_EMBEDDING=1
+# ② Ollama local GPU (recommended for quality — free, no API key)
+export OLLAMA_BASE_URL=http://localhost:11434
 
 # ③ Jina AI free tier (requires free API key from jina.ai)
 export JINA_API_KEY=your_free_key
 # ⚠️ Proxy required in China: set HTTP/SOCKS proxy below
 export HTTPS_PROXY=http://YOUR_PROXY_HOST:PORT
 
-# ④ BM25-only (default — no config needed, keyword search only)
-# Just run without any environment variables
+# ④ BM25-only fallback (no embedding needed — keyword search only)
+# No environment variables needed
 ```
 
 ### 🔑 Get Your Free Jina API Key (Recommended)

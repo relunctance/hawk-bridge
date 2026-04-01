@@ -343,17 +343,18 @@ function getDefaultModelId() {
 }
 var DEFAULT_CONFIG = {
   embedding: {
-    provider: "openclaw",
-    // New: uses openclaw's configured provider
+    provider: "sentence-transformers",
+    // Local CPU, no API key needed
     apiKey: "",
-    model: "text-embedding-3-small",
+    model: "all-MiniLM-L6-v2",
     baseURL: "",
-    dimensions: 1536
+    dimensions: 384
   },
   llm: {
-    provider: "openclaw",
+    provider: "groq",
+    // Default: free groq Llama-3, no API key needed
     apiKey: "",
-    model: "",
+    model: "llama-3.3-70b-versatile",
     baseURL: ""
   },
   recall: {

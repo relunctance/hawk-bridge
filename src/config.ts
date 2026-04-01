@@ -63,16 +63,16 @@ export function getDefaultModelId(): string {
 
 const DEFAULT_CONFIG: HawkConfig = {
   embedding: {
-    provider: 'openclaw', // New: uses openclaw's configured provider
+    provider: 'sentence-transformers', // Local CPU, no API key needed
     apiKey: '',
-    model: 'text-embedding-3-small',
+    model: 'all-MiniLM-L6-v2',
     baseURL: '',
-    dimensions: 1536,
+    dimensions: 384,
   },
   llm: {
-    provider: 'openclaw',
+    provider: 'groq',  // Default: free groq Llama-3, no API key needed
     apiKey: '',
-    model: '',
+    model: 'llama-3.3-70b-versatile',
     baseURL: '',
   },
   recall: {
@@ -141,5 +141,6 @@ export async function getConfig(): Promise<HawkConfig> {
 }
 
 export function hasEmbeddingProvider(): boolean {
-  return !!(process.env.MINIMAX_API_KEY || process.env.OLLAMA_BASE_URL || process.env.JINA_API_KEY);
+  // sentence-transformers always available (local CPU, no API key needed)
+  return true;
 }

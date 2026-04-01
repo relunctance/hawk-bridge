@@ -1,7 +1,7 @@
 {
   "id": "hawk-bridge",
   "name": "hawk-bridge",
-  "description": "AutoCapture + AutoRecall bridge to hawk Python memory system. Zero-config with Ollama defaults.",
+  "description": "AutoCapture + AutoRecall bridge to hawk Python memory system. Zero-config defaults: sentence-transformers (local CPU, no API key) + groq LLM (free).",
   "version": "1.1.0",
   "configSchema": {
     "type": "object",
@@ -30,18 +30,18 @@
         "properties": {
           "provider": {
             "type": "string",
-            "enum": ["minimax", "openclaw", "ollama", "openai", "jina", "cohere"],
-            "default": "minimax",
-            "description": "minimax=use MINIMAX_API_KEY (default), openclaw=auto, ollama=local free, openai=paid, jina/cohere=free tier"
+            "enum": ["sentence-transformers", "ollama", "openai", "jina", "cohere"],
+            "default": "sentence-transformers",
+            "description": "sentence-transformers=local CPU (default, no API key), ollama=local GPU, openai=paid, jina/cohere=free cloud tier"
           },
           "apiKey": { "type": "string", "description": "API key (not needed for ollama)" },
           "model": {
             "type": "string",
             "description": "Embedding model name",
-            "default": "nomic-embed-text (ollama) | text-embedding-3-small (openai) | jina-embeddings-v5-small (jina)"
+            "default": "all-MiniLM-L6-v2 (sentence-transformers, 384dim) | nomic-embed-text (ollama) | text-embedding-3-small (openai) | jina-embeddings-v5-small (jina)"
           },
           "baseURL": { "type": "string", "description": "Custom API base URL (e.g. http://localhost:11434 for ollama)" },
-          "dimensions": { "type": "number", "default": 768 }
+          "dimensions": { "type": "number", "default": 384 }
         }
       },
       "llm": {
