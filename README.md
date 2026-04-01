@@ -41,17 +41,17 @@ AI agents forget everything after each session. **hawk-bridge** bridges OpenClaw
 
 ### Pain Points hawk-bridge Solves
 
-| Pain Point | Without hawk-bridge | With hawk-bridge |
-|-----------|-------------------|-----------------|
-| **AI forgets everything after session ends** | New session starts blank | Cross-session memory injection |
-| **Team context lost** | Each agent starts fresh | Shared LanceDB, all agents access same memories |
-| **Multiple agents repeat same mistakes** | Agent A doesn't know Agent B's decisions | Memory is shared, not siloed |
-| **LLM costs spiral out of control** | Unlimited context growth | Compression + dedup + MMR shrinks context |
-| **Context overflow / token limit hit** | Session history keeps growing until crash | Auto-pruning + 4-tier decay keeps context lean |
-| **Important decisions forgotten** | Only in old session, lost forever | Stored in LanceDB with importance scoring |
-| **Duplicate memories pile up** | Same info stored many times | SimHash dedup, 64-bit fingerprint |
-| **Repetitive recall** | "Tell me about X" → 5 similar memories, all injected | MMR ensures diverse, non-repeating injection |
-| **No self-improving memory** | Nothing gets better over time | importance + access_count tracking → smart promotion |
+| Pain Point | ❌ Without | ✅ With hawk-bridge |
+|-----------|-----------|-------------------|
+| **AI forgets everything after session ends** | ❌ New session starts blank | ✅ Cross-session memory injection |
+| **Team context lost** | ❌ Each agent starts fresh | ✅ Shared LanceDB, all agents access same memories |
+| **Multiple agents repeat same mistakes** | ❌ Agent A doesn't know Agent B's decisions | ✅ Memory is shared, not siloed |
+| **LLM costs spiral out of control** | ❌ Unlimited context growth | ✅ Compression + dedup + MMR shrinks context |
+| **Context overflow / token limit hit** | ❌ Session history grows until crash | ✅ Auto-pruning + 4-tier decay keeps context lean |
+| **Important decisions forgotten** | ❌ Only in old session, lost forever | ✅ Stored in LanceDB with importance scoring |
+| **Duplicate memories pile up** | ❌ Same info stored many times | ✅ SimHash dedup, 64-bit fingerprint |
+| **Repetitive recall** | ❌ "Tell me about X" → 5 similar memories injected | ✅ MMR ensures diverse, non-repeating injection |
+| **No self-improving memory** | ❌ Nothing gets better over time | ✅ importance + access_count tracking → smart promotion |
 
 ### hawk-bridge solves 5 core problems:
 
