@@ -151,7 +151,8 @@ openclaw plugins install /tmp/hawk-bridge
 
 如果你不想用一键脚本，可以手动逐步安装：
 
-### Ubuntu / Debian
+<details>
+<summary><b>Ubuntu / Debian</b></summary>
 
 ```bash
 # 1. 系统依赖
@@ -182,7 +183,10 @@ node dist/seed.js
 openclaw plugins install /tmp/hawk-bridge
 ```
 
-### Fedora / RHEL / CentOS / Rocky / AlmaLinux
+</details>
+
+<details>
+<summary><b>Fedora / RHEL / CentOS / Rocky / AlmaLinux</b></summary>
 
 ```bash
 # 1. 系统依赖
@@ -213,7 +217,10 @@ node dist/seed.js
 openclaw plugins install /tmp/hawk-bridge
 ```
 
-### Arch / Manjaro / EndeavourOS
+</details>
+
+<details>
+<summary><b>Arch / Manjaro / EndeavourOS</b></summary>
 
 ```bash
 # 1. 系统依赖
@@ -244,7 +251,10 @@ node dist/seed.js
 openclaw plugins install /tmp/hawk-bridge
 ```
 
-### Alpine
+</details>
+
+<details>
+<summary><b>Alpine</b></summary>
 
 ```bash
 # 1. 系统依赖
@@ -275,7 +285,10 @@ node dist/seed.js
 openclaw plugins install /tmp/hawk-bridge
 ```
 
-### openSUSE / SUSE Linux Enterprise
+</details>
+
+<details>
+<summary><b>openSUSE / SUSE Linux Enterprise</b></summary>
 
 ```bash
 # 1. 系统依赖
@@ -306,7 +319,10 @@ node dist/seed.js
 openclaw plugins install /tmp/hawk-bridge
 ```
 
-### macOS
+</details>
+
+<details>
+<summary><b>macOS</b></summary>
 
 ```bash
 # 1. 安装 Homebrew（如果没有）
@@ -339,6 +355,8 @@ node dist/seed.js
 # 9. 激活插件
 openclaw plugins install /tmp/hawk-bridge
 ```
+
+</details>
 
 > **注意**：Linux 上需要 `--break-system-packages` 来绕过 PEP 668（禁止系统 Python 安装包）。macOS 不需要此参数。Ollama 安装脚本在 macOS 上会自动使用 Homebrew。
 
