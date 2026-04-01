@@ -81,15 +81,41 @@ AI Agent 每次会话结束就会遗忘一切。**hawk-bridge** 将 OpenClaw 的
 
 ## 🚀 一键安装
 
-```bash
-# 推荐：使用 ClawHub 安装（最简单）
-clawhub install hawk-bridge
-# 或
-openclaw skills install hawk-bridge
+选择最适合你的方式：
 
-# 备选：克隆安装
+### 方式一 — ClawHub（推荐）
+```bash
+# 最简单 — 一条命令搞定
+clawhub install hawk-bridge
+# 或通过 OpenClaw
+openclaw skills install hawk-bridge
+```
+> ✅ 自动更新、易管理、无需手动配置
+
+### 方式二 — 克隆 + 安装脚本
+```bash
+# 自动下载并运行安装脚本
 bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)
 ```
+> ✅ 支持所有 Linux 发行版，全自动
+
+### 方式三 — 手动安装
+```bash
+git clone https://github.com/relunctance/hawk-bridge.git /tmp/hawk-bridge
+cd /tmp/hawk-bridge
+npm install && npm run build
+# 然后添加到 openclaw.json：
+openclaw plugins install /tmp/hawk-bridge
+```
+> ✅ 完全可控，适合高级用户
+
+### 方式四 — OpenClaw 图形界面
+1. 打开 OpenClaw 面板 → Skills → 浏览
+2. 搜索 "hawk-bridge"
+3. 点击安装
+> ✅ 无需命令行
+
+---
 
 安装脚本自动完成：
 

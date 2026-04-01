@@ -81,15 +81,41 @@ AI agents forget everything after each session. **hawk-bridge** bridges OpenClaw
 
 ## 🚀 One-Command Install
 
-```bash
-# Recommended: Install via ClawHub (easiest)
-clawhub install hawk-bridge
-# or
-openclaw skills install hawk-bridge
+Choose the method that works best for you:
 
-# Alternative: Clone and install manually
+### Option A — ClawHub (Recommended)
+```bash
+# Most convenient — one command
+clawhub install hawk-bridge
+# or via OpenClaw
+openclaw skills install hawk-bridge
+```
+> ✅ Auto-updates, easy to manage, no manual setup
+
+### Option B — Clone & Install Script
+```bash
+# Downloads and runs the install script automatically
 bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)
 ```
+> ✅ Works on all Linux distros, fully automatic
+
+### Option C — Manual Install
+```bash
+git clone https://github.com/relunctance/hawk-bridge.git /tmp/hawk-bridge
+cd /tmp/hawk-bridge
+npm install && npm run build
+# Then add to openclaw.json:
+openclaw plugins install /tmp/hawk-bridge
+```
+> ✅ Full control, for advanced users
+
+### Option D — OpenClaw UI
+1. Open OpenClaw dashboard → Skills → Browse
+2. Search for "hawk-bridge"
+3. Click Install
+> ✅ No command line needed
+
+---
 
 That's it. The installer handles:
 
