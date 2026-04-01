@@ -1,8 +1,9 @@
 # 🦅 hawk-bridge
 
-> **OpenClaw Hook 桥接器 → hawk Python 记忆系统**
+> **你的 AI 还在当"金鱼"？**
 >
-> *给任意 AI Agent 装上记忆 — autoCapture（自动提取）+ autoRecall（自动注入），零手动操作*
+> Session 结束就忘、跨 Agent 就失忆、Context 爆了 Token 烧光——
+> hawk-bridge 给 AI 装上持久记忆，autoCapture + autoRecall，零手动，帮你省 Token 省钱。
 
 [![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![OpenClaw 兼容](https://img.shields.io/badge/OpenClaw-2026.3%2B-brightgreen)](https://github.com/openclaw/openclaw)

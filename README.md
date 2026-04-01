@@ -1,8 +1,9 @@
 # 🦅 hawk-bridge
 
-> **OpenClaw Hook Bridge → hawk Python Memory System**
+> **Your AI still has "goldfish memory"?**
 >
-> *给任意 AI Agent 装上记忆 — autoCapture（自动提取）+ autoRecall（自动注入），零手动操作*
+> Session ends → forgets everything. Cross-agent → memory lost. Context explodes → 💸 token bill skyrockets.
+> hawk-bridge gives your AI persistent memory: autoCapture + autoRecall, zero manual work.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![OpenClaw Compatible](https://img.shields.io/badge/OpenClaw-2026.3%2B-brightgreen)](https://github.com/openclaw/openclaw)
