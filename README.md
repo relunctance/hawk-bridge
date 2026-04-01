@@ -46,7 +46,7 @@ AI agents forget everything after each session. **hawk-bridge** bridges OpenClaw
 | Days later: "What did we decide?" | ❌ Forgets | ✅ Retrieved from LanceDB |
 | "Remember I like concise replies" | ❌ Forgets | ✅ Stored as importance=0.8 |
 
-### hawk-bridge solves 4 core problems:
+### hawk-bridge solves 5 core problems:
 
 **Problem 1: Session context window limits**
 Context has a token limit (e.g. 32k). Long history crowds out important content.
@@ -56,11 +56,15 @@ Context has a token limit (e.g. 32k). Long history crowds out important content.
 When a session ends, context disappears. Next conversation starts fresh.
 → hawk-recall injects memories from LanceDB before every new session.
 
-**Problem 3: Memory never self-manages**
+**Problem 3: Context grows too large before sending to LLM**
+Recall without optimization = large, repetitive context.
+→ After compression + SimHash dedup + MMR: context is **much smaller** before LLM is called, saving tokens and cost.
+
+**Problem 4: Memory never self-manages**
 Without hawk-bridge: all messages pile up in session history until context overflows.
 → hawk-capture auto-extracts → LanceDB. Unimportant → delete. Important → promote to long-term.
 
-**Problem 4: Redundant recall**
+**Problem 5: Redundant recall**
 Naive retrieval returns a flood of similar memories, wasting context space.
 → MMR (Maximal Marginal Relevance) ensures both relevant AND diverse recall.
 
@@ -112,6 +116,8 @@ Session (persistent, on disk)
 | 8 | **Seed Memory** | Pre-populated with generic AI agent team concepts — customize after install |
 | 9 | **Sub-100ms Recall** | LanceDB ANN index for instant retrieval |
 | 10 | **Cross-Platform Install** | One command, works on Ubuntu/Debian/Fedora/Arch/Alpine/openSUSE |
+| 11 | **SimHash Auto-Dedup** | 64-bit fingerprint dedup — prevents duplicate memories from being stored |
+| 12 | **MMR Diverse Recall** | Maximal Marginal Relevance — relevant AND diverse, reduces context size |
 
 ---
 
