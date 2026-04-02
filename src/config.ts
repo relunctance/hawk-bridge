@@ -92,12 +92,13 @@ const DEFAULT_CONFIG: HawkConfig = {
   },
 };
 
-let cachedConfig: HawkConfig | null = null;
+// Promise-based cache prevents concurrent initialization
+let configPromise: Promise<HawkConfig> | null = null;
 
 export async function getConfig(): Promise<HawkConfig> {
-  if (cachedConfig) return cachedConfig;
-
-  const config: HawkConfig = { ...DEFAULT_CONFIG };
+  if (!configPromise) {
+    configPromise = (async () => {
+      const config: HawkConfig = { ...DEFAULT_CONFIG };
 
   // Read MINIMAX_API_KEY from env (user provided)
   const minimaxApiKey = process.env.MINIMAX_API_KEY || '';
@@ -136,8 +137,10 @@ export async function getConfig(): Promise<HawkConfig> {
     config.embedding.model = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
   }
 
-  cachedConfig = config;
-  return config;
+      return config;
+    })();
+  }
+  return configPromise;
 }
 
 export function hasEmbeddingProvider(): boolean {

@@ -8,19 +8,23 @@ import { Embedder, formatRecallForContext } from '../../embeddings.js';
 import { HybridRetriever } from '../../retriever.js';
 import { getConfig } from '../../config.js';
 
-let retriever: HybridRetriever | null = null;
+// Promise-based cache prevents concurrent initialization (race condition fix)
+let retrieverPromise: Promise<HybridRetriever> | null = null;
 
 async function getRetriever(): Promise<HybridRetriever> {
-  if (!retriever) {
-    const config = await getConfig();
-    const db = new HawkDB();
-    await db.init();
-    const embedder = new Embedder(config.embedding);
-    retriever = new HybridRetriever(db, embedder);
-    await retriever.buildBm25Index();
-    await retriever.buildNoisePrototypes();
+  if (!retrieverPromise) {
+    retrieverPromise = (async () => {
+      const config = await getConfig();
+      const db = new HawkDB();
+      await db.init();
+      const embedder = new Embedder(config.embedding);
+      const r = new HybridRetriever(db, embedder);
+      await r.buildBm25Index();
+      await r.buildNoisePrototypes();
+      return r;
+    })();
   }
-  return retriever;
+  return retrieverPromise;
 }
 
 const recallHandler = async (event: HookEvent) => {
@@ -34,7 +38,7 @@ const recallHandler = async (event: HookEvent) => {
     if (!sessionEntry) return;
 
     const queryText = extractQueryFromSession(sessionEntry);
-    if (!queryText || queryText.length < 10) return;
+    if (!queryText || queryText.trim().length < 2) return;
 
     const retrieverInstance = await getRetriever();
     const memories = await retrieverInstance.search(queryText, topK);

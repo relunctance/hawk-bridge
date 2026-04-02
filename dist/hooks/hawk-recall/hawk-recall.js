@@ -172,6 +172,17 @@ var HawkDB = class {
 };
 
 // src/embeddings.ts
+var FETCH_TIMEOUT_MS = 15e3;
+async function fetchWithTimeout(url, init) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const resp = await fetchWithTimeout(url, { ...init, signal: controller.signal });
+    return resp;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 var Embedder = class {
   config;
   openai;
@@ -202,7 +213,7 @@ var Embedder = class {
   async embedOpenClaw(texts) {
     const baseURL = this.config.baseURL || "https://api.minimaxi.com/v1";
     const apiKey = this.config.apiKey || process.env.MINIMAX_API_KEY || "";
-    const resp = await fetch(`${baseURL}/embeddings`, {
+    const resp = await fetchWithTimeout(`${baseURL}/embeddings`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -227,7 +238,10 @@ var Embedder = class {
   // ---- OpenAI ----
   async embedOpenAI(texts) {
     const { OpenAI } = await import("openai");
-    const client = new OpenAI({ apiKey: this.config.apiKey || process.env.OPENAI_API_KEY });
+    const client = new OpenAI({
+      apiKey: this.config.apiKey || process.env.OPENAI_API_KEY,
+      timeout: FETCH_TIMEOUT_MS
+    });
     const model = this.config.model || "text-embedding-3-small";
     const resp = await client.embeddings.create({ model, input: texts });
     return resp.data.map((item) => item.embedding);
@@ -236,7 +250,7 @@ var Embedder = class {
   async embedJina(texts) {
     const apiKey = this.config.apiKey || process.env.JINA_API_KEY || "";
     const model = this.config.model || "jina-embeddings-v5-small";
-    const resp = await fetch("https://api.jina.ai/v1/embeddings", {
+    const resp = await fetchWithTimeout("https://api.jina.ai/v1/embeddings", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -251,7 +265,7 @@ var Embedder = class {
   // ---- Cohere (free tier) ----
   async embedCohere(texts) {
     const apiKey = this.config.apiKey || process.env.COHERE_API_KEY || "";
-    const resp = await fetch("https://api.cohere.ai/v1/embed", {
+    const resp = await fetchWithTimeout("https://api.cohere.ai/v1/embed", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -272,7 +286,7 @@ var Embedder = class {
     const baseURL = (this.config.baseURL || process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
     const model = this.config.model || process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
     const results = [];
-    const resp = await fetch(`${baseURL}/api/embed`, {
+    const resp = await fetchWithTimeout(`${baseURL}/api/embed`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, input: texts })
@@ -360,40 +374,43 @@ var DEFAULT_CONFIG = {
     hawkDir: "~/.openclaw/hawk"
   }
 };
-var cachedConfig = null;
+var configPromise = null;
 async function getConfig() {
-  if (cachedConfig) return cachedConfig;
-  const config = { ...DEFAULT_CONFIG };
-  const minimaxApiKey = process.env.MINIMAX_API_KEY || "";
-  const provider = getConfiguredProvider("minimax");
-  if (provider) {
-    config.llm.baseURL = provider.baseUrl || "https://api.minimaxi.com/anthropic";
-    config.llm.model = getDefaultModelId() || "MiniMax-M2.7";
-    config.llm.provider = "openclaw";
+  if (!configPromise) {
+    configPromise = (async () => {
+      const config = { ...DEFAULT_CONFIG };
+      const minimaxApiKey = process.env.MINIMAX_API_KEY || "";
+      const provider = getConfiguredProvider("minimax");
+      if (provider) {
+        config.llm.baseURL = provider.baseUrl || "https://api.minimaxi.com/anthropic";
+        config.llm.model = getDefaultModelId() || "MiniMax-M2.7";
+        config.llm.provider = "openclaw";
+      }
+      if (minimaxApiKey) {
+        config.embedding.provider = "minimax";
+        config.embedding.apiKey = minimaxApiKey;
+        config.embedding.baseURL = "https://api.minimaxi.com/v1";
+        config.embedding.model = "embedding-2-normal";
+        config.embedding.dimensions = 1024;
+        config.llm.apiKey = minimaxApiKey;
+        config.llm.provider = "minimax";
+      }
+      if (process.env.JINA_API_KEY) {
+        config.embedding.provider = "jina";
+        config.embedding.apiKey = process.env.JINA_API_KEY;
+      }
+      if (process.env.OLLAMA_BASE_URL) {
+        if (minimaxApiKey && config.embedding.provider === "minimax") {
+          console.warn("[hawk-bridge] OLLAMA_BASE_URL set, overriding MINIMAX_API_KEY embedding config");
+        }
+        config.embedding.provider = "ollama";
+        config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
+        config.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
+      }
+      return config;
+    })();
   }
-  if (minimaxApiKey) {
-    config.embedding.provider = "minimax";
-    config.embedding.apiKey = minimaxApiKey;
-    config.embedding.baseURL = "https://api.minimaxi.com/v1";
-    config.embedding.model = "embedding-2-normal";
-    config.embedding.dimensions = 1024;
-    config.llm.apiKey = minimaxApiKey;
-    config.llm.provider = "minimax";
-  }
-  if (process.env.JINA_API_KEY) {
-    config.embedding.provider = "jina";
-    config.embedding.apiKey = process.env.JINA_API_KEY;
-  }
-  if (process.env.OLLAMA_BASE_URL) {
-    if (minimaxApiKey && config.embedding.provider === "minimax") {
-      console.warn("[hawk-bridge] OLLAMA_BASE_URL set, overriding MINIMAX_API_KEY embedding config");
-    }
-    config.embedding.provider = "ollama";
-    config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
-    config.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
-  }
-  cachedConfig = config;
-  return config;
+  return configPromise;
 }
 function hasEmbeddingProvider() {
   return !!(process.env.MINIMAX_API_KEY || process.env.JINA_API_KEY || process.env.OLLAMA_BASE_URL || process.env.OPENAI_API_KEY || getConfiguredProvider("minimax"));
@@ -619,18 +636,21 @@ function cosineSimilarity(a, b) {
 }
 
 // src/hooks/hawk-recall/handler.ts
-var retriever = null;
+var retrieverPromise = null;
 async function getRetriever() {
-  if (!retriever) {
-    const config = await getConfig();
-    const db = new HawkDB();
-    await db.init();
-    const embedder = new Embedder(config.embedding);
-    retriever = new HybridRetriever(db, embedder);
-    await retriever.buildBm25Index();
-    await retriever.buildNoisePrototypes();
+  if (!retrieverPromise) {
+    retrieverPromise = (async () => {
+      const config = await getConfig();
+      const db = new HawkDB();
+      await db.init();
+      const embedder = new Embedder(config.embedding);
+      const r = new HybridRetriever(db, embedder);
+      await r.buildBm25Index();
+      await r.buildNoisePrototypes();
+      return r;
+    })();
   }
-  return retriever;
+  return retrieverPromise;
 }
 var recallHandler = async (event) => {
   if (event.type !== "agent" || event.action !== "bootstrap") return;
@@ -640,7 +660,7 @@ var recallHandler = async (event) => {
     const sessionEntry = event.context?.sessionEntry;
     if (!sessionEntry) return;
     const queryText = extractQueryFromSession(sessionEntry);
-    if (!queryText || queryText.length < 10) return;
+    if (!queryText || queryText.trim().length < 2) return;
     const retrieverInstance = await getRetriever();
     const memories = await retrieverInstance.search(queryText, topK);
     if (!memories.length) return;

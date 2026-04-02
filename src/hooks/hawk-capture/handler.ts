@@ -45,7 +45,7 @@ const captureHandler = async (event: HookEvent) => {
     // Build conversation text from recent messages
     // We use the outbound content as the trigger for extraction
     const content = event.context?.content;
-    if (!content || content.length < 50) return;
+    if (typeof content !== 'string' || content.length < 50) return;
 
     // Call Python extractor via subprocess
     const memories = await callExtractor(content, config);
@@ -97,7 +97,7 @@ const captureHandler = async (event: HookEvent) => {
 };
 
 function callExtractor(conversationText: string, config: any): Promise<any[]> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const apiKey = config.embedding.apiKey || process.env.OPENAI_API_KEY || process.env.MINIMAX_API_KEY || '';
     const model = config.llm?.model || process.env.MINIMAX_MODEL || 'MiniMax-M2.7';
     const provider = config.llm?.provider || 'openclaw';
@@ -106,19 +106,23 @@ function callExtractor(conversationText: string, config: any): Promise<any[]> {
     const proc = spawn(
       config.python.pythonPath,
       ['-c', buildExtractorScript(conversationText, apiKey, model, provider, baseURL)],
-      { timeout: 30000 }
     );
 
     let stdout = '';
-    let stderr = '';
+
+    // Auto-kill subprocess after timeout (Node.js spawn does NOT auto-kill on timeout)
+    const timer = setTimeout(() => {
+      console.warn('[hawk-capture] subprocess timeout, killing...');
+      proc.kill('SIGTERM');
+    }, 30000);
 
     proc.stdout.on('data', (d) => { stdout += d.toString(); });
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
     proc.on('close', (code) => {
+      clearTimeout(timer);
       if (code !== 0) {
-        console.error('[hawk-capture] extractor error:', stderr);
-        resolve([]); // graceful fallback
+        console.error('[hawk-capture] extractor error:', code);
+        resolve([]);
         return;
       }
       try {
@@ -126,26 +130,43 @@ function callExtractor(conversationText: string, config: any): Promise<any[]> {
         if (Array.isArray(result)) {
           resolve(result);
         } else {
+          console.warn('[hawk-capture] unexpected extractor output, discarding');
           resolve([]);
         }
       } catch {
+        console.warn('[hawk-capture] JSON parse failed, discarding output');
         resolve([]);
       }
     });
 
-    proc.on('error', () => resolve([]));
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      console.error('[hawk-capture] subprocess error:', err.message);
+      resolve([]);
+    });
   });
 }
 
 function buildExtractorScript(conversation: string, apiKey: string, model: string, provider: string, baseURL: string): string {
-  // Import from context-hawk workspace (canonical Python source)
-  const escaped = conversation.replace(/'/g, "'\\''").replace(/\n/g, '\\n');
+  // Escape all variables injected into Python single-quoted strings.
+  // Use a safe JSON-based approach: JSON.stringify forces double-quote context
+  // and prevents any shell/Python injection.
+  const safeConv = JSON.stringify(conversation);
+  const safeKey = JSON.stringify(apiKey);
+  const safeModel = JSON.stringify(model);
+  const safeProvider = JSON.stringify(provider);
+  const safeBaseURL = JSON.stringify(baseURL);
   return `
 import sys, json, os
 sys.path.insert(0, os.path.expanduser('~/.openclaw/workspace/hawk-bridge/python'))
 try:
     from hawk_memory import extract_memories
-    result = extract_memories('${escaped}', '${apiKey}', '${model}', '${provider}', '${baseURL}')
+    conv = json.loads(${safeConv})
+    key = json.loads(${safeKey})
+    mdl = json.loads(${safeModel})
+    prov = json.loads(${safeProvider})
+    burl = json.loads(${safeBaseURL})
+    result = extract_memories(conv, key, mdl, prov, burl)
     print(json.dumps(result))
 except Exception as e:
     print(json.dumps({"error": str(e)}))

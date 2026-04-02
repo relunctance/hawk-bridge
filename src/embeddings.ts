@@ -4,6 +4,20 @@
 import { HawkConfig } from './types.js';
 import { getConfig } from './config.js';
 
+const FETCH_TIMEOUT_MS = 15000;
+
+/** Helper: fetch with AbortController timeout — prevents hanging on network issues */
+async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const resp = await fetchWithTimeout(url, { ...init, signal: controller.signal });
+    return resp;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export class Embedder {
   private config: HawkConfig['embedding'];
   private openai: any;
@@ -40,7 +54,7 @@ export class Embedder {
     const baseURL = this.config.baseURL || 'https://api.minimaxi.com/v1';
     const apiKey = this.config.apiKey || process.env.MINIMAX_API_KEY || '';
 
-    const resp = await fetch(`${baseURL}/embeddings`, {
+    const resp = await fetchWithTimeout(`${baseURL}/embeddings`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -67,7 +81,10 @@ export class Embedder {
   // ---- OpenAI ----
   private async embedOpenAI(texts: string[]): Promise<number[][]> {
     const { OpenAI } = await import('openai');
-    const client = new OpenAI({ apiKey: this.config.apiKey || process.env.OPENAI_API_KEY });
+    const client = new OpenAI({
+      apiKey: this.config.apiKey || process.env.OPENAI_API_KEY,
+      timeout: FETCH_TIMEOUT_MS,
+    });
     const model = this.config.model || 'text-embedding-3-small';
     const resp = await client.embeddings.create({ model, input: texts });
     return resp.data.map((item: any) => item.embedding);
@@ -77,7 +94,7 @@ export class Embedder {
   private async embedJina(texts: string[]): Promise<number[][]> {
     const apiKey = this.config.apiKey || process.env.JINA_API_KEY || '';
     const model = this.config.model || 'jina-embeddings-v5-small';
-    const resp = await fetch('https://api.jina.ai/v1/embeddings', {
+    const resp = await fetchWithTimeout('https://api.jina.ai/v1/embeddings', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -93,7 +110,7 @@ export class Embedder {
   // ---- Cohere (free tier) ----
   private async embedCohere(texts: string[]): Promise<number[][]> {
     const apiKey = this.config.apiKey || process.env.COHERE_API_KEY || '';
-    const resp = await fetch('https://api.cohere.ai/v1/embed', {
+    const resp = await fetchWithTimeout('https://api.cohere.ai/v1/embed', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -117,7 +134,7 @@ export class Embedder {
     const results: number[][] = [];
 
     // Ollama /api/embed accepts { model, input } where input is a string OR array
-    const resp = await fetch(`${baseURL}/api/embed`, {
+    const resp = await fetchWithTimeout(`${baseURL}/api/embed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, input: texts }),
