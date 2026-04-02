@@ -340,7 +340,6 @@ openclaw plugins install /tmp/hawk-bridge
 export OLLAMA_BASE_URL=http://localhost:11434
 
 # ② sentence-transformers CPU ローカル（完全無料、GPU 不要、約 90MB モデル）
-export USE_LOCAL_EMBEDDING=1
 
 # ③ Jina AI フリープラン（jina.ai から無料 API キーを取得）
 export JINA_API_KEY=あなたの無料キー
@@ -387,7 +386,6 @@ export JINA_API_KEY=jina_あなたのキー
 | **sentence-transformers** | ローカル CPU | ❌ | ⭐⭐⭐ | ⚡⚡ |
 | **Ollama** | ローカル GPU | ❌ | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ |
 | **Jina AI** | クラウド | ✅ 免费 | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ |
-| **Minimax** | クラウド | ✅ | ⭐⭐⭐⭐⭐ | ⚡⚡⚡⚡⚡ |
 
 **デフォルト**：BM25-only — 設定なしで動作開始。
 
@@ -397,9 +395,7 @@ export JINA_API_KEY=jina_あなたのキー
 
 ```
 OLLAMA_BASE_URL がある場合？      → 完全ハイブリッド：ベクトル + BM25 + RRF
-USE_LOCAL_EMBEDDING=1 がある場合？→ sentence-transformers + BM25 + RRF
 JINA_API_KEY がある場合？         → Jina ベクトル + BM25 + RRF
-MINIMAX_API_KEY がある場合？     → Minimax ベクトル + BM25 + RRF
 何も設定されていない？             → BM25-only（キーワードのみ、API 呼び出しなし）
 ```
 
@@ -457,7 +453,6 @@ hawk-bridge/
 | **ランタイム** | Node.js 18+ (ESM)、Python 3.12+ |
 | **ベクトル DB** | LanceDB（ローカル、サーバーレス） |
 | **検索** | BM25 + ANN ベクトル検索 + RRF フュージョン |
-| **埋め込み** | Ollama / sentence-transformers / Jina AI / OpenAI / Minimax |
 | **Hook イベント** | `agent:bootstrap`（recall）、`message:sent`（capture） |
 | **依存関係** | ハード依存関係ゼロ — すべてオプション、自动フォールバック |
 | **永続化** | ローカルファイルシステム、外部 DB 不要 |

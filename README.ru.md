@@ -340,7 +340,6 @@ openclaw plugins install /tmp/hawk-bridge
 export OLLAMA_BASE_URL=http://localhost:11434
 
 # ② sentence-transformers CPU локально (бесплатно, без GPU, модель ~90MB)
-export USE_LOCAL_EMBEDDING=1
 
 # ③ Jina AI бесплатный тариф (требуется бесплатный API-ключ с jina.ai)
 export JINA_API_KEY=ваш_бесплатный_ключ
@@ -387,7 +386,6 @@ API-ключи не в файлах конфигурации — только п
 | **sentence-transformers** | Локальный CPU | ❌ | ⭐⭐⭐ | ⭐⚡ |
 | **Ollama** | Локальный GPU | ❌ | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ |
 | **Jina AI** | Облако | ✅ бесплатно | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ |
-| **Minimax** | Облако | ✅ | ⭐⭐⭐⭐⭐ | ⚡⚡⚡⚡⚡ |
 
 **По умолчанию**: BM25-only — работает сразу без настройки.
 
@@ -397,9 +395,8 @@ API-ключи не в файлах конфигурации — только п
 
 ```
 Есть OLLAMA_BASE_URL?      → Полный гибрид: вектор + BM25 + RRF
-Есть USE_LOCAL_EMBEDDING=1? → sentence-transformers + BM25 + RRF
 Есть JINA_API_KEY?          → Jina векторы + BM25 + RRF
-Есть MINIMAX_API_KEY?      → Minimax векторы + BM25 + RRF
+Has QWEN_API_KEY?          → Qianwen (阿里云 DashScope) + BM25 + RRF
 Ничего не настроено?        → BM25-only (только ключевые слова, без API-вызовов)
 ```
 
@@ -457,7 +454,6 @@ hawk-bridge/
 | **Runtime** | Node.js 18+ (ESM), Python 3.12+ |
 | **Vector DB** | LanceDB (локальная, serverless) |
 | **Поиск** | BM25 + ANN векторный поиск + RRF-фьюжн |
-| **Эмбеддинги** | Ollama / sentence-transformers / Jina AI / OpenAI / Minimax |
 | **Hook-события** | `agent:bootstrap` (recall), `message:sent` (capture) |
 | **Зависимости** | Ноль жестких зависимостей — всё опционально с авто-fallback |
 | **Персистентность** | Локальная файловая система, без внешней БД |

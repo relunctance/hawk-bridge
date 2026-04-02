@@ -462,8 +462,9 @@ openclaw plugins install /tmp/hawk-bridge
 安装完成后，通过环境变量选择向量模式：
 
 ```bash
-# ① 默认：sentence-transformers（本地 CPU，无需 API Key，开箱即用）
-# 无需任何环境变量！
+# ① 默认：Qianwen 阿里云百炼（无需 API Key 开箱即用）
+# 免费额度充足，国内访问稳定：
+export QWEN_API_KEY=你的阿里云API_KEY
 
 # ② Ollama 本地 GPU（推荐，完全免费）
 export OLLAMA_BASE_URL=http://localhost:11434
@@ -473,41 +474,52 @@ export JINA_API_KEY=你的免费key
 # ⚠️ 中国大陆需要代理：设置 HTTP/SOCKS 代理
 export HTTPS_PROXY=http://你的代理地址:端口
 
-# ④ 无配置 → BM25-only 模式（纯关键词检索，无需任何依赖）
+# ④ OpenAI（付费，高质量）
+export OPENAI_API_KEY=sk-...
+
+# ⑤ 无配置 → BM25-only 模式（纯关键词检索，无需任何依赖）
 ```
 
-### 🔑 获取免费 Jina API Key（推荐）
+### 🔑 获取 Qianwen API Key（国内首选）
+
+阿里云百炼提供免费额度，新用户有赠券：
+
+1. **注册/登录**：https://dashscope.console.aliyun.com/（可用阿里云账号）
+2. **开通服务**：搜索"百炼" → 文本嵌入 → 开通
+3. **获取 Key**：https://dashscope.console.aliyun.com/apiKey → 创建 API-KEY
+4. **配置**:
+```bash
+export QWEN_API_KEY=sk-xxxxxxxxxxxxxxxx
+```
+
+### 🔑 获取免费 Jina API Key
 
 Jina AI 提供**免费额度**，足够个人使用，无需信用卡：
 
 1. **注册账号**：访问 https://jina.ai/（支持 GitHub 登录）
 2. **获取 Key**：进入 https://jina.ai/settings/ → API Keys → Create API Key
 3. **复制 Key**：以 `jina_` 开头的字符串
-4. **配置**
 
-> ⚠️ **重要：中国大陆需要代理才能访问 Jina API（api.jina.ai 被墙）。** 设置 `HTTPS_PROXY` 为你的代理地址（如 `http://192.168.1.109:10808`）。
+> ⚠️ **重要：中国大陆需要代理才能访问 Jina API（api.jina.ai 被墙）。** 设置 `HTTPS_PROXY` 为你的代理地址。
 
-### ~/.hawk/config.json（推荐配置方式）
-
-推荐创建 `~/.hawk/config.json`：
+### ~/.hawk/config.json
 
 ```json
 {
-  "openai_api_key": "jina_你的KEY",
-  "embedding_model": "jina-embeddings-v3",
+  "openai_api_key": "YOUR_API_KEY",
+  "embedding_model": "text-embedding-v1",
   "embedding_dimensions": 1024,
-  "base_url": "https://api.jina.ai/v1",
-  "proxy": "http://你的代理地址:端口"
+  "base_url": "https://dashscope.aliyuncs.com/api/v1"
 }
 ```
 
-| 字段 | 说明 |
-|------|------|
-| `openai_api_key` | 你的 Jina API Key（以 `jina_` 开头） |
-| `embedding_model` | 模型名：`jina-embeddings-v3`（推荐） |
-| `embedding_dimensions` | 向量维度：1024（jina-embeddings-v3） |
-| `base_url` | 固定填 `https://api.jina.ai/v1` |
-| `proxy` | HTTP 代理地址（**中国大陆必填**） |
+| Provider | 环境变量 | 说明 |
+|---------|---------|------|
+| Qianwen | `QWEN_API_KEY` | 阿里云百炼 API Key，免费额度，国内首选 |
+| Jina | `JINA_API_KEY` | Jina API Key，以 `jina_` 开头 |
+| Ollama | `OLLAMA_BASE_URL` | 如 `http://localhost:11434` |
+| OpenAI | `OPENAI_API_KEY` | OpenAI API Key |
+| Generic | `base_url` + `apiKey` | 任意 OpenAI 兼容端点 |
 
 ### openclaw.json
 
@@ -528,26 +540,27 @@ Jina AI 提供**免费额度**，足够个人使用，无需信用卡：
 
 ## 📊 向量模式对比
 
-| 模式 | Provider | API Key | 质量 | 速度 |
-|------|----------|---------|------|------|
-| **BM25-only** | 内置 | ❌ | ⭐⭐ | ⚡⚡⚡ |
-| **sentence-transformers** | 本地 CPU | ❌ | ⭐⭐⭐ | ⚡⚡ |
-| **Ollama** | 本地 GPU | ❌ | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ |
-| **Jina AI** | 云端 | ✅ 免费 | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ |
-| **Minimax** | 云端 | ✅ | ⭐⭐⭐⭐⭐ | ⚡⚡⚡⚡⚡ |
+| 模式 | Provider | API Key | 质量 | 速度 | 国内访问 |
+|------|----------|---------|------|------|---------|
+| **BM25-only** | 内置 | ❌ | ⭐⭐ | ⚡⚡⚡ | ✅ |
+| **Ollama** | 本地 GPU | ❌ | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ | ✅ |
+| **Qianwen** | 阿里云百炼 | ✅ 免费额度 | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ | ✅ 首选 |
+| **Jina AI** | 云端 | ✅ 免费 | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ | ⚠️ 需代理 |
+| **OpenAI** | 云端 | ✅ 付费 | ⭐⭐⭐⭐⭐ | ⚡⚡⚡⚡⚡ | ⚠️ 需代理 |
 
-**默认**：BM25-only — 零配置即可运行。
+**默认**：Qianwen 阿里云 — 开箱即用，国内访问稳定。
 
 ---
 
 ## 🔄 降级逻辑
 
 ```
-有 OLLAMA_BASE_URL？      → 全量混合：向量 + BM25 + RRF
-有 USE_LOCAL_EMBEDDING=1？→ sentence-transformers + BM25 + RRF
-有 JINA_API_KEY？         → Jina 向量 + BM25 + RRF
-有 MINIMAX_API_KEY？     → Minimax 向量 + BM25 + RRF
-什么都没配置？             → BM25-only（纯关键词，无 API 调用）
+有 OLLAMA_BASE_URL？        → Ollama 向量 + BM25 + RRF
+有 QWEN_API_KEY？          → Qianwen（阿里云百炼）+ BM25 + RRF
+有 JINA_API_KEY？          → Jina 向量 + BM25 + RRF
+有 OPENAI_API_KEY？        → OpenAI 向量 + BM25 + RRF
+有 COHERE_API_KEY？        → Cohere 向量 + BM25 + RRF
+什么都没配置？              → BM25-only（纯关键词，无 API 调用）
 ```
 
 没有 API Key 不会报错 — 自动降级到当前可用的最佳模式。
@@ -582,7 +595,7 @@ hawk-bridge/
 │   ├── index.ts              # 插件入口
 │   ├── config.ts             # 读取 openclaw 配置 + 环境变量检测
 │   ├── lancedb.ts           # LanceDB 封装
-│   ├── embeddings.ts           # 5 种向量 Provider
+│   ├── embeddings.ts           # 6 种向量 Provider（Qianwen/Ollama/Jina/Cohere/OpenAI/OpenAI-Compatible）
 │   ├── retriever.ts           # 混合检索（BM25 + 向量 + RRF）
 │   ├── seed.ts               # 种子记忆初始化器
 │   └── hooks/

@@ -340,7 +340,6 @@ openclaw plugins install /tmp/hawk-bridge
 export OLLAMA_BASE_URL=http://localhost:11434
 
 # ② sentence-transformers CPU 로컬 (완전 무료, GPU 불필요, 약 90MB 모델)
-export USE_LOCAL_EMBEDDING=1
 
 # ③ Jina AI 무료 티어 (jina.ai에서 무료 API 키 필요)
 export JINA_API_KEY=내_무료_키
@@ -387,7 +386,6 @@ export JINA_API_KEY=jina_내_키
 | **sentence-transformers** | 로컬 CPU | ❌ | ⭐⭐⭐ | ⭐⚡ |
 | **Ollama** | 로컬 GPU | ❌ | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ |
 | **Jina AI** | 클라우드 | ✅ 무료 | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ |
-| **Minimax** | 클라우드 | ✅ | ⭐⭐⭐⭐⭐ | ⚡⚡⚡⚡⚡ |
 
 **기본값**: BM25-only — 설정 없이 즉시 작동.
 
@@ -397,9 +395,8 @@ export JINA_API_KEY=jina_내_키
 
 ```
 OLLAMA_BASE_URL이 있나요?      → 완전 하이브리드: 벡터 + BM25 + RRF
-USE_LOCAL_EMBEDDING=1이 있나요?→ sentence-transformers + BM25 + RRF
 JINA_API_KEY가 있나요?         → Jina 벡터 + BM25 + RRF
-MINIMAX_API_KEY가 있나요?     → Minimax 벡터 + BM25 + RRF
+Has QWEN_API_KEY?          → Qianwen (阿里云 DashScope) + BM25 + RRF
 아무것도 설정되지 않았나요?      → BM25-only (키워드만, API 호출 없음)
 ```
 
@@ -457,7 +454,6 @@ hawk-bridge/
 | **런타임** | Node.js 18+ (ESM), Python 3.12+ |
 | **벡터 DB** | LanceDB (로컬, 서버리스) |
 | **검색** | BM25 + ANN 벡터 검색 + RRF 퓨전 |
-| **임베딩** | Ollama / sentence-transformers / Jina AI / OpenAI / Minimax |
 | **Hook 이벤트** | `agent:bootstrap` (recall), `message:sent` (capture) |
 | **종속성** | 하드 종속성 제로 — 모두 선택적, 자동 폴백 |
 | **영속성** | 로컬 파일 시스템, 외부 DB 불필요 |

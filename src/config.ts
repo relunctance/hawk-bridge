@@ -64,11 +64,11 @@ export function getDefaultModelId(): string {
 
 const DEFAULT_CONFIG: HawkConfig = {
   embedding: {
-    provider: 'sentence-transformers', // Local CPU, no API key needed
+    provider: 'qianwen', // 阿里云 DashScope, 国内首选
     apiKey: '',
-    model: 'all-MiniLM-L6-v2',
-    baseURL: '',
-    dimensions: DEFAULT_EMBEDDING_DIM,  // from constants.ts (384 for all-MiniLM-L6-v2)
+    model: 'text-embedding-v1',
+    baseURL: 'https://dashscope.aliyuncs.com/api/v1',
+    dimensions: 1024,  // Qianwen text-embedding-v1 输出 1024 维
   },
   llm: {
     provider: 'groq',  // Default: free groq Llama-3, no API key needed
@@ -100,42 +100,25 @@ export async function getConfig(): Promise<HawkConfig> {
     configPromise = (async () => {
       const config: HawkConfig = { ...DEFAULT_CONFIG };
 
-  // Read MINIMAX_API_KEY from env (user provided)
-  const minimaxApiKey = process.env.MINIMAX_API_KEY || '';
-
-  // Auto-detect from openclaw.json
-  const provider = getConfiguredProvider('minimax');
-  if (provider) {
-    config.llm.baseURL = provider.baseUrl || 'https://api.minimaxi.com/anthropic';
-    config.llm.model = getDefaultModelId() || 'MiniMax-M2.7';
-    config.llm.provider = 'openclaw';
-  }
-
-  // Env var overrides — priority: explicit env vars
-  if (minimaxApiKey) {
-    // Use Minimax for both LLM and embedding
-    config.embedding.provider = 'minimax';
-    config.embedding.apiKey = minimaxApiKey;
-    config.embedding.baseURL = 'https://api.minimaxi.com/v1';
-    config.embedding.model = 'embedding-2-normal';
-    config.embedding.dimensions = 1024;
-    config.llm.apiKey = minimaxApiKey;
-    config.llm.provider = 'minimax';
-  }
-  if (process.env.JINA_API_KEY) {
-    // Jina overrides Minimax only if explicitly set
-    config.embedding.provider = 'jina';
-    config.embedding.apiKey = process.env.JINA_API_KEY;
-  }
-  if (process.env.OLLAMA_BASE_URL) {
-    // Ollama has highest priority among env vars — warn if overriding Minimax
-    if (minimaxApiKey && config.embedding.provider === 'minimax') {
-      console.warn('[hawk-bridge] OLLAMA_BASE_URL set, overriding MINIMAX_API_KEY embedding config');
-    }
-    config.embedding.provider = 'ollama';
-    config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
-    config.embedding.model = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
-  }
+      // Env var overrides (highest priority) — OLLAMA > QWEN > JINA > default
+      if (process.env.OLLAMA_BASE_URL) {
+        config.embedding.provider = 'ollama';
+        config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
+        config.embedding.model = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
+        config.embedding.dimensions = 768;  // nomic-embed-text is 768-dim
+      } else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
+        config.embedding.provider = 'qianwen';
+        config.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '';
+        config.embedding.baseURL = 'https://dashscope.aliyuncs.com/api/v1';
+        config.embedding.model = 'text-embedding-v1';
+        config.embedding.dimensions = 1024;
+      } else if (process.env.JINA_API_KEY) {
+        config.embedding.provider = 'jina';
+        config.embedding.apiKey = process.env.JINA_API_KEY;
+        config.embedding.baseURL = '';
+        config.embedding.model = 'jina-embeddings-v5-small';
+        config.embedding.dimensions = 1024;
+      }
 
       return config;
     })();
@@ -144,12 +127,12 @@ export async function getConfig(): Promise<HawkConfig> {
 }
 
 export function hasEmbeddingProvider(): boolean {
-  // Returns true if any embedding backend is actually available
   return !!(
-    process.env.MINIMAX_API_KEY ||
-    process.env.JINA_API_KEY ||
     process.env.OLLAMA_BASE_URL ||
+    process.env.QWEN_API_KEY ||
+    process.env.DASHSCOPE_API_KEY ||
+    process.env.JINA_API_KEY ||
     process.env.OPENAI_API_KEY ||
-    getConfiguredProvider('minimax')
+    process.env.COHERE_API_KEY
   );
 }

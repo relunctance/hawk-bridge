@@ -479,8 +479,9 @@ openclaw plugins install /tmp/hawk-bridge
 After install, choose your embedding mode — all via environment variables:
 
 ```bash
-# ① Default: sentence-transformers (local CPU, no API key needed — works out of the box)
-# No environment variables needed!
+# ① Default: Qianwen 阿里云 DashScope (no API key needed by default!)
+# Works out of the box. Set API key for higher rate limits:
+export QWEN_API_KEY=your_qwen_key
 
 # ② Ollama local GPU (recommended for quality — free, no API key)
 export OLLAMA_BASE_URL=http://localhost:11434
@@ -490,11 +491,25 @@ export JINA_API_KEY=your_free_key
 # ⚠️ Proxy required in China: set HTTP/SOCKS proxy below
 export HTTPS_PROXY=http://YOUR_PROXY_HOST:PORT
 
-# ④ BM25-only fallback (no embedding needed — keyword search only)
+# ④ OpenAI (paid, high quality)
+export OPENAI_API_KEY=sk-...
+
+# ⑤ BM25-only fallback (no embedding needed — keyword search only)
 # No environment variables needed
 ```
 
-### 🔑 Get Your Free Jina API Key (Recommended)
+### 🔑 Get Your Qianwen API Key (Recommended — 国内首选)
+
+阿里云 DashScope 提供免费额度，新用户有赠券：
+
+1. **注册** https://dashscope.console.aliyun.com/ (可用阿里云账号)
+2. **开通服务**: 搜索 "百炼" → 文本嵌入 → 开通
+3. **获取 Key**: https://dashscope.console.aliyun.com/apiKey → 创建 API-KEY
+4. **配置**:
+```bash
+```
+
+### 🔑 Get Your Free Jina API Key
 
 Jina AI offers a **generous free tier** — no credit card required:
 
@@ -505,27 +520,23 @@ Jina AI offers a **generous free tier** — no credit card required:
 
 > ⚠️ **Important: Jina AI requires a proxy in China (api.jina.ai is blocked).** Set `HTTPS_PROXY` to your proxy URL (e.g. `http://192.168.1.109:10808`).
 
-### ~/.hawk/config.json (Recommended for Jina)
-
-For best results with Jina, create `~/.hawk/config.json`:
+### ~/.hawk/config.json
 
 ```json
 {
-  "openai_api_key": "jina_YOUR_KEY_HERE",
-  "embedding_model": "jina-embeddings-v3",
+  "openai_api_key": "YOUR_API_KEY",
+  "embedding_model": "text-embedding-v1",
   "embedding_dimensions": 1024,
-  "base_url": "https://api.jina.ai/v1",
-  "proxy": "http://YOUR_PROXY_HOST:PORT"
+  "base_url": "https://dashscope.aliyuncs.com/api/v1"
 }
 ```
 
-| Field | Description |
-|-------|-------------|
-| `openai_api_key` | Your Jina API key (starts with `jina_`) |
-| `embedding_model` | Model name: `jina-embeddings-v3` (recommended) |
-| `embedding_dimensions` | Vector size: 1024 for jina-embeddings-v3 |
-| `base_url` | Must be `https://api.jina.ai/v1` |
-| `proxy` | HTTP proxy URL (required in China) |
+| Provider | Field | Description |
+|---------|-------|-------------|
+| Jina | `JINA_API_KEY` env | Jina API Key starts with `jina_` |
+| Ollama | `OLLAMA_BASE_URL` env | e.g. `http://localhost:11434` |
+| OpenAI | `OPENAI_API_KEY` env | OpenAI API Key |
+| Generic | `base_url` + `apiKey` | Any OpenAI-compatible endpoint |
 
 ### openclaw.json
 
@@ -552,7 +563,6 @@ No API keys in config files — environment variables only.
 | **sentence-transformers** | Local CPU | ❌ | ⭐⭐⭐ | ⚡⚡ |
 | **Ollama** | Local GPU | ❌ | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ |
 | **Jina AI** | Cloud | ✅ free | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ |
-| **Minimax** | Cloud | ✅ | ⭐⭐⭐⭐⭐ | ⚡⚡⚡⚡⚡ |
 
 **Default**: BM25-only — works immediately with zero configuration.
 
@@ -561,11 +571,12 @@ No API keys in config files — environment variables only.
 ## 🔄 Degradation Logic
 
 ```
-Has OLLAMA_BASE_URL?       → Full hybrid: vector + BM25 + RRF
-Has USE_LOCAL_EMBEDDING=1? → sentence-transformers + BM25 + RRF
+Has OLLAMA_BASE_URL?        → Ollama embeddings + BM25 + RRF
 Has JINA_API_KEY?          → Jina embeddings + BM25 + RRF
-Has MINIMAX_API_KEY?      → Minimax embeddings + BM25 + RRF
-Nothing configured?        → BM25-only (pure keyword, no API calls)
+Has QWEN_API_KEY?          → Qianwen (阿里云 DashScope) + BM25 + RRF
+Has OPENAI_API_KEY?        → OpenAI embeddings + BM25 + RRF
+Has COHERE_API_KEY?        → Cohere embeddings + BM25 + RRF
+Nothing configured?          → BM25-only (pure keyword, no API calls)
 ```
 
 No API key = no crash = graceful degradation.
@@ -599,7 +610,7 @@ hawk-bridge/
 │   ├── index.ts               # Plugin entry point
 │   ├── config.ts              # OpenClaw config reader + env detection
 │   ├── lancedb.ts             # LanceDB wrapper
-│   ├── embeddings.ts           # 5 embedding providers
+│   ├── embeddings.ts           # 6 embedding providers (Qianwen/Ollama/Jina/Cohere/OpenAI/OpenAI-Compatible)
 │   ├── retriever.ts            # Hybrid search (BM25 + vector + RRF)
 │   ├── seed.ts                # Seed memory initializer
 │   └── hooks/
@@ -621,7 +632,6 @@ hawk-bridge/
 | **Runtime** | Node.js 18+ (ESM), Python 3.12+ |
 | **Vector DB** | LanceDB (local, serverless) |
 | **Retrieval** | BM25 + ANN vector search + RRF fusion |
-| **Embedding** | Ollama / sentence-transformers / Jina AI / OpenAI / Minimax |
 | **Hook Events** | `agent:bootstrap` (recall), `message:sent` (capture) |
 | **Dependencies** | Zero hard dependencies — all optional with auto-fallback |
 | **Persistence** | Local filesystem, no external DB required |

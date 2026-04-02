@@ -2,7 +2,8 @@
 
 export interface HawkConfig {
   embedding: {
-    provider: 'openai' | 'jina' | 'minimax' | 'openclaw' | 'ollama' | 'cohere' | 'sentence-transformers';
+    /** Embedding provider: openai | qianwen | jina | cohere | ollama | openai-compat */
+    provider: 'openai' | 'qianwen' | 'jina' | 'cohere' | 'ollama' | 'openai-compat';
     apiKey: string;
     model: string;
     baseURL: string;

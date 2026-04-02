@@ -340,7 +340,6 @@ Nach der Installation den Embedding-Modus wählen — alles über Umgebungsvaria
 export OLLAMA_BASE_URL=http://localhost:11434
 
 # ② sentence-transformers CPU lokal (kostenlos, kein GPU, ~90MB Modell)
-export USE_LOCAL_EMBEDDING=1
 
 # ③ Jina AI Free Tier (erfordert kostenlosen API-Schlüssel von jina.ai)
 export JINA_API_KEY=dein_kostenloser_schluessel
@@ -387,7 +386,6 @@ Keine API-Schlüssel in Konfigurationsdateien — nur Umgebungsvariablen.
 | **sentence-transformers** | Lokaler CPU | ❌ | ⭐⭐⭐ | ⚡⚡ |
 | **Ollama** | Lokaler GPU | ❌ | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ |
 | **Jina AI** | Cloud | ✅ kostenlos | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ |
-| **Minimax** | Cloud | ✅ | ⭐⭐⭐⭐⭐ | ⚡⚡⚡⚡⚡ |
 
 **Standard**: BM25-only — funktioniert sofort ohne Konfiguration.
 
@@ -397,9 +395,8 @@ Keine API-Schlüssel in Konfigurationsdateien — nur Umgebungsvariablen.
 
 ```
 OLLAMA_BASE_URL vorhanden?      → Voll hybrid: Vektor + BM25 + RRF
-USE_LOCAL_EMBEDDING=1 vorhanden?→ sentence-transformers + BM25 + RRF
 JINA_API_KEY vorhanden?         → Jina Vektoren + BM25 + RRF
-MINIMAX_API_KEY vorhanden?     → Minimax Vektoren + BM25 + RRF
+Has QWEN_API_KEY?          → Qianwen (阿里云 DashScope) + BM25 + RRF
 Nichts konfiguriert?             → BM25-only (nur Schlüsselwörter, keine API-Aufrufe)
 ```
 
@@ -457,7 +454,6 @@ hawk-bridge/
 | **Runtime** | Node.js 18+ (ESM), Python 3.12+ |
 | **Vector DB** | LanceDB (lokal, serverlos) |
 | **Abruf** | BM25 + ANN-Vektorsuche + RRF-Fusion |
-| **Embedding** | Ollama / sentence-transformers / Jina AI / OpenAI / Minimax |
 | **Hook-Events** | `agent:bootstrap` (recall), `message:sent` (capture) |
 | **Abhängigkeiten** | Keine harten Abhängigkeiten — alles optional mit Auto-Fallback |
 | **Persistenz** | Lokales Dateisystem, keine externe DB erforderlich |

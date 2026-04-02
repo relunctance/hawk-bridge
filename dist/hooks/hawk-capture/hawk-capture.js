@@ -188,7 +188,7 @@ async function fetchWithTimeout(url, init) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const resp = await fetchWithTimeout(url, { ...init, signal: controller.signal });
+    const resp = await fetch(url, { ...init, signal: controller.signal });
     return resp;
   } finally {
     clearTimeout(timer);
@@ -196,16 +196,15 @@ async function fetchWithTimeout(url, init) {
 }
 var Embedder = class {
   config;
-  openai;
   constructor(config) {
     this.config = config;
   }
   async embed(texts) {
     const { provider } = this.config;
-    if (provider === "minimax") {
-      return this.embedOpenClaw(texts);
-    } else if (provider === "openclaw") {
-      return this.embedOpenClaw(texts);
+    if (provider === "qianwen") {
+      return this.embedQianwen(texts);
+    } else if (provider === "openai-compat") {
+      return this.embedOpenAICompat(texts);
     } else if (provider === "ollama") {
       return this.embedOllama(texts);
     } else if (provider === "jina") {
@@ -220,10 +219,41 @@ var Embedder = class {
     const vectors = await this.embed([text]);
     return vectors[0];
   }
-  // ---- OpenClaw/Minimax: uses already-configured provider ----
-  async embedOpenClaw(texts) {
-    const baseURL = this.config.baseURL || "https://api.minimaxi.com/v1";
-    const apiKey = this.config.apiKey || process.env.MINIMAX_API_KEY || "";
+  // ---- Qianwen (阿里云 DashScope) — OpenAI-compatible, 国内首选 ----
+  async embedQianwen(texts) {
+    const apiKey = this.config.apiKey || process.env.QWEN_API_KEY || "";
+    const baseURL = this.config.baseURL || "https://dashscope.aliyuncs.com/api/v1";
+    const resp = await fetchWithTimeout(
+      `${baseURL}/services/embeddings/text-embedding/text-embedding`,
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: this.config.model || "text-embedding-v1",
+          input: { text: texts }
+        })
+      }
+    );
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(`Qianwen embedding error: ${resp.status} ${err}`);
+    }
+    const data = await resp.json();
+    if (!data.output?.embeddings?.length) {
+      throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
+    }
+    return data.output.embeddings.map((e) => e.embedding);
+  }
+  // ---- OpenAI-Compatible (generic endpoint — user provides baseURL + apiKey) ----
+  async embedOpenAICompat(texts) {
+    const baseURL = this.config.baseURL;
+    const apiKey = this.config.apiKey;
+    if (!baseURL || !apiKey) {
+      throw new Error("openai-compat provider requires both baseURL and apiKey in config");
+    }
     const resp = await fetchWithTimeout(`${baseURL}/embeddings`, {
       method: "POST",
       headers: {
@@ -231,20 +261,19 @@ var Embedder = class {
         "Authorization": `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: this.config.model || "embedding-2-normal",
-        type: "db",
-        texts
+        model: this.config.model || "text-embedding-3-small",
+        input: texts
       })
     });
     if (!resp.ok) {
-      const errText = await resp.text();
-      throw new Error(`OpenClaw/Minimax embedding error: ${resp.status} ${errText}`);
+      const err = await resp.text();
+      throw new Error(`OpenAI-compatible embedding error: ${resp.status} ${err}`);
     }
     const data = await resp.json();
-    if (!data.vectors || !data.vectors[0]) {
+    if (!data.data?.length) {
       throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
     }
-    return data.vectors;
+    return data.data.map((item) => item.embedding);
   }
   // ---- OpenAI ----
   async embedOpenAI(texts) {
@@ -296,15 +325,14 @@ var Embedder = class {
   async embedOllama(texts) {
     const baseURL = (this.config.baseURL || process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
     const model = this.config.model || process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
-    const results = [];
     const resp = await fetchWithTimeout(`${baseURL}/api/embed`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, input: texts })
     });
     if (!resp.ok) {
-      const errText = await resp.text();
-      throw new Error(`Ollama embedding error: ${resp.status} ${errText}`);
+      const err = await resp.text();
+      throw new Error(`Ollama embedding error: ${resp.status} ${err}`);
     }
     const data = await resp.json();
     if (Array.isArray(data.embeddings) && Array.isArray(data.embeddings[0])) {
@@ -317,42 +345,18 @@ var Embedder = class {
 };
 
 // src/config.ts
-import * as fs from "fs";
 import * as path2 from "path";
 import * as os2 from "os";
 var OPENCLAW_CONFIG_PATH = path2.join(os2.homedir(), ".openclaw", "openclaw.json");
-var cachedOpenClawConfig = null;
-function loadOpenClawConfig() {
-  if (cachedOpenClawConfig) return cachedOpenClawConfig;
-  try {
-    const raw = fs.readFileSync(OPENCLAW_CONFIG_PATH, "utf-8");
-    cachedOpenClawConfig = JSON.parse(raw);
-    return cachedOpenClawConfig;
-  } catch {
-    return null;
-  }
-}
-function getConfiguredProvider(providerName = "minimax") {
-  const config = loadOpenClawConfig();
-  if (!config?.models?.providers) return null;
-  return config.models.providers[providerName] || null;
-}
-function getDefaultModelId() {
-  const config = loadOpenClawConfig();
-  if (!config?.models?.providers) return "MiniMax-M2.7";
-  const prov = config.models.providers["minimax"];
-  if (!prov?.models?.length) return "MiniMax-M2.7";
-  return prov.models[0].id;
-}
 var DEFAULT_CONFIG = {
   embedding: {
-    provider: "sentence-transformers",
-    // Local CPU, no API key needed
+    provider: "qianwen",
+    // 阿里云 DashScope, 国内首选
     apiKey: "",
-    model: "all-MiniLM-L6-v2",
-    baseURL: "",
-    dimensions: DEFAULT_EMBEDDING_DIM
-    // from constants.ts (384 for all-MiniLM-L6-v2)
+    model: "text-embedding-v1",
+    baseURL: "https://dashscope.aliyuncs.com/api/v1",
+    dimensions: 1024
+    // Qianwen text-embedding-v1 输出 1024 维
   },
   llm: {
     provider: "groq",
@@ -382,33 +386,23 @@ async function getConfig() {
   if (!configPromise) {
     configPromise = (async () => {
       const config = { ...DEFAULT_CONFIG };
-      const minimaxApiKey = process.env.MINIMAX_API_KEY || "";
-      const provider = getConfiguredProvider("minimax");
-      if (provider) {
-        config.llm.baseURL = provider.baseUrl || "https://api.minimaxi.com/anthropic";
-        config.llm.model = getDefaultModelId() || "MiniMax-M2.7";
-        config.llm.provider = "openclaw";
-      }
-      if (minimaxApiKey) {
-        config.embedding.provider = "minimax";
-        config.embedding.apiKey = minimaxApiKey;
-        config.embedding.baseURL = "https://api.minimaxi.com/v1";
-        config.embedding.model = "embedding-2-normal";
-        config.embedding.dimensions = 1024;
-        config.llm.apiKey = minimaxApiKey;
-        config.llm.provider = "minimax";
-      }
-      if (process.env.JINA_API_KEY) {
-        config.embedding.provider = "jina";
-        config.embedding.apiKey = process.env.JINA_API_KEY;
-      }
       if (process.env.OLLAMA_BASE_URL) {
-        if (minimaxApiKey && config.embedding.provider === "minimax") {
-          console.warn("[hawk-bridge] OLLAMA_BASE_URL set, overriding MINIMAX_API_KEY embedding config");
-        }
         config.embedding.provider = "ollama";
         config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
         config.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
+        config.embedding.dimensions = 768;
+      } else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
+        config.embedding.provider = "qianwen";
+        config.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || "";
+        config.embedding.baseURL = "https://dashscope.aliyuncs.com/api/v1";
+        config.embedding.model = "text-embedding-v1";
+        config.embedding.dimensions = 1024;
+      } else if (process.env.JINA_API_KEY) {
+        config.embedding.provider = "jina";
+        config.embedding.apiKey = process.env.JINA_API_KEY;
+        config.embedding.baseURL = "";
+        config.embedding.model = "jina-embeddings-v5-small";
+        config.embedding.dimensions = 1024;
       }
       return config;
     })();
