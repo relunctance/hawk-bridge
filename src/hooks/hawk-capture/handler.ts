@@ -9,6 +9,8 @@ import { HawkDB } from '../../lancedb.js';
 import { Embedder } from '../../embeddings.js';
 import { getConfig } from '../../config.js';
 import type { RetrievedMemory } from '../../types.js';
+// Shared: invalidate BM25 index when new memories are stored
+import { markBm25Dirty } from '../hawk-recall/handler.js';
 
 const exec = promisify((require('child_process').exec));
 
@@ -90,6 +92,9 @@ const captureHandler = async (event: HookEvent) => {
 
     console.log(`[hawk-capture] Stored ${significant.length} memories`);
 
+    // Notify hawk-recall that BM25 index is stale — will rebuild on next search
+    markBm25Dirty();
+
   } catch (err) {
     console.error('[hawk-capture] Error:', err);
     // Non-critical
@@ -109,6 +114,7 @@ function callExtractor(conversationText: string, config: any): Promise<any[]> {
     );
 
     let stdout = '';
+    let stderr = '';
 
     // Auto-kill subprocess after timeout (Node.js spawn does NOT auto-kill on timeout)
     const timer = setTimeout(() => {
@@ -117,11 +123,12 @@ function callExtractor(conversationText: string, config: any): Promise<any[]> {
     }, 30000);
 
     proc.stdout.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
     proc.on('close', (code) => {
       clearTimeout(timer);
       if (code !== 0) {
-        console.error('[hawk-capture] extractor error:', code);
+        console.error('[hawk-capture] extractor error:', code, stderr ? `stderr: ${stderr}` : '');
         resolve([]);
         return;
       }

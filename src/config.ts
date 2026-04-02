@@ -118,6 +118,18 @@ export async function getConfig(): Promise<HawkConfig> {
         config.embedding.baseURL = '';
         config.embedding.model = 'jina-embeddings-v5-small';
         config.embedding.dimensions = 1024;
+      } else if (process.env.OPENAI_API_KEY) {
+        config.embedding.provider = 'openai';
+        config.embedding.apiKey = process.env.OPENAI_API_KEY;
+        config.embedding.baseURL = '';
+        config.embedding.model = 'text-embedding-3-small';
+        config.embedding.dimensions = 1536;
+      } else if (process.env.COHERE_API_KEY) {
+        config.embedding.provider = 'cohere';
+        config.embedding.apiKey = process.env.COHERE_API_KEY;
+        config.embedding.baseURL = '';
+        config.embedding.model = 'embed-english-v3.0';
+        config.embedding.dimensions = 1024;
       }
 
       return config;

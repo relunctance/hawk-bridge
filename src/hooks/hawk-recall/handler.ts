@@ -8,6 +8,11 @@ import { Embedder, formatRecallForContext } from '../../embeddings.js';
 import { HybridRetriever } from '../../retriever.js';
 import { getConfig } from '../../config.js';
 
+// Global dirty flag: set by hawk-capture after storing new memories
+// Checked at start of each search to trigger BM25 index rebuild
+let bm25DirtyGlobal = false;
+export function markBm25Dirty(): void { bm25DirtyGlobal = true; }
+
 // Promise-based cache prevents concurrent initialization (race condition fix)
 let retrieverPromise: Promise<HybridRetriever> | null = null;
 
@@ -19,12 +24,18 @@ async function getRetriever(): Promise<HybridRetriever> {
       await db.init();
       const embedder = new Embedder(config.embedding);
       const r = new HybridRetriever(db, embedder);
-      await r.buildBm25Index();
       await r.buildNoisePrototypes();
+      // BM25 index is built lazily on first search via _ensureBm25Index()
       return r;
     })();
   }
-  return retrieverPromise;
+  const retriever = await retrieverPromise;
+  // If hawk-capture stored new memories, invalidate BM25 index so it rebuilds on next search
+  if (bm25DirtyGlobal) {
+    retriever.markDirty();
+    bm25DirtyGlobal = false;
+  }
+  return retriever;
 }
 
 const recallHandler = async (event: HookEvent) => {

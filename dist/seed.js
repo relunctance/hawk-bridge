@@ -169,6 +169,30 @@ var HawkDB = class {
       return null;
     }
   }
+  /** Batch fetch multiple memories by ID in a single query — avoids N+1 round-trips */
+  async getByIds(ids) {
+    if (!this.table) await this.init();
+    const results = /* @__PURE__ */ new Map();
+    if (!ids.length) return results;
+    try {
+      const conditions = ids.map(() => "id = ?").join(" OR ");
+      const rows = await this.table.query().where(conditions, ids).limit(ids.length).toList();
+      for (const r of rows) {
+        results.set(r.id, {
+          id: r.id,
+          text: r.text,
+          vector: r.vector || [],
+          category: r.category,
+          scope: r.scope,
+          importance: r.importance,
+          timestamp: Number(r.timestamp),
+          metadata: JSON.parse(r.metadata || "{}")
+        });
+      }
+    } catch {
+    }
+    return results;
+  }
 };
 
 // src/seed.ts

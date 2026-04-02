@@ -3,6 +3,18 @@
 
 import * as path from 'path';
 import * as os from 'os';
+
+// Batch memory map type — avoids '>>' TypeScript parsing ambiguity in generic return types
+type MemoryMap = Map<string, {
+  id: string;
+  text: string;
+  vector: number[];
+  category: string;
+  scope: string;
+  importance: number;
+  timestamp: number;
+  metadata: Record<string, unknown>;
+}>;
 import { BM25_QUERY_LIMIT, DEFAULT_EMBEDDING_DIM } from './constants.js';
 import type { MemoryEntry, RetrievedMemory } from './types.js';
 
@@ -200,5 +212,32 @@ export class HawkDB {
     } catch {
       return null;
     }
+  }
+
+  /** Batch fetch multiple memories by ID in a single query — avoids N+1 round-trips */
+  async getByIds(ids: string[]): Promise<MemoryMap> {
+    if (!this.table) await this.init();
+    const results = new Map<string, any>();
+    if (!ids.length) return results;
+    try {
+      // Build OR query: id = ? OR id = ? OR ...
+      const conditions = ids.map(() => 'id = ?').join(' OR ');
+      const rows = await this.table.query().where(conditions, ids).limit(ids.length).toList();
+      for (const r of rows) {
+        results.set(r.id, {
+          id: r.id,
+          text: r.text,
+          vector: r.vector || [],
+          category: r.category,
+          scope: r.scope,
+          importance: r.importance,
+          timestamp: Number(r.timestamp),
+          metadata: JSON.parse(r.metadata || '{}'),
+        });
+      }
+    } catch {
+      // On error return empty map (caller handles partial results)
+    }
+    return results;
   }
 }

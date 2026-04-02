@@ -22,15 +22,32 @@ export class HybridRetriever {
   private corpus: string[] = [];
   private corpusIds: string[] = [];
   private noisePrototypes: number[][] = [];
+  private bm25Dirty: boolean = false;   // set true when new memories are stored
+  private bm25BuildPromise: Promise<void> | null = null;  // prevents concurrent rebuilds
 
   constructor(db: HawkDB, embedder: Embedder) {
     this.db = db;
     this.embedder = embedder;
   }
 
+  /** Call this after store() to invalidate the BM25 index — next search() will rebuild */
+  markDirty(): void {
+    this.bm25Dirty = true;
+  }
+
   // ---------- BM25 Setup ----------
 
-  async buildBm25Index(): Promise<void> {
+  private async _ensureBm25Index(): Promise<void> {
+    if (!this.bm25Dirty && this.bm25) return;
+    if (this.bm25BuildPromise) return this.bm25BuildPromise;
+
+    this.bm25BuildPromise = this._buildBm25Index();
+    await this.bm25BuildPromise;
+    this.bm25BuildPromise = null;
+    this.bm25Dirty = false;
+  }
+
+  private async _buildBm25Index(): Promise<void> {
     try {
       const { BM25Okapi } = await import('rank_bm25');
       const allMemories = await this.db.getAllTexts();
@@ -40,8 +57,8 @@ export class HybridRetriever {
       this.corpusIds = allMemories.map(m => m.id);
       this.corpus = allMemories.map(m => m.text.toLowerCase());
       this.bm25 = new BM25Okapi(this.corpus);
-    } catch (e) {
-      // rank_bm25 not installed, skip BM25
+    } catch {
+      // rank_bm25 not installed, skip BM25 silently (BM25 fallback still works)
       console.warn('[hawk-bridge] rank_bm25 not available, BM25 disabled');
     }
   }
@@ -86,13 +103,11 @@ export class HybridRetriever {
         this.noisePrototypes = await this.embedder.embed(noiseTexts);
       }
     } catch (e) {
-      console.warn('[hawk-bridge] Noise prototype embedding failed, skipping:', e);
+      console.warn('[hawk-bridge] Noise prototype embedding failed, noise filter disabled:', (e as Error).message);
     }
   }
 
   private isNoise(embedding: number[]): boolean {
-    if (!this.noisePrototypes.length) return false;
-
     for (const prototype of this.noisePrototypes) {
       const sim = cosineSimilarity(embedding, prototype);
       if (sim >= NOISE_SIMILARITY_THRESHOLD) return true;
@@ -199,8 +214,11 @@ export class HybridRetriever {
     topK: number = 5,
     scope?: string
   ): Promise<RetrievedMemory[]> {
-    // Ensure indexes are built
-    if (!this.bm25) await this.buildBm25Index();
+    // Clamp topK to prevent abuse
+    topK = Math.min(Math.max(1, topK), 100);
+
+    // Ensure indexes are built (with dirty-flag rebuild)
+    await this._ensureBm25Index();
     if (!this.noisePrototypes.length) await this.buildNoisePrototypes();
 
     const hasEmbedding = hasEmbeddingProvider();
@@ -223,10 +241,15 @@ export class HybridRetriever {
           .slice(0, topK * BM25_SEARCH_MULTIPLIER);
 
         const fused = this.rrfFusion(vectorRanked, bm25Ranked);
-        const noiseFiltered = [];
 
+        // Batch-fetch all fused IDs at once (N+1 query fix)
+        const fusedIds = fused.map(f => f.id);
+        const fetched = await this.db.getByIds(fusedIds);
+        // fetched is already a MemoryMap
+
+        const noiseFiltered = [];
         for (const item of fused) {
-          const memory = await this.db.getById(item.id);
+          const memory = fetched.get(item.id);
           if (!memory) continue;
           if (this.isNoise(memory.vector)) continue;
           noiseFiltered.push({ ...item, text: memory.text, vector: memory.vector });
@@ -245,7 +268,7 @@ export class HybridRetriever {
         for (const item of noiseFiltered) {
           const rerankScore = idToRerank.get(item.id);
           if (rerankScore === undefined) continue;
-          const memory = await this.db.getById(item.id);
+          const memory = fetched.get(item.id);
           if (!memory) continue;
           results.push({
             id: item.id,
@@ -272,14 +295,17 @@ export class HybridRetriever {
       .sort((a, b) => b.score - a.score)
       .slice(0, topK * 3);
 
-    // No rerank needed - just use BM25 scores directly
+    // Batch-fetch BM25 results (N+1 query fix)
+    const bm25Ids = bm25Ranked.map(b => b.id);
+    const fetchedBm25 = await this.db.getByIds(bm25Ids);
+    // fetchedBm25 is already a MemoryMap
     const idToScore = new Map(bm25Ranked.map(item => [item.id, item.score]));
 
     const results: RetrievedMemory[] = [];
     for (const item of bm25Ranked) {
       const score = idToScore.get(item.id);
       if (score === undefined) continue;
-      const memory = await this.db.getById(item.id);
+      const memory = fetchedBm25.get(item.id);
       if (!memory) continue;
       results.push({
         id: item.id,

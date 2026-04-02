@@ -180,6 +180,30 @@ var HawkDB = class {
       return null;
     }
   }
+  /** Batch fetch multiple memories by ID in a single query — avoids N+1 round-trips */
+  async getByIds(ids) {
+    if (!this.table) await this.init();
+    const results = /* @__PURE__ */ new Map();
+    if (!ids.length) return results;
+    try {
+      const conditions = ids.map(() => "id = ?").join(" OR ");
+      const rows = await this.table.query().where(conditions, ids).limit(ids.length).toList();
+      for (const r of rows) {
+        results.set(r.id, {
+          id: r.id,
+          text: r.text,
+          vector: r.vector || [],
+          category: r.category,
+          scope: r.scope,
+          importance: r.importance,
+          timestamp: Number(r.timestamp),
+          metadata: JSON.parse(r.metadata || "{}")
+        });
+      }
+    } catch {
+    }
+    return results;
+  }
 };
 
 // src/embeddings.ts
@@ -403,11 +427,29 @@ async function getConfig() {
         config.embedding.baseURL = "";
         config.embedding.model = "jina-embeddings-v5-small";
         config.embedding.dimensions = 1024;
+      } else if (process.env.OPENAI_API_KEY) {
+        config.embedding.provider = "openai";
+        config.embedding.apiKey = process.env.OPENAI_API_KEY;
+        config.embedding.baseURL = "";
+        config.embedding.model = "text-embedding-3-small";
+        config.embedding.dimensions = 1536;
+      } else if (process.env.COHERE_API_KEY) {
+        config.embedding.provider = "cohere";
+        config.embedding.apiKey = process.env.COHERE_API_KEY;
+        config.embedding.baseURL = "";
+        config.embedding.model = "embed-english-v3.0";
+        config.embedding.dimensions = 1024;
       }
       return config;
     })();
   }
   return configPromise;
+}
+
+// src/hooks/hawk-recall/handler.ts
+var bm25DirtyGlobal = false;
+function markBm25Dirty() {
+  bm25DirtyGlobal = true;
 }
 
 // src/hooks/hawk-capture/handler.ts
@@ -469,6 +511,7 @@ var captureHandler = async (event) => {
       });
     }
     console.log(`[hawk-capture] Stored ${significant.length} memories`);
+    markBm25Dirty();
   } catch (err) {
     console.error("[hawk-capture] Error:", err);
   }
@@ -484,6 +527,7 @@ function callExtractor(conversationText, config) {
       ["-c", buildExtractorScript(conversationText, apiKey, model, provider, baseURL)]
     );
     let stdout = "";
+    let stderr = "";
     const timer = setTimeout(() => {
       console.warn("[hawk-capture] subprocess timeout, killing...");
       proc.kill("SIGTERM");
@@ -491,10 +535,13 @@ function callExtractor(conversationText, config) {
     proc.stdout.on("data", (d) => {
       stdout += d.toString();
     });
+    proc.stderr.on("data", (d) => {
+      stderr += d.toString();
+    });
     proc.on("close", (code) => {
       clearTimeout(timer);
       if (code !== 0) {
-        console.error("[hawk-capture] extractor error:", code);
+        console.error("[hawk-capture] extractor error:", code, stderr ? `stderr: ${stderr}` : "");
         resolve([]);
         return;
       }

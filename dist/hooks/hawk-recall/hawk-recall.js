@@ -169,6 +169,30 @@ var HawkDB = class {
       return null;
     }
   }
+  /** Batch fetch multiple memories by ID in a single query — avoids N+1 round-trips */
+  async getByIds(ids) {
+    if (!this.table) await this.init();
+    const results = /* @__PURE__ */ new Map();
+    if (!ids.length) return results;
+    try {
+      const conditions = ids.map(() => "id = ?").join(" OR ");
+      const rows = await this.table.query().where(conditions, ids).limit(ids.length).toList();
+      for (const r of rows) {
+        results.set(r.id, {
+          id: r.id,
+          text: r.text,
+          vector: r.vector || [],
+          category: r.category,
+          scope: r.scope,
+          importance: r.importance,
+          timestamp: Number(r.timestamp),
+          metadata: JSON.parse(r.metadata || "{}")
+        });
+      }
+    } catch {
+    }
+    return results;
+  }
 };
 
 // src/embeddings.ts
@@ -400,6 +424,18 @@ async function getConfig() {
         config.embedding.baseURL = "";
         config.embedding.model = "jina-embeddings-v5-small";
         config.embedding.dimensions = 1024;
+      } else if (process.env.OPENAI_API_KEY) {
+        config.embedding.provider = "openai";
+        config.embedding.apiKey = process.env.OPENAI_API_KEY;
+        config.embedding.baseURL = "";
+        config.embedding.model = "text-embedding-3-small";
+        config.embedding.dimensions = 1536;
+      } else if (process.env.COHERE_API_KEY) {
+        config.embedding.provider = "cohere";
+        config.embedding.apiKey = process.env.COHERE_API_KEY;
+        config.embedding.baseURL = "";
+        config.embedding.model = "embed-english-v3.0";
+        config.embedding.dimensions = 1024;
       }
       return config;
     })();
@@ -419,12 +455,28 @@ var HybridRetriever = class {
   corpus = [];
   corpusIds = [];
   noisePrototypes = [];
+  bm25Dirty = false;
+  // set true when new memories are stored
+  bm25BuildPromise = null;
+  // prevents concurrent rebuilds
   constructor(db, embedder) {
     this.db = db;
     this.embedder = embedder;
   }
+  /** Call this after store() to invalidate the BM25 index — next search() will rebuild */
+  markDirty() {
+    this.bm25Dirty = true;
+  }
   // ---------- BM25 Setup ----------
-  async buildBm25Index() {
+  async _ensureBm25Index() {
+    if (!this.bm25Dirty && this.bm25) return;
+    if (this.bm25BuildPromise) return this.bm25BuildPromise;
+    this.bm25BuildPromise = this._buildBm25Index();
+    await this.bm25BuildPromise;
+    this.bm25BuildPromise = null;
+    this.bm25Dirty = false;
+  }
+  async _buildBm25Index() {
     try {
       const { BM25Okapi } = await import("rank_bm25");
       const allMemories = await this.db.getAllTexts();
@@ -432,7 +484,7 @@ var HybridRetriever = class {
       this.corpusIds = allMemories.map((m) => m.id);
       this.corpus = allMemories.map((m) => m.text.toLowerCase());
       this.bm25 = new BM25Okapi(this.corpus);
-    } catch (e) {
+    } catch {
       console.warn("[hawk-bridge] rank_bm25 not available, BM25 disabled");
     }
   }
@@ -470,11 +522,10 @@ var HybridRetriever = class {
         this.noisePrototypes = await this.embedder.embed(noiseTexts);
       }
     } catch (e) {
-      console.warn("[hawk-bridge] Noise prototype embedding failed, skipping:", e);
+      console.warn("[hawk-bridge] Noise prototype embedding failed, noise filter disabled:", e.message);
     }
   }
   isNoise(embedding) {
-    if (!this.noisePrototypes.length) return false;
     for (const prototype of this.noisePrototypes) {
       const sim = cosineSimilarity(embedding, prototype);
       if (sim >= NOISE_SIMILARITY_THRESHOLD) return true;
@@ -552,7 +603,8 @@ var HybridRetriever = class {
   }
   // ---------- Main Search Pipeline ----------
   async search(query, topK = 5, scope) {
-    if (!this.bm25) await this.buildBm25Index();
+    topK = Math.min(Math.max(1, topK), 100);
+    await this._ensureBm25Index();
     if (!this.noisePrototypes.length) await this.buildNoisePrototypes();
     const hasEmbedding = hasEmbeddingProvider();
     if (hasEmbedding) {
@@ -563,9 +615,11 @@ var HybridRetriever = class {
         const bm25Scores2 = this.bm25Score(query);
         const bm25Ranked2 = this.corpusIds.map((id, i) => ({ id, score: bm25Scores2[i], text: this.corpus[i] })).filter((item) => item.score > 0).sort((a, b) => b.score - a.score).slice(0, topK * BM25_SEARCH_MULTIPLIER);
         const fused = this.rrfFusion(vectorRanked, bm25Ranked2);
+        const fusedIds = fused.map((f) => f.id);
+        const fetched = await this.db.getByIds(fusedIds);
         const noiseFiltered = [];
         for (const item of fused) {
-          const memory = await this.db.getById(item.id);
+          const memory = fetched.get(item.id);
           if (!memory) continue;
           if (this.isNoise(memory.vector)) continue;
           noiseFiltered.push({ ...item, text: memory.text, vector: memory.vector });
@@ -581,7 +635,7 @@ var HybridRetriever = class {
         for (const item of noiseFiltered) {
           const rerankScore = idToRerank.get(item.id);
           if (rerankScore === void 0) continue;
-          const memory = await this.db.getById(item.id);
+          const memory = fetched.get(item.id);
           if (!memory) continue;
           results2.push({
             id: item.id,
@@ -600,12 +654,14 @@ var HybridRetriever = class {
     console.log("[hawk-bridge] Running in BM25-only mode (no embedding API)");
     const bm25Scores = this.bm25Score(query);
     const bm25Ranked = this.corpusIds.map((id, i) => ({ id, score: bm25Scores[i], text: this.corpus[i] })).filter((item) => item.score > 0).sort((a, b) => b.score - a.score).slice(0, topK * 3);
+    const bm25Ids = bm25Ranked.map((b) => b.id);
+    const fetchedBm25 = await this.db.getByIds(bm25Ids);
     const idToScore = new Map(bm25Ranked.map((item) => [item.id, item.score]));
     const results = [];
     for (const item of bm25Ranked) {
       const score = idToScore.get(item.id);
       if (score === void 0) continue;
-      const memory = await this.db.getById(item.id);
+      const memory = fetchedBm25.get(item.id);
       if (!memory) continue;
       results.push({
         id: item.id,
@@ -630,6 +686,10 @@ function cosineSimilarity(a, b) {
 }
 
 // src/hooks/hawk-recall/handler.ts
+var bm25DirtyGlobal = false;
+function markBm25Dirty() {
+  bm25DirtyGlobal = true;
+}
 var retrieverPromise = null;
 async function getRetriever() {
   if (!retrieverPromise) {
@@ -639,12 +699,16 @@ async function getRetriever() {
       await db.init();
       const embedder = new Embedder(config.embedding);
       const r = new HybridRetriever(db, embedder);
-      await r.buildBm25Index();
       await r.buildNoisePrototypes();
       return r;
     })();
   }
-  return retrieverPromise;
+  const retriever = await retrieverPromise;
+  if (bm25DirtyGlobal) {
+    retriever.markDirty();
+    bm25DirtyGlobal = false;
+  }
+  return retriever;
 }
 var recallHandler = async (event) => {
   if (event.type !== "agent" || event.action !== "bootstrap") return;
@@ -686,5 +750,6 @@ function extractQueryFromSession(sessionEntry) {
 }
 var handler_default = recallHandler;
 export {
-  handler_default as default
+  handler_default as default,
+  markBm25Dirty
 };
