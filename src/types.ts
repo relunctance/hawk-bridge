@@ -2,11 +2,17 @@
 
 export interface HawkConfig {
   embedding: {
-    provider: 'openai' | 'jina';
+    provider: 'openai' | 'jina' | 'minimax' | 'openclaw' | 'ollama' | 'cohere' | 'sentence-transformers';
     apiKey: string;
     model: string;
     baseURL: string;
     dimensions: number;
+  };
+  llm: {
+    provider: string;
+    apiKey: string;
+    model: string;
+    baseURL: string;
   };
   recall: {
     topK: number;
@@ -34,11 +40,7 @@ export interface MemoryEntry {
   timestamp: number;
   accessCount: number;
   lastAccessedAt: number;
-  metadata: {
-    source?: string;
-    l0_abstract?: string;
-    l1_overview?: string;
-  };
+  metadata: Record<string, unknown>;
 }
 
 export interface RetrievedMemory {

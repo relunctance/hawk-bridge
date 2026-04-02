@@ -138,7 +138,8 @@ export class HawkDB {
   private async incrementAccess(id: string): Promise<void> {
     try {
       await this.table.update({
-        where: `id = '${id}'`,
+        where: 'id = ?',
+        whereParams: [id],
         updates: {
           access_count: this.db.util().scalar('access_count + 1'),
           last_accessed_at: BigInt(Date.now()),
@@ -180,7 +181,7 @@ export class HawkDB {
   async getById(id: string): Promise<(Omit<MemoryEntry, 'accessCount' | 'lastAccessedAt'> & { vector: number[] }) | null> {
     if (!this.table) await this.init();
     try {
-      const rows = await this.table.query().where(`id = '${id}'`).limit(1).toList();
+      const rows = await this.table.query().where('id = ?', [id]).limit(1).toList();
       if (!rows.length) return null;
       const r = rows[0];
       return {

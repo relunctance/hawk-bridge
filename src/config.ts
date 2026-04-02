@@ -120,19 +120,18 @@ export async function getConfig(): Promise<HawkConfig> {
     config.llm.apiKey = minimaxApiKey;
     config.llm.provider = 'minimax';
   }
-  if (process.env.OLLAMA_BASE_URL) {
-    config.embedding.provider = 'ollama';
-    config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
-  }
   if (process.env.JINA_API_KEY) {
+    // Jina overrides Minimax only if explicitly set
     config.embedding.provider = 'jina';
     config.embedding.apiKey = process.env.JINA_API_KEY;
   }
-
-  // Ollama: auto-detect from env or explicit config
-  if (process.env.OLLAMA_BASE_URL || config.embedding.provider === 'ollama') {
+  if (process.env.OLLAMA_BASE_URL) {
+    // Ollama has highest priority among env vars — warn if overriding Minimax
+    if (minimaxApiKey && config.embedding.provider === 'minimax') {
+      console.warn('[hawk-bridge] OLLAMA_BASE_URL set, overriding MINIMAX_API_KEY embedding config');
+    }
     config.embedding.provider = 'ollama';
-    config.embedding.baseURL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+    config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
     config.embedding.model = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
   }
 

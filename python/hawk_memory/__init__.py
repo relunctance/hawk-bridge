@@ -11,8 +11,12 @@ import sys, os
 
 _CONTEXT_HAWK_PATHS = [
     os.path.expanduser("~/.openclaw/workspace/context-hawk/hawk"),
+    os.path.expanduser("~/.openclaw/hawk"),
     os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "context-hawk", "hawk"),
     os.path.join(os.getcwd(), "context-hawk", "hawk"),
+    # Skill installation path (openclaw skills install)
+    os.path.join(os.path.expanduser("~/.openclaw"), "workspace", "skills", "hawk-bridge", "context-hawk", "hawk"),
+    os.path.join(os.path.expanduser("~/.openclaw"), "workspace", "skills", "hawk-bridge", "python", "hawk_memory", "..", "..", "..", "context-hawk", "hawk"),
 ]
 
 for _p in _CONTEXT_HAWK_PATHS:

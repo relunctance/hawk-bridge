@@ -16,7 +16,7 @@ export class Embedder {
     const { provider } = this.config;
 
     if (provider === 'minimax') {
-      return this.embedMinimax(texts);
+      return this.embedOpenClaw(texts);
     } else if (provider === 'openclaw') {
       return this.embedOpenClaw(texts);
     } else if (provider === 'ollama') {
@@ -56,36 +56,6 @@ export class Embedder {
     if (!resp.ok) {
       const errText = await resp.text();
       throw new Error(`OpenClaw/Minimax embedding error: ${resp.status} ${errText}`);
-    }
-    const data = await resp.json() as any;
-    if (!data.vectors || !data.vectors[0]) {
-      throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
-    }
-    return data.vectors;
-  }
-
-  // ---- OpenAI ----
-  // ---- Minimax embeddings ----
-  private async embedMinimax(texts: string[]): Promise<number[][]> {
-    const baseURL = this.config.baseURL || 'https://api.minimaxi.com/v1';
-    const apiKey = this.config.apiKey || process.env.MINIMAX_API_KEY || '';
-
-    const resp = await fetch(`${baseURL}/embeddings`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.config.model || 'embedding-2-normal',
-        type: 'db',
-        texts: texts,
-      }),
-    });
-
-    if (!resp.ok) {
-      const errText = await resp.text();
-      throw new Error(`Minimax embedding error: ${resp.status} ${errText}`);
     }
     const data = await resp.json() as any;
     if (!data.vectors || !data.vectors[0]) {

@@ -121,11 +121,11 @@ export async function seed(): Promise<void> {
       id,
       text: memory.text,
       vector: [], // Empty vector - BM25-only mode doesn't need vectors
-      category: memory.category,
+      category: memory.category as 'fact' | 'preference' | 'decision' | 'entity' | 'other',
       scope: memory.scope,
       importance: memory.importance,
       timestamp: Date.now(),
-      metadata: JSON.stringify(memory.metadata),
+      metadata: memory.metadata as Record<string, unknown>,
     });
     console.log(`[seed] Added: ${memory.text.slice(0, 60)}...`);
   }
