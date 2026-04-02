@@ -99,7 +99,8 @@ var HawkDB = class {
   async incrementAccess(id) {
     try {
       await this.table.update({
-        where: `id = '${id}'`,
+        where: "id = ?",
+        whereParams: [id],
         updates: {
           access_count: this.db.util().scalar("access_count + 1"),
           last_accessed_at: BigInt(Date.now())
@@ -136,7 +137,7 @@ var HawkDB = class {
   async getById(id) {
     if (!this.table) await this.init();
     try {
-      const rows = await this.table.query().where(`id = '${id}'`).limit(1).toList();
+      const rows = await this.table.query().where("id = ?", [id]).limit(1).toList();
       if (!rows.length) return null;
       const r = rows[0];
       return {
@@ -156,7 +157,7 @@ var HawkDB = class {
 };
 
 // src/seed.ts
-import { randomBytes } from "crypto";
+import { createHash } from "crypto";
 var SEED_MEMORIES = [
   // Generic AI agent team context
   {
@@ -249,17 +250,23 @@ var SEED_MEMORIES = [
     metadata: { source: "seed", created_at: (/* @__PURE__ */ new Date()).toISOString() }
   }
 ];
-function generateId() {
-  return randomBytes(16).toString("hex");
+function seedId(text) {
+  return "seed_" + createHash("sha256").update(text).digest("hex").slice(0, 24);
 }
 async function seed() {
   console.log("[seed] Starting seed...");
   const db = new HawkDB();
   await db.init();
-  const count = SEED_MEMORIES.length;
-  console.log(`[seed] Seeding ${count} generic memories...`);
+  let added = 0;
+  let skipped = 0;
   for (const memory of SEED_MEMORIES) {
-    const id = generateId();
+    const id = seedId(memory.text);
+    const existing = await db.getById(id);
+    if (existing) {
+      console.log(`[seed] Skipped (already exists): ${memory.text.slice(0, 60)}...`);
+      skipped++;
+      continue;
+    }
     await db.store({
       id,
       text: memory.text,
@@ -269,11 +276,12 @@ async function seed() {
       scope: memory.scope,
       importance: memory.importance,
       timestamp: Date.now(),
-      metadata: JSON.stringify(memory.metadata)
+      metadata: memory.metadata
     });
     console.log(`[seed] Added: ${memory.text.slice(0, 60)}...`);
+    added++;
   }
-  console.log(`[seed] Done! Seeded ${count} generic memories.`);
+  console.log(`[seed] Done! Added: ${added}, Skipped (already exist): ${skipped}.`);
   console.log("[seed] IMPORTANT: Customize these memories for your team in ~/.hawk/lancedb/");
   process.exit(0);
 }

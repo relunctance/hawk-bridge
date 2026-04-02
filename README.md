@@ -372,7 +372,7 @@ openclaw plugins install /tmp/hawk-bridge
 
 ```bash
 # 1. System deps
-sudo apt-get update && sudo apt-get install -y nodejs npm python3 python3-pip git curl
+sudo zypper install -y nodejs npm python3 python3-pip git curl
 
 # 2. Clone repo
 git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
@@ -399,98 +399,6 @@ node dist/seed.js
 openclaw plugins install /tmp/hawk-bridge
 ```
 
-### Fedora / RHEL / CentOS / Rocky / AlmaLinux
-
-```bash
-# 1. System deps
-sudo dnf install -y nodejs npm python3 python3-pip git curl
-
-# 2. Clone repo
-git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
-cd /tmp/hawk-bridge
-
-# 3. Python deps
-pip3 install lancedb openai tiktoken rank-bm25 sentence-transformers --break-system-packages
-
-# 4. Ollama (optional)
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull nomic-embed-text
-
-# 5. context-hawk
-git clone git@github.com:relunctance/context-hawk.git ~/.openclaw/workspace/context-hawk
-ln -sf ~/.openclaw/workspace/context-hawk/hawk ~/.openclaw/hawk
-
-# 6. npm + build
-npm install && npm run build
-
-# 7. Seed memory
-node dist/seed.js
-
-# 8. Activate
-openclaw plugins install /tmp/hawk-bridge
-```
-
-### Arch / Manjaro / EndeavourOS
-
-```bash
-# 1. System deps
-sudo pacman -Sy --noconfirm nodejs npm python python-pip git curl
-
-# 2. Clone repo
-git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
-cd /tmp/hawk-bridge
-
-# 3. Python deps
-pip3 install lancedb openai tiktoken rank-bm25 sentence-transformers --break-system-packages
-
-# 4. Ollama (optional)
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull nomic-embed-text
-
-# 5. context-hawk
-git clone git@github.com:relunctance/context-hawk.git ~/.openclaw/workspace/context-hawk
-ln -sf ~/.openclaw/workspace/context-hawk/hawk ~/.openclaw/hawk
-
-# 6. npm + build
-npm install && npm run build
-
-# 7. Seed memory
-node dist/seed.js
-
-# 8. Activate
-openclaw plugins install /tmp/hawk-bridge
-```
-
-### Alpine
-
-```bash
-# 1. System deps
-apk add --no-cache nodejs npm python3 py3-pip git curl
-
-# 2. Clone repo
-git clone git@github.com:relunctance/hawk-bridge.git /tmp/hawk-bridge
-cd /tmp/hawk-bridge
-
-# 3. Python deps
-pip3 install lancedb openai tiktoken rank-bm25 sentence-transformers --break-system-packages
-
-# 4. Ollama (optional)
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull nomic-embed-text
-
-# 5. context-hawk
-git clone git@github.com:relunctance/context-hawk.git ~/.openclaw/workspace/context-hawk
-ln -sf ~/.openclaw/workspace/context-hawk/hawk ~/.openclaw/hawk
-
-# 6. npm + build
-npm install && npm run build
-
-# 7. Seed memory
-node dist/seed.js
-
-# 8. Activate
-openclaw plugins install /tmp/hawk-bridge
-```
 
 ### openSUSE / SUSE Linux Enterprise
 

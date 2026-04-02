@@ -110,7 +110,8 @@ var HawkDB = class {
   async incrementAccess(id) {
     try {
       await this.table.update({
-        where: `id = '${id}'`,
+        where: "id = ?",
+        whereParams: [id],
         updates: {
           access_count: this.db.util().scalar("access_count + 1"),
           last_accessed_at: BigInt(Date.now())
@@ -147,7 +148,7 @@ var HawkDB = class {
   async getById(id) {
     if (!this.table) await this.init();
     try {
-      const rows = await this.table.query().where(`id = '${id}'`).limit(1).toList();
+      const rows = await this.table.query().where("id = ?", [id]).limit(1).toList();
       if (!rows.length) return null;
       const r = rows[0];
       return {
@@ -176,7 +177,7 @@ var Embedder = class {
   async embed(texts) {
     const { provider } = this.config;
     if (provider === "minimax") {
-      return this.embedMinimax(texts);
+      return this.embedOpenClaw(texts);
     } else if (provider === "openclaw") {
       return this.embedOpenClaw(texts);
     } else if (provider === "ollama") {
@@ -212,33 +213,6 @@ var Embedder = class {
     if (!resp.ok) {
       const errText = await resp.text();
       throw new Error(`OpenClaw/Minimax embedding error: ${resp.status} ${errText}`);
-    }
-    const data = await resp.json();
-    if (!data.vectors || !data.vectors[0]) {
-      throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
-    }
-    return data.vectors;
-  }
-  // ---- OpenAI ----
-  // ---- Minimax embeddings ----
-  async embedMinimax(texts) {
-    const baseURL = this.config.baseURL || "https://api.minimaxi.com/v1";
-    const apiKey = this.config.apiKey || process.env.MINIMAX_API_KEY || "";
-    const resp = await fetch(`${baseURL}/embeddings`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: this.config.model || "embedding-2-normal",
-        type: "db",
-        texts
-      })
-    });
-    if (!resp.ok) {
-      const errText = await resp.text();
-      throw new Error(`Minimax embedding error: ${resp.status} ${errText}`);
     }
     const data = await resp.json();
     if (!data.vectors || !data.vectors[0]) {
@@ -392,17 +366,16 @@ async function getConfig() {
     config.llm.apiKey = minimaxApiKey;
     config.llm.provider = "minimax";
   }
-  if (process.env.OLLAMA_BASE_URL) {
-    config.embedding.provider = "ollama";
-    config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
-  }
   if (process.env.JINA_API_KEY) {
     config.embedding.provider = "jina";
     config.embedding.apiKey = process.env.JINA_API_KEY;
   }
-  if (process.env.OLLAMA_BASE_URL || config.embedding.provider === "ollama") {
+  if (process.env.OLLAMA_BASE_URL) {
+    if (minimaxApiKey && config.embedding.provider === "minimax") {
+      console.warn("[hawk-bridge] OLLAMA_BASE_URL set, overriding MINIMAX_API_KEY embedding config");
+    }
     config.embedding.provider = "ollama";
-    config.embedding.baseURL = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
+    config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
     config.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
   }
   cachedConfig = config;

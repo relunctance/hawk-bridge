@@ -140,6 +140,12 @@ export async function getConfig(): Promise<HawkConfig> {
 }
 
 export function hasEmbeddingProvider(): boolean {
-  // sentence-transformers always available (local CPU, no API key needed)
-  return true;
+  // Returns true if any embedding backend is actually available
+  return !!(
+    process.env.MINIMAX_API_KEY ||
+    process.env.JINA_API_KEY ||
+    process.env.OLLAMA_BASE_URL ||
+    process.env.OPENAI_API_KEY ||
+    getConfiguredProvider('minimax')
+  );
 }
