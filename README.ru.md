@@ -33,6 +33,21 @@ AI агенты забывают всё после каждой сессии. **
 
 ---
 
+## ❌ Without vs ✅ With hawk-bridge (TODO: translate)
+
+| Scenario | ❌ Without hawk-bridge | ✅ With hawk-bridge |
+|----------|------------------------|---------------------|
+| **New session starts** | Blank — knows nothing about you | ✅ Injects relevant memories automatically |
+| **User repeats a preference** | "I told you before..." | Remembers from session 1 |
+| **Long task runs for days** | Restart = start over | Task state persists, resumes seamlessly |
+| **Context gets large** | Token bill skyrockets, 💸 | 5 compression strategies keep it lean |
+| **Duplicate info** | Same fact stored 10 times | SimHash dedup — stored once |
+| **Memory recall** | All similar, redundant injection | MMR diverse recall — no repetition |
+| **Memory management** | Everything piles up forever | 4-tier decay — noise fades, signal stays |
+| **Self-improvement** | Repeats the same mistakes | importance + access_count tracking → smart promotion |
+| **Multi-agent team** | Each agent starts fresh, no shared context | Shared LanceDB — all agents learn from each other |
+
+
 ## ✨ Ключевые функции
 
 | # | Функция | Описание |
