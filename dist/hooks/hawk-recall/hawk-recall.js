@@ -1,6 +1,21 @@
 // src/lancedb.ts
 import * as path from "path";
 import * as os from "os";
+
+// src/constants.ts
+var BM25_K1 = parseFloat(process.env.HAWK_BM25_K1 || "1.5");
+var BM25_B = parseFloat(process.env.HAWK_BM25_B || "0.75");
+var RRF_K = parseFloat(process.env.HAWK_RRF_K || "60");
+var RRF_VECTOR_WEIGHT = parseFloat(process.env.HAWK_RRF_VECTOR_WEIGHT || "0.7");
+var NOISE_SIMILARITY_THRESHOLD = parseFloat(process.env.HAWK_NOISE_THRESHOLD || "0.82");
+var VECTOR_SEARCH_MULTIPLIER = parseInt(process.env.HAWK_VECTOR_SEARCH_MULTIPLIER || "4", 10);
+var BM25_SEARCH_MULTIPLIER = parseInt(process.env.HAWK_BM25_SEARCH_MULTIPLIER || "4", 10);
+var RERANK_CANDIDATE_MULTIPLIER = parseInt(process.env.HAWK_RERANK_CANDIDATE_MULTIPLIER || "3", 10);
+var BM25_QUERY_LIMIT = parseInt(process.env.HAWK_BM25_QUERY_LIMIT || "10000", 10);
+var DEFAULT_EMBEDDING_DIM = parseInt(process.env.HAWK_EMBEDDING_DIM || "384", 10);
+var DEFAULT_MIN_SCORE = parseFloat(process.env.HAWK_MIN_SCORE || "0.6");
+
+// src/lancedb.ts
 var TABLE_NAME = "hawk_memories";
 var HawkDB = class {
   db = null;
@@ -41,7 +56,7 @@ var HawkDB = class {
     }
   }
   _makeRow(data) {
-    const vec = data.vector.length > 0 ? Array.from(data.vector) : new Array(384).fill(0);
+    const vec = data.vector.length > 0 ? Array.from(data.vector) : new Array(DEFAULT_EMBEDDING_DIM).fill(0);
     return {
       id: data.id,
       text: data.text,
@@ -131,7 +146,7 @@ var HawkDB = class {
   }
   async getAllTexts() {
     if (!this.table) await this.init();
-    const rows = await this.table.query().limit(1e4).toList();
+    const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toList();
     return rows.map((r) => ({ id: r.id, text: r.text }));
   }
   async getById(id) {
@@ -319,7 +334,8 @@ var DEFAULT_CONFIG = {
     apiKey: "",
     model: "all-MiniLM-L6-v2",
     baseURL: "",
-    dimensions: 384
+    dimensions: DEFAULT_EMBEDDING_DIM
+    // from constants.ts (384 for all-MiniLM-L6-v2)
   },
   llm: {
     provider: "groq",
@@ -330,7 +346,8 @@ var DEFAULT_CONFIG = {
   },
   recall: {
     topK: 5,
-    minScore: 0.6,
+    minScore: DEFAULT_MIN_SCORE,
+    // from constants.ts
     injectEmoji: "\u{1F985}"
   },
   capture: {
@@ -445,23 +462,23 @@ var HybridRetriever = class {
       console.warn("[hawk-bridge] Noise prototype embedding failed, skipping:", e);
     }
   }
-  isNoise(embedding, threshold = 0.82) {
+  isNoise(embedding) {
     if (!this.noisePrototypes.length) return false;
     for (const prototype of this.noisePrototypes) {
       const sim = cosineSimilarity(embedding, prototype);
-      if (sim >= threshold) return true;
+      if (sim >= NOISE_SIMILARITY_THRESHOLD) return true;
     }
     return false;
   }
   // ---------- RRF Fusion ----------
-  rrfFusion(vectorResults, bm25Results, k = 60) {
+  rrfFusion(vectorResults, bm25Results) {
     const rrfMap = /* @__PURE__ */ new Map();
     for (let rank = 0; rank < vectorResults.length; rank++) {
       const item = vectorResults[rank];
-      const score = 1 / (k + rank + 1);
+      const score = 1 / (RRF_K + rank + 1);
       const existing = rrfMap.get(item.id) || { rrfScore: 0, vectorScore: 0, bm25Score: 0 };
       rrfMap.set(item.id, {
-        rrfScore: existing.rrfScore + score * 0.7,
+        rrfScore: existing.rrfScore + score * RRF_VECTOR_WEIGHT,
         // vector weight
         vectorScore: item.score,
         bm25Score: existing.bm25Score
@@ -469,10 +486,10 @@ var HybridRetriever = class {
     }
     for (let rank = 0; rank < bm25Results.length; rank++) {
       const item = bm25Results[rank];
-      const score = 1 / (k + rank + 1);
+      const score = 1 / (RRF_K + rank + 1);
       const existing = rrfMap.get(item.id) || { rrfScore: 0, vectorScore: 0, bm25Score: 0 };
       rrfMap.set(item.id, {
-        rrfScore: existing.rrfScore + score * 0.3,
+        rrfScore: existing.rrfScore + score * (1 - RRF_VECTOR_WEIGHT),
         // BM25 weight
         vectorScore: existing.vectorScore,
         bm25Score: item.score
@@ -530,10 +547,10 @@ var HybridRetriever = class {
     if (hasEmbedding) {
       try {
         const queryVector = await this.embedder.embedQuery(query);
-        const vectorResults = await this.db.search(queryVector, topK * 4, 0, scope);
+        const vectorResults = await this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, 0, scope);
         const vectorRanked = vectorResults.map((r, i) => ({ id: r.id, score: 1 - i * 0.01, text: r.text })).sort((a, b) => b.score - a.score);
         const bm25Scores2 = this.bm25Score(query);
-        const bm25Ranked2 = this.corpusIds.map((id, i) => ({ id, score: bm25Scores2[i], text: this.corpus[i] })).filter((item) => item.score > 0).sort((a, b) => b.score - a.score).slice(0, topK * 4);
+        const bm25Ranked2 = this.corpusIds.map((id, i) => ({ id, score: bm25Scores2[i], text: this.corpus[i] })).filter((item) => item.score > 0).sort((a, b) => b.score - a.score).slice(0, topK * BM25_SEARCH_MULTIPLIER);
         const fused = this.rrfFusion(vectorRanked, bm25Ranked2);
         const noiseFiltered = [];
         for (const item of fused) {
@@ -542,7 +559,7 @@ var HybridRetriever = class {
           if (this.isNoise(memory.vector)) continue;
           noiseFiltered.push({ ...item, text: memory.text, vector: memory.vector });
         }
-        const candidates = noiseFiltered.slice(0, topK * 3).map((item) => ({
+        const candidates = noiseFiltered.slice(0, topK * RERANK_CANDIDATE_MULTIPLIER).map((item) => ({
           id: item.id,
           text: item.text,
           score: item.rrfScore

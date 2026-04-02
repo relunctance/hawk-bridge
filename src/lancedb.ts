@@ -3,6 +3,7 @@
 
 import * as path from 'path';
 import * as os from 'os';
+import { BM25_QUERY_LIMIT, DEFAULT_EMBEDDING_DIM } from './constants.js';
 import type { MemoryEntry, RetrievedMemory } from './types.js';
 
 const TABLE_NAME = 'hawk_memories';
@@ -63,8 +64,9 @@ export class HawkDB {
     last_accessed_at: number;
     metadata: string;
   }): any {
-    // Use a dummy vector of 384 zeros if empty (embedding dimension placeholder)
-    const vec = data.vector.length > 0 ? Array.from(data.vector) : new Array(384).fill(0);
+    // Use a dummy zero vector if embedding is empty.
+    // DEFAULT_EMBEDDING_DIM must match your embedding model's output dimension.
+    const vec = data.vector.length > 0 ? Array.from(data.vector) : new Array(DEFAULT_EMBEDDING_DIM).fill(0);
     return {
       id: data.id,
       text: data.text,
@@ -174,7 +176,8 @@ export class HawkDB {
 
   async getAllTexts(): Promise<Array<{ id: string; text: string }>> {
     if (!this.table) await this.init();
-    const rows = await this.table.query().limit(10000).toList();
+    // BM25_QUERY_LIMIT prevents runaway queries on very large memory stores
+    const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toList();
     return rows.map((r: any) => ({ id: r.id, text: r.text }));
   }
 

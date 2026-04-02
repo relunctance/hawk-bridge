@@ -4,6 +4,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { DEFAULT_MIN_SCORE, DEFAULT_EMBEDDING_DIM } from './constants.js';
 import type { HawkConfig } from './types.js';
 
 const OPENCLAW_CONFIG_PATH = path.join(os.homedir(), '.openclaw', 'openclaw.json');
@@ -67,7 +68,7 @@ const DEFAULT_CONFIG: HawkConfig = {
     apiKey: '',
     model: 'all-MiniLM-L6-v2',
     baseURL: '',
-    dimensions: 384,
+    dimensions: DEFAULT_EMBEDDING_DIM,  // from constants.ts (384 for all-MiniLM-L6-v2)
   },
   llm: {
     provider: 'groq',  // Default: free groq Llama-3, no API key needed
@@ -77,7 +78,7 @@ const DEFAULT_CONFIG: HawkConfig = {
   },
   recall: {
     topK: 5,
-    minScore: 0.6,
+    minScore: DEFAULT_MIN_SCORE,  // from constants.ts
     injectEmoji: '🦅',
   },
   capture: {

@@ -1,6 +1,21 @@
 // src/lancedb.ts
 import * as path from "path";
 import * as os from "os";
+
+// src/constants.ts
+var BM25_K1 = parseFloat(process.env.HAWK_BM25_K1 || "1.5");
+var BM25_B = parseFloat(process.env.HAWK_BM25_B || "0.75");
+var RRF_K = parseFloat(process.env.HAWK_RRF_K || "60");
+var RRF_VECTOR_WEIGHT = parseFloat(process.env.HAWK_RRF_VECTOR_WEIGHT || "0.7");
+var NOISE_SIMILARITY_THRESHOLD = parseFloat(process.env.HAWK_NOISE_THRESHOLD || "0.82");
+var VECTOR_SEARCH_MULTIPLIER = parseInt(process.env.HAWK_VECTOR_SEARCH_MULTIPLIER || "4", 10);
+var BM25_SEARCH_MULTIPLIER = parseInt(process.env.HAWK_BM25_SEARCH_MULTIPLIER || "4", 10);
+var RERANK_CANDIDATE_MULTIPLIER = parseInt(process.env.HAWK_RERANK_CANDIDATE_MULTIPLIER || "3", 10);
+var BM25_QUERY_LIMIT = parseInt(process.env.HAWK_BM25_QUERY_LIMIT || "10000", 10);
+var DEFAULT_EMBEDDING_DIM = parseInt(process.env.HAWK_EMBEDDING_DIM || "384", 10);
+var DEFAULT_MIN_SCORE = parseFloat(process.env.HAWK_MIN_SCORE || "0.6");
+
+// src/lancedb.ts
 var TABLE_NAME = "hawk_memories";
 var HawkDB = class {
   db = null;
@@ -41,7 +56,7 @@ var HawkDB = class {
     }
   }
   _makeRow(data) {
-    const vec = data.vector.length > 0 ? Array.from(data.vector) : new Array(384).fill(0);
+    const vec = data.vector.length > 0 ? Array.from(data.vector) : new Array(DEFAULT_EMBEDDING_DIM).fill(0);
     return {
       id: data.id,
       text: data.text,
@@ -131,7 +146,7 @@ var HawkDB = class {
   }
   async getAllTexts() {
     if (!this.table) await this.init();
-    const rows = await this.table.query().limit(1e4).toList();
+    const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toList();
     return rows.map((r) => ({ id: r.id, text: r.text }));
   }
   async getById(id) {

@@ -7,6 +7,12 @@
 import { HawkDB } from './lancedb.js';
 import { Embedder } from './embeddings.js';
 import { getConfig, hasEmbeddingProvider } from './config.js';
+import {
+  BM25_K1, BM25_B, RRF_K, RRF_VECTOR_WEIGHT,
+  NOISE_SIMILARITY_THRESHOLD,
+  VECTOR_SEARCH_MULTIPLIER, BM25_SEARCH_MULTIPLIER,
+  RERANK_CANDIDATE_MULTIPLIER,
+} from './constants.js';
 import type { RetrievedMemory } from './types.js';
 
 export class HybridRetriever {
@@ -84,12 +90,12 @@ export class HybridRetriever {
     }
   }
 
-  private isNoise(embedding: number[], threshold = 0.82): boolean {
+  private isNoise(embedding: number[]): boolean {
     if (!this.noisePrototypes.length) return false;
 
     for (const prototype of this.noisePrototypes) {
       const sim = cosineSimilarity(embedding, prototype);
-      if (sim >= threshold) return true;
+      if (sim >= NOISE_SIMILARITY_THRESHOLD) return true;
     }
     return false;
   }
@@ -99,17 +105,16 @@ export class HybridRetriever {
   private rrfFusion(
     vectorResults: Array<{ id: string; score: number }>,
     bm25Results: Array<{ id: string; score: number }>,
-    k = 60
   ): Array<{ id: string; rrfScore: number; vectorScore: number; bm25Score: number }> {
     const rrfMap = new Map<string, { rrfScore: number; vectorScore: number; bm25Score: number }>();
 
     // Vector results
     for (let rank = 0; rank < vectorResults.length; rank++) {
       const item = vectorResults[rank];
-      const score = 1 / (k + rank + 1);
+      const score = 1 / (RRF_K + rank + 1);
       const existing = rrfMap.get(item.id) || { rrfScore: 0, vectorScore: 0, bm25Score: 0 };
       rrfMap.set(item.id, {
-        rrfScore: existing.rrfScore + score * 0.7, // vector weight
+        rrfScore: existing.rrfScore + score * RRF_VECTOR_WEIGHT, // vector weight
         vectorScore: item.score,
         bm25Score: existing.bm25Score,
       });
@@ -118,10 +123,10 @@ export class HybridRetriever {
     // BM25 results
     for (let rank = 0; rank < bm25Results.length; rank++) {
       const item = bm25Results[rank];
-      const score = 1 / (k + rank + 1);
+      const score = 1 / (RRF_K + rank + 1);
       const existing = rrfMap.get(item.id) || { rrfScore: 0, vectorScore: 0, bm25Score: 0 };
       rrfMap.set(item.id, {
-        rrfScore: existing.rrfScore + score * 0.3, // BM25 weight
+        rrfScore: existing.rrfScore + score * (1 - RRF_VECTOR_WEIGHT), // BM25 weight
         vectorScore: existing.vectorScore,
         bm25Score: item.score,
       });
@@ -204,7 +209,7 @@ export class HybridRetriever {
       // Full pipeline: vector + BM25 + RRF + rerank
       try {
         const queryVector = await this.embedder.embedQuery(query);
-        const vectorResults = await this.db.search(queryVector, topK * 4, 0.0, scope);
+        const vectorResults = await this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, 0.0, scope);
 
         const vectorRanked = vectorResults
           .map((r, i) => ({ id: r.id, score: 1 - i * 0.01, text: r.text }))
@@ -215,7 +220,7 @@ export class HybridRetriever {
           .map((id, i) => ({ id, score: bm25Scores[i], text: this.corpus[i] }))
           .filter(item => item.score > 0)
           .sort((a, b) => b.score - a.score)
-          .slice(0, topK * 4);
+          .slice(0, topK * BM25_SEARCH_MULTIPLIER);
 
         const fused = this.rrfFusion(vectorRanked, bm25Ranked);
         const noiseFiltered = [];
@@ -227,7 +232,7 @@ export class HybridRetriever {
           noiseFiltered.push({ ...item, text: memory.text, vector: memory.vector });
         }
 
-        const candidates = noiseFiltered.slice(0, topK * 3).map(item => ({
+        const candidates = noiseFiltered.slice(0, topK * RERANK_CANDIDATE_MULTIPLIER).map(item => ({
           id: item.id,
           text: item.text,
           score: item.rrfScore,
