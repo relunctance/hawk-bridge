@@ -14,6 +14,47 @@ import { markBm25Dirty } from '../hawk-recall/handler.js';
 
 const exec = promisify((require('child_process').exec));
 
+// ─── Sensitive Information Sanitizer ───────────────────────────────────────
+// Applied before storing memories to prevent PII/secrets from being captured.
+// Each pattern returns a two-element tuple [regex, replacement].
+
+const SANITIZE_PATTERNS: Array<[RegExp, string]> = [
+  // API keys / secrets: api_key=xxx, secret: "xxx", token: 'xxx'
+  [/(?:api[_-]?key|secret|token|password|passwd|pwd|private[_-]?key)\s*[:=]\s*["']?([\w-]{8,})["']?/gi, '$1: [REDACTED]'],
+  // Bearer / Authorization tokens
+  [/(Bearer\s+)[\w.-]{10,}/gi, '$1[REDACTED]'],
+  // AWS keys
+  [/(AKIA[0-9A-Z]{16})/g, '[AWS_KEY_REDACTED]'],
+  // GitHub tokens
+  [/(ghp_[a-zA-Z0-9]{36}|gho_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{22,})/g, '[GITHUB_TOKEN_REDACTED]'],
+  // Generic long alphanumeric strings that look like keys (≥32 chars)
+  [/\b[a-zA-Z0-9]{32,}\b/g, '[KEY_REDACTED]'],
+  // Chinese mobile phone numbers (11 digits starting with 1)
+  [/\b1[3-9]\d{9}\b/g, '[PHONE_REDACTED]'],
+  // Email addresses
+  [/\b[\w.-]+@[\w.-]+\.\w{2,}\b/g, '[EMAIL_REDACTED]'],
+  // Chinese ID card numbers
+  [/\b[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b/g, '[ID_REDACTED]'],
+  // Credit card numbers (16 digits, with or without spaces/dashes)
+  [/\b(?:\d{4}[- ]?){3}\d{4}\b/g, '[CARD_REDACTED]'],
+  // IP addresses (IPv4)
+  [/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '[IP_REDACTED]'],
+  // URLs with credentials
+  [/\/\/[^:@\/]+:[^@\/]+@/g, '//[CREDS_REDACTED]@'],
+];
+
+/**
+ * Remove or redact sensitive information from text before storage.
+ * Applied at capture time — already-captured memories are not retroactively sanitized.
+ */
+function sanitize(text: string): string {
+  let result = text;
+  for (const [pattern, replacement] of SANITIZE_PATTERNS) {
+    result = result.replace(pattern, replacement);
+  }
+  return result;
+}
+
 let db: HawkDB | null = null;
 let embedder: Embedder | null = null;
 
@@ -73,10 +114,11 @@ const captureHandler = async (event: HookEvent) => {
       const m = significant[i];
       const vector = vectors[i];
       const id = generateId();
+      const sanitizedText = sanitize(m.text);
 
       await dbInstance.store({
         id,
-        text: m.text,
+        text: sanitizedText,
         vector,
         category: m.category,
         scope: 'global',
