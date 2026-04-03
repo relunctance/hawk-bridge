@@ -43,7 +43,7 @@ const recallHandler = async (event: HookEvent) => {
 
   try {
     const config = await getConfig();
-    const { topK, injectEmoji } = config.recall;
+    const { topK, injectEmoji, minScore } = config.recall;
 
     const sessionEntry = event.context?.sessionEntry;
     if (!sessionEntry) return;
@@ -54,10 +54,19 @@ const recallHandler = async (event: HookEvent) => {
     const retrieverInstance = await getRetriever();
     const memories = await retrieverInstance.search(queryText, topK);
 
-    if (!memories.length) return;
+    // ─── Recall Gate: enforce minScore ─────────────────────────────────────────
+    const relevant = memories.filter(m => m.score >= minScore);
+
+    // ─── Sanitize recalled memories before injection ───────────────────────────
+    const sanitized = relevant.map(m => ({
+      ...m,
+      text: sanitizeForRecall(m.text),
+    }));
+
+    if (!sanitized.length) return;
 
     const injectionText = formatRecallForContext(
-      memories.map(m => ({
+      sanitized.map(m => ({
         text: m.text,
         score: m.score,
         category: m.category,
@@ -67,10 +76,52 @@ const recallHandler = async (event: HookEvent) => {
 
     event.messages.push(`\n${injectionText}\n`);
 
+    // Audit log
+    if (config.audit?.enabled) {
+      auditRecall(sanitized.length, queryText.slice(0, 100));
+    }
+
   } catch (err) {
     console.error('[hawk-recall] Error:', err);
   }
 };
+
+// ─── Recall Sanitizer ─────────────────────────────────────────────────────────
+
+const RECALL_SANITIZE_PATTERNS: Array<[RegExp, string]> = [
+  [/(?:api[_-]?key|secret|token|password)\s*[:=]\s*["']?[\w-]{8,}["']?/gi, '$1: [RECALLED_REDACTED]'],
+  [/\b1[3-9]\d{9}\b/g, '[PHONE_REDACTED]'],
+  [/\b[\w.-]+@[\w.-]+\.\w{2,}\b/g, '[EMAIL_REDACTED]'],
+  [/\b[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b/g, '[ID_REDACTED]'],
+];
+
+function sanitizeForRecall(text: string): string {
+  let result = text;
+  for (const [pattern, replacement] of RECALL_SANITIZE_PATTERNS) {
+    result = result.replace(pattern, replacement);
+  }
+  return result;
+}
+
+// ─── Audit Log ────────────────────────────────────────────────────────────────
+
+function auditRecall(count: number, query: string): void {
+  try {
+    const { appendFileSync } = require('fs');
+    const { homedir } = require('os');
+    const { join } = require('path');
+    const logPath = join(homedir(), '.hawk', 'audit.log');
+    const entry = JSON.stringify({
+      ts: new Date().toISOString(),
+      action: 'recall',
+      count,
+      query,
+    }) + '\n';
+    appendFileSync(logPath, entry);
+  } catch {
+    // Non-critical
+  }
+}
 
 function extractQueryFromSession(sessionEntry: any): string {
   if (!sessionEntry) return '';

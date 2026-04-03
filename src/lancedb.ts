@@ -13,6 +13,7 @@ type MemoryMap = Map<string, {
   scope: string;
   importance: number;
   timestamp: number;
+  expiresAt: number;
   metadata: Record<string, unknown>;
 }>;
 import { BM25_QUERY_LIMIT, DEFAULT_EMBEDDING_DIM } from './constants.js';
@@ -47,6 +48,8 @@ export class HawkDB {
           scope: 'system',
           importance: 0,
           timestamp: Date.now(),
+          expires_at: 0,
+          created_at: Date.now(),
           access_count: 0,
           last_accessed_at: Date.now(),
           metadata: '{}',
@@ -57,6 +60,15 @@ export class HawkDB {
         await this.table.delete(`id = '__init__'`);
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
+        // Migrate schema: add expires_at / created_at columns if missing
+        try {
+          await this.table.alterAddColumns([
+            { name: 'expires_at', type: { type: 'int64' } },
+            { name: 'created_at', type: { type: 'int64' } },
+          ]);
+        } catch (_) {
+          // Columns may already exist — ignore
+        }
       }
     } catch (err) {
       console.error('[hawk-bridge] LanceDB init failed:', err);
@@ -72,6 +84,8 @@ export class HawkDB {
     scope: string;
     importance: number;
     timestamp: number;
+    expires_at: number;  // 0 = never expire
+    created_at: number;
     access_count: number;
     last_accessed_at: number;
     metadata: string;
@@ -87,6 +101,8 @@ export class HawkDB {
       scope: data.scope,
       importance: data.importance,
       timestamp: BigInt(data.timestamp),
+      expires_at: BigInt(data.expires_at),
+      created_at: BigInt(data.created_at),
       access_count: data.access_count,
       last_accessed_at: BigInt(data.last_accessed_at),
       metadata: data.metadata,
@@ -104,6 +120,8 @@ export class HawkDB {
       scope: entry.scope,
       importance: entry.importance,
       timestamp: entry.timestamp,
+      expires_at: entry.expiresAt || 0,
+      created_at: now,
       access_count: 0,
       last_accessed_at: now,
       metadata: JSON.stringify(entry.metadata || {}),
@@ -121,12 +139,19 @@ export class HawkDB {
 
     let results = await this.table
       .search(queryVector)
-      .limit(topK * 2)
+      .limit(topK * 4)
       .toList();
 
     if (scope) {
       results = results.filter((r: any) => r.scope === scope);
     }
+
+    // Filter expired memories
+    const now = Date.now();
+    results = results.filter((r: any) => {
+      const expiresAt = Number(r.expires_at || 0);
+      return expiresAt === 0 || expiresAt > now;
+    });
 
     const retrieved: RetrievedMemory[] = [];
     for (const row of results) {
@@ -175,6 +200,7 @@ export class HawkDB {
       scope: r.scope,
       importance: r.importance,
       timestamp: Number(r.timestamp),
+      expiresAt: Number(r.expires_at || 0),
       accessCount: r.access_count,
       lastAccessedAt: Number(r.last_accessed_at),
       metadata: JSON.parse(r.metadata || '{}'),
@@ -207,6 +233,7 @@ export class HawkDB {
         scope: r.scope,
         importance: r.importance,
         timestamp: Number(r.timestamp),
+        expiresAt: Number(r.expires_at || 0),
         metadata: JSON.parse(r.metadata || '{}'),
       };
     } catch {
@@ -232,6 +259,7 @@ export class HawkDB {
           scope: r.scope,
           importance: r.importance,
           timestamp: Number(r.timestamp),
+          expiresAt: Number(r.expires_at || 0),
           metadata: JSON.parse(r.metadata || '{}'),
         });
       }

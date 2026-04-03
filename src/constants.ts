@@ -93,3 +93,43 @@ export const DEFAULT_EMBEDDING_DIM = parseInt(process.env.HAWK_EMBEDDING_DIM || 
  * Note: This applies to LanceDB distance-derived scores (not RRF).
  */
 export const DEFAULT_MIN_SCORE = parseFloat(process.env.HAWK_MIN_SCORE || '0.6');
+
+// ─── Content Validation ────────────────────────────────────────────────────
+
+/**
+ * Maximum character length per memory chunk.
+ * Chunks longer than this are truncated before storage.
+ * Range: 100–10000. Default 2000.
+ */
+export const MAX_CHUNK_SIZE = parseInt(process.env.HAWK_MAX_CHUNK_SIZE || '2000', 10);
+
+/**
+ * Minimum character length for a valid memory chunk.
+ * Shorter chunks are silently discarded during capture.
+ * Range: 10–200. Default 20.
+ */
+export const MIN_CHUNK_SIZE = parseInt(process.env.HAWK_MIN_CHUNK_SIZE || '20', 10);
+
+/**
+ * Maximum text length accepted from the extractor (safety limit before truncation).
+ * Default 5000.
+ */
+export const MAX_TEXT_LEN = parseInt(process.env.HAWK_MAX_TEXT_LEN || '5000', 10);
+
+// ─── Deduplication ─────────────────────────────────────────────────────────
+
+/**
+ * Similarity threshold for duplicate detection (0–1).
+ * Two memories with similarity >= this are considered duplicates.
+ * Range: 0.7–1.0. Default 0.95 (near-identical texts only).
+ */
+export const DEDUP_SIMILARITY = parseFloat(process.env.HAWK_DEDUP_SIMILARITY || '0.95');
+
+// ─── TTL / Expiry ─────────────────────────────────────────────────────────
+
+/**
+ * Default Time-To-Live for memories in milliseconds.
+ * Memories older than this are filtered out at query time.
+ * 0 = no expiry. Default 30 days.
+ */
+export const MEMORY_TTL_MS = parseInt(process.env.HAWK_MEMORY_TTL_MS || String(30 * 24 * 60 * 60 * 1000), 10);

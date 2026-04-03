@@ -8,6 +8,9 @@ var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require
 // src/hooks/hawk-capture/handler.ts
 import { spawn } from "child_process";
 import { promisify } from "util";
+import * as fs from "fs";
+import * as path3 from "path";
+import * as os3 from "os";
 
 // src/lancedb.ts
 import * as path from "path";
@@ -25,6 +28,11 @@ var RERANK_CANDIDATE_MULTIPLIER = parseInt(process.env.HAWK_RERANK_CANDIDATE_MUL
 var BM25_QUERY_LIMIT = parseInt(process.env.HAWK_BM25_QUERY_LIMIT || "10000", 10);
 var DEFAULT_EMBEDDING_DIM = parseInt(process.env.HAWK_EMBEDDING_DIM || "384", 10);
 var DEFAULT_MIN_SCORE = parseFloat(process.env.HAWK_MIN_SCORE || "0.6");
+var MAX_CHUNK_SIZE = parseInt(process.env.HAWK_MAX_CHUNK_SIZE || "2000", 10);
+var MIN_CHUNK_SIZE = parseInt(process.env.HAWK_MIN_CHUNK_SIZE || "20", 10);
+var MAX_TEXT_LEN = parseInt(process.env.HAWK_MAX_TEXT_LEN || "5000", 10);
+var DEDUP_SIMILARITY = parseFloat(process.env.HAWK_DEDUP_SIMILARITY || "0.95");
+var MEMORY_TTL_MS = parseInt(process.env.HAWK_MEMORY_TTL_MS || String(30 * 24 * 60 * 60 * 1e3), 10);
 
 // src/lancedb.ts
 var TABLE_NAME = "hawk_memories";
@@ -51,6 +59,8 @@ var HawkDB = class {
           scope: "system",
           importance: 0,
           timestamp: Date.now(),
+          expires_at: 0,
+          created_at: Date.now(),
           access_count: 0,
           last_accessed_at: Date.now(),
           metadata: "{}"
@@ -60,6 +70,13 @@ var HawkDB = class {
         await this.table.delete(`id = '__init__'`);
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
+        try {
+          await this.table.alterAddColumns([
+            { name: "expires_at", type: { type: "int64" } },
+            { name: "created_at", type: { type: "int64" } }
+          ]);
+        } catch (_) {
+        }
       }
     } catch (err) {
       console.error("[hawk-bridge] LanceDB init failed:", err);
@@ -76,6 +93,8 @@ var HawkDB = class {
       scope: data.scope,
       importance: data.importance,
       timestamp: BigInt(data.timestamp),
+      expires_at: BigInt(data.expires_at),
+      created_at: BigInt(data.created_at),
       access_count: data.access_count,
       last_accessed_at: BigInt(data.last_accessed_at),
       metadata: data.metadata
@@ -92,6 +111,8 @@ var HawkDB = class {
       scope: entry.scope,
       importance: entry.importance,
       timestamp: entry.timestamp,
+      expires_at: entry.expiresAt || 0,
+      created_at: now,
       access_count: 0,
       last_accessed_at: now,
       metadata: JSON.stringify(entry.metadata || {})
@@ -100,10 +121,15 @@ var HawkDB = class {
   }
   async search(queryVector, topK, minScore, scope) {
     if (!this.table) await this.init();
-    let results = await this.table.search(queryVector).limit(topK * 2).toList();
+    let results = await this.table.search(queryVector).limit(topK * 4).toList();
     if (scope) {
       results = results.filter((r) => r.scope === scope);
     }
+    const now = Date.now();
+    results = results.filter((r) => {
+      const expiresAt = Number(r.expires_at || 0);
+      return expiresAt === 0 || expiresAt > now;
+    });
     const retrieved = [];
     for (const row of results) {
       const score = 1 - (row._distance ?? 0);
@@ -146,6 +172,7 @@ var HawkDB = class {
       scope: r.scope,
       importance: r.importance,
       timestamp: Number(r.timestamp),
+      expiresAt: Number(r.expires_at || 0),
       accessCount: r.access_count,
       lastAccessedAt: Number(r.last_accessed_at),
       metadata: JSON.parse(r.metadata || "{}")
@@ -174,6 +201,7 @@ var HawkDB = class {
         scope: r.scope,
         importance: r.importance,
         timestamp: Number(r.timestamp),
+        expiresAt: Number(r.expires_at || 0),
         metadata: JSON.parse(r.metadata || "{}")
       };
     } catch {
@@ -197,6 +225,7 @@ var HawkDB = class {
           scope: r.scope,
           importance: r.importance,
           timestamp: Number(r.timestamp),
+          expiresAt: Number(r.expires_at || 0),
           metadata: JSON.parse(r.metadata || "{}")
         });
       }
@@ -395,10 +424,18 @@ var DEFAULT_CONFIG = {
     // from constants.ts
     injectEmoji: "\u{1F985}"
   },
+  audit: {
+    enabled: true
+  },
   capture: {
     enabled: true,
     maxChunks: 3,
-    importanceThreshold: 0.5
+    importanceThreshold: 0.5,
+    ttlMs: 30 * 24 * 60 * 60 * 1e3,
+    // 30 days
+    maxChunkSize: 2e3,
+    minChunkSize: 20,
+    dedupSimilarity: 0.95
   },
   python: {
     pythonPath: "python3.12",
@@ -454,37 +491,6 @@ function markBm25Dirty() {
 
 // src/hooks/hawk-capture/handler.ts
 var exec = promisify(__require("child_process").exec);
-var SANITIZE_PATTERNS = [
-  // API keys / secrets: api_key=xxx, secret: "xxx", token: 'xxx'
-  [/(?:api[_-]?key|secret|token|password|passwd|pwd|private[_-]?key)\s*[:=]\s*["']?([\w-]{8,})["']?/gi, "$1: [REDACTED]"],
-  // Bearer / Authorization tokens
-  [/(Bearer\s+)[\w.-]{10,}/gi, "$1[REDACTED]"],
-  // AWS keys
-  [/(AKIA[0-9A-Z]{16})/g, "[AWS_KEY_REDACTED]"],
-  // GitHub tokens
-  [/(ghp_[a-zA-Z0-9]{36}|gho_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{22,})/g, "[GITHUB_TOKEN_REDACTED]"],
-  // Generic long alphanumeric strings that look like keys (≥32 chars)
-  [/\b[a-zA-Z0-9]{32,}\b/g, "[KEY_REDACTED]"],
-  // Chinese mobile phone numbers (11 digits starting with 1)
-  [/\b1[3-9]\d{9}\b/g, "[PHONE_REDACTED]"],
-  // Email addresses
-  [/\b[\w.-]+@[\w.-]+\.\w{2,}\b/g, "[EMAIL_REDACTED]"],
-  // Chinese ID card numbers
-  [/\b[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b/g, "[ID_REDACTED]"],
-  // Credit card numbers (16 digits, with or without spaces/dashes)
-  [/\b(?:\d{4}[- ]?){3}\d{4}\b/g, "[CARD_REDACTED]"],
-  // IP addresses (IPv4)
-  [/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[IP_REDACTED]"],
-  // URLs with credentials
-  [/\/\/[^:@\/]+:[^@\/]+@/g, "//[CREDS_REDACTED]@"]
-];
-function sanitize(text) {
-  let result = text;
-  for (const [pattern, replacement] of SANITIZE_PATTERNS) {
-    result = result.replace(pattern, replacement);
-  }
-  return result;
-}
 var db = null;
 var embedder = null;
 async function getDB() {
@@ -501,13 +507,96 @@ async function getEmbedder() {
   }
   return embedder;
 }
+var AUDIT_LOG_PATH = path3.join(os3.homedir(), ".hawk", "audit.log");
+function audit(action, reason, text) {
+  const config = getConfig();
+  if (!config.audit?.enabled) return;
+  const entry = JSON.stringify({
+    ts: (/* @__PURE__ */ new Date()).toISOString(),
+    action,
+    reason,
+    text: text.slice(0, 200)
+    // truncate for log safety
+  }) + "\n";
+  try {
+    fs.appendFileSync(AUDIT_LOG_PATH, entry);
+  } catch {
+  }
+}
+function isValidChunk(text) {
+  if (!text || typeof text !== "string") return false;
+  const trimmed = text.trim();
+  if (trimmed.length < MIN_CHUNK_SIZE) return false;
+  if (trimmed.length > MAX_TEXT_LEN) return false;
+  if (/^[\d\s.+-]+$/.test(trimmed)) return false;
+  if (/^[^\w\u4e00-\u9fff]+$/.test(trimmed)) return false;
+  return true;
+}
+function truncate(text, maxLen = MAX_CHUNK_SIZE) {
+  if (text.length <= maxLen) return text;
+  return text.slice(0, maxLen).replace(/\s+\S*$/, "");
+}
+var HARMFUL_PATTERNS = [
+  /kill|murder|suicide|attack/i,
+  /bomb|explosive|terror/i,
+  /child(?:porn|sexual)|CSAM/i,
+  /fraud|scam|phishing/i,
+  /hack|crack(?:ing)?\s+(?:password|account)/i
+];
+function isHarmful(text) {
+  for (const pattern of HARMFUL_PATTERNS) {
+    if (pattern.test(text)) return true;
+  }
+  return false;
+}
+var SANITIZE_PATTERNS = [
+  [/(?:api[_-]?key|secret|token|password|passwd|pwd|private[_-]?key)\s*[:=]\s*["']?([\w-]{8,})["']?/gi, "$1: [REDACTED]"],
+  [/(Bearer\s+)[\w.-]{10,}/gi, "$1[REDACTED]"],
+  [/(AKIA[0-9A-Z]{16})/g, "[AWS_KEY_REDACTED]"],
+  [/(ghp_[a-zA-Z0-9]{36}|gho_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{22,})/g, "[GITHUB_TOKEN_REDACTED]"],
+  [/\b[a-zA-Z0-9]{32,}\b/g, "[KEY_REDACTED]"],
+  [/\b1[3-9]\d{9}\b/g, "[PHONE_REDACTED]"],
+  [/\b[\w.-]+@[\w.-]+\.\w{2,}\b/g, "[EMAIL_REDACTED]"],
+  [/\b[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b/g, "[ID_REDACTED]"],
+  [/\b(?:\d{4}[- ]?){3}\d{4}\b/g, "[CARD_REDACTED]"],
+  [/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[IP_REDACTED]"],
+  [/\/\/[^:@\/]+:[^@\/]+@/g, "//[CREDS_REDACTED]@"]
+];
+function sanitize(text) {
+  let result = text;
+  for (const [pattern, replacement] of SANITIZE_PATTERNS) {
+    result = result.replace(pattern, replacement);
+  }
+  return result;
+}
+function textSimilarity(a, b) {
+  if (a === b) return 1;
+  if (!a.length || !b.length) return 0;
+  if (Math.abs(a.length - b.length) / Math.max(a.length, b.length) > 0.3) return 0;
+  const setA = new Set(a.split(""));
+  const setB = new Set(b.split(""));
+  const intersection = [...setA].filter((c) => setB.has(c)).length;
+  const union = (/* @__PURE__ */ new Set([...setA, ...setB])).size;
+  return union > 0 ? intersection / union : 0;
+}
+async function isDuplicate(text, threshold = DEDUP_SIMILARITY) {
+  try {
+    const dbInstance = await getDB();
+    const recent = await dbInstance.listRecent(20);
+    for (const m of recent) {
+      if (textSimilarity(text, m.text) >= threshold) return true;
+    }
+  } catch {
+  }
+  return false;
+}
 var captureHandler = async (event) => {
   if (event.type !== "message" || event.action !== "sent") return;
   if (!event.context?.success) return;
   try {
     const config = await getConfig();
     if (!config.capture.enabled) return;
-    const { maxChunks, importanceThreshold } = config.capture;
+    const { maxChunks, importanceThreshold, ttlMs } = config.capture;
     const content = event.context?.content;
     if (typeof content !== "string" || content.length < 50) return;
     const memories = await callExtractor(content, config);
@@ -520,30 +609,54 @@ var captureHandler = async (event) => {
       getDB(),
       getEmbedder()
     ]);
-    const texts = significant.map((m) => m.text);
-    const vectors = await embedderInstance.embed(texts);
-    for (let i = 0; i < significant.length; i++) {
-      const m = significant[i];
-      const vector = vectors[i];
+    const { batchStore } = dbInstance;
+    let storedCount = 0;
+    for (const m of significant) {
+      let text = m.text.trim();
+      if (!isValidChunk(text)) {
+        audit("skip", "invalid_chunk", text);
+        continue;
+      }
+      if (isHarmful(text)) {
+        audit("reject", "harmful_content", text);
+        continue;
+      }
+      text = sanitize(text);
+      text = truncate(text);
+      if (await isDuplicate(text)) {
+        audit("skip", "duplicate", text);
+        continue;
+      }
+      const effectiveTtl = ttlMs || MEMORY_TTL_MS;
+      const expiresAt = effectiveTtl > 0 ? Date.now() + effectiveTtl : 0;
       const id = generateId();
-      const sanitizedText = sanitize(m.text);
-      await dbInstance.store({
-        id,
-        text: sanitizedText,
-        vector,
-        category: m.category,
-        scope: "global",
-        importance: m.importance,
-        timestamp: Date.now(),
-        metadata: {
-          l0_abstract: m.abstract,
-          l1_overview: m.overview,
-          source: "hawk-capture"
-        }
-      });
+      try {
+        const [vector] = await embedderInstance.embed([text]);
+        await dbInstance.store({
+          id,
+          text,
+          vector,
+          category: m.category,
+          scope: "global",
+          importance: m.importance,
+          timestamp: Date.now(),
+          expiresAt,
+          metadata: {
+            l0_abstract: m.abstract,
+            l1_overview: m.overview,
+            source: "hawk-capture"
+          }
+        });
+        storedCount++;
+        audit("capture", "success", text);
+      } catch (storeErr) {
+        audit("reject", "store_error:" + String(storeErr), text);
+      }
     }
-    console.log(`[hawk-capture] Stored ${significant.length} memories`);
-    markBm25Dirty();
+    if (storedCount > 0) {
+      console.log(`[hawk-capture] Stored ${storedCount} memories`);
+      markBm25Dirty();
+    }
   } catch (err) {
     console.error("[hawk-capture] Error:", err);
   }

@@ -81,10 +81,17 @@ const DEFAULT_CONFIG: HawkConfig = {
     minScore: DEFAULT_MIN_SCORE,  // from constants.ts
     injectEmoji: '🦅',
   },
+  audit: {
+    enabled: true,
+  },
   capture: {
     enabled: true,
     maxChunks: 3,
     importanceThreshold: 0.5,
+    ttlMs: 30 * 24 * 60 * 60 * 1000,  // 30 days
+    maxChunkSize: 2000,
+    minChunkSize: 20,
+    dedupSimilarity: 0.95,
   },
   python: {
     pythonPath: 'python3.12',

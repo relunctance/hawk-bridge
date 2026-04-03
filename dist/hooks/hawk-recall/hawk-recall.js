@@ -1,3 +1,10 @@
+var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
+  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
+}) : x)(function(x) {
+  if (typeof require !== "undefined") return require.apply(this, arguments);
+  throw Error('Dynamic require of "' + x + '" is not supported');
+});
+
 // src/lancedb.ts
 import * as path from "path";
 import * as os from "os";
@@ -14,6 +21,11 @@ var RERANK_CANDIDATE_MULTIPLIER = parseInt(process.env.HAWK_RERANK_CANDIDATE_MUL
 var BM25_QUERY_LIMIT = parseInt(process.env.HAWK_BM25_QUERY_LIMIT || "10000", 10);
 var DEFAULT_EMBEDDING_DIM = parseInt(process.env.HAWK_EMBEDDING_DIM || "384", 10);
 var DEFAULT_MIN_SCORE = parseFloat(process.env.HAWK_MIN_SCORE || "0.6");
+var MAX_CHUNK_SIZE = parseInt(process.env.HAWK_MAX_CHUNK_SIZE || "2000", 10);
+var MIN_CHUNK_SIZE = parseInt(process.env.HAWK_MIN_CHUNK_SIZE || "20", 10);
+var MAX_TEXT_LEN = parseInt(process.env.HAWK_MAX_TEXT_LEN || "5000", 10);
+var DEDUP_SIMILARITY = parseFloat(process.env.HAWK_DEDUP_SIMILARITY || "0.95");
+var MEMORY_TTL_MS = parseInt(process.env.HAWK_MEMORY_TTL_MS || String(30 * 24 * 60 * 60 * 1e3), 10);
 
 // src/lancedb.ts
 var TABLE_NAME = "hawk_memories";
@@ -40,6 +52,8 @@ var HawkDB = class {
           scope: "system",
           importance: 0,
           timestamp: Date.now(),
+          expires_at: 0,
+          created_at: Date.now(),
           access_count: 0,
           last_accessed_at: Date.now(),
           metadata: "{}"
@@ -49,6 +63,13 @@ var HawkDB = class {
         await this.table.delete(`id = '__init__'`);
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
+        try {
+          await this.table.alterAddColumns([
+            { name: "expires_at", type: { type: "int64" } },
+            { name: "created_at", type: { type: "int64" } }
+          ]);
+        } catch (_) {
+        }
       }
     } catch (err) {
       console.error("[hawk-bridge] LanceDB init failed:", err);
@@ -65,6 +86,8 @@ var HawkDB = class {
       scope: data.scope,
       importance: data.importance,
       timestamp: BigInt(data.timestamp),
+      expires_at: BigInt(data.expires_at),
+      created_at: BigInt(data.created_at),
       access_count: data.access_count,
       last_accessed_at: BigInt(data.last_accessed_at),
       metadata: data.metadata
@@ -81,6 +104,8 @@ var HawkDB = class {
       scope: entry.scope,
       importance: entry.importance,
       timestamp: entry.timestamp,
+      expires_at: entry.expiresAt || 0,
+      created_at: now,
       access_count: 0,
       last_accessed_at: now,
       metadata: JSON.stringify(entry.metadata || {})
@@ -89,10 +114,15 @@ var HawkDB = class {
   }
   async search(queryVector, topK, minScore, scope) {
     if (!this.table) await this.init();
-    let results = await this.table.search(queryVector).limit(topK * 2).toList();
+    let results = await this.table.search(queryVector).limit(topK * 4).toList();
     if (scope) {
       results = results.filter((r) => r.scope === scope);
     }
+    const now = Date.now();
+    results = results.filter((r) => {
+      const expiresAt = Number(r.expires_at || 0);
+      return expiresAt === 0 || expiresAt > now;
+    });
     const retrieved = [];
     for (const row of results) {
       const score = 1 - (row._distance ?? 0);
@@ -135,6 +165,7 @@ var HawkDB = class {
       scope: r.scope,
       importance: r.importance,
       timestamp: Number(r.timestamp),
+      expiresAt: Number(r.expires_at || 0),
       accessCount: r.access_count,
       lastAccessedAt: Number(r.last_accessed_at),
       metadata: JSON.parse(r.metadata || "{}")
@@ -163,6 +194,7 @@ var HawkDB = class {
         scope: r.scope,
         importance: r.importance,
         timestamp: Number(r.timestamp),
+        expiresAt: Number(r.expires_at || 0),
         metadata: JSON.parse(r.metadata || "{}")
       };
     } catch {
@@ -186,6 +218,7 @@ var HawkDB = class {
           scope: r.scope,
           importance: r.importance,
           timestamp: Number(r.timestamp),
+          expiresAt: Number(r.expires_at || 0),
           metadata: JSON.parse(r.metadata || "{}")
         });
       }
@@ -392,10 +425,18 @@ var DEFAULT_CONFIG = {
     // from constants.ts
     injectEmoji: "\u{1F985}"
   },
+  audit: {
+    enabled: true
+  },
   capture: {
     enabled: true,
     maxChunks: 3,
-    importanceThreshold: 0.5
+    importanceThreshold: 0.5,
+    ttlMs: 30 * 24 * 60 * 60 * 1e3,
+    // 30 days
+    maxChunkSize: 2e3,
+    minChunkSize: 20,
+    dedupSimilarity: 0.95
   },
   python: {
     pythonPath: "python3.12",
@@ -714,16 +755,21 @@ var recallHandler = async (event) => {
   if (event.type !== "agent" || event.action !== "bootstrap") return;
   try {
     const config = await getConfig();
-    const { topK, injectEmoji } = config.recall;
+    const { topK, injectEmoji, minScore } = config.recall;
     const sessionEntry = event.context?.sessionEntry;
     if (!sessionEntry) return;
     const queryText = extractQueryFromSession(sessionEntry);
     if (!queryText || queryText.trim().length < 2) return;
     const retrieverInstance = await getRetriever();
     const memories = await retrieverInstance.search(queryText, topK);
-    if (!memories.length) return;
+    const relevant = memories.filter((m) => m.score >= minScore);
+    const sanitized = relevant.map((m) => ({
+      ...m,
+      text: sanitizeForRecall(m.text)
+    }));
+    if (!sanitized.length) return;
     const injectionText = formatRecallForContext(
-      memories.map((m) => ({
+      sanitized.map((m) => ({
         text: m.text,
         score: m.score,
         category: m.category
@@ -733,10 +779,42 @@ var recallHandler = async (event) => {
     event.messages.push(`
 ${injectionText}
 `);
+    if (config.audit?.enabled) {
+      auditRecall(sanitized.length, queryText.slice(0, 100));
+    }
   } catch (err) {
     console.error("[hawk-recall] Error:", err);
   }
 };
+var RECALL_SANITIZE_PATTERNS = [
+  [/(?:api[_-]?key|secret|token|password)\s*[:=]\s*["']?[\w-]{8,}["']?/gi, "$1: [RECALLED_REDACTED]"],
+  [/\b1[3-9]\d{9}\b/g, "[PHONE_REDACTED]"],
+  [/\b[\w.-]+@[\w.-]+\.\w{2,}\b/g, "[EMAIL_REDACTED]"],
+  [/\b[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b/g, "[ID_REDACTED]"]
+];
+function sanitizeForRecall(text) {
+  let result = text;
+  for (const [pattern, replacement] of RECALL_SANITIZE_PATTERNS) {
+    result = result.replace(pattern, replacement);
+  }
+  return result;
+}
+function auditRecall(count, query) {
+  try {
+    const { appendFileSync } = __require("fs");
+    const { homedir: homedir3 } = __require("os");
+    const { join: join3 } = __require("path");
+    const logPath = join3(homedir3(), ".hawk", "audit.log");
+    const entry = JSON.stringify({
+      ts: (/* @__PURE__ */ new Date()).toISOString(),
+      action: "recall",
+      count,
+      query
+    }) + "\n";
+    appendFileSync(logPath, entry);
+  } catch {
+  }
+}
 function extractQueryFromSession(sessionEntry) {
   if (!sessionEntry) return "";
   const messages = sessionEntry.messages || [];

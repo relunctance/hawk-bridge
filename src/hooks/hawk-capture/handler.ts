@@ -4,56 +4,22 @@
 
 import { spawn } from 'child_process';
 import { promisify } from 'util';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import type { HookEvent } from '../../../../../.npm-global/lib/node_modules/openclaw/dist/v10/types/hooks.js';
 import { HawkDB } from '../../lancedb.js';
 import { Embedder } from '../../embeddings.js';
 import { getConfig } from '../../config.js';
 import type { RetrievedMemory } from '../../types.js';
+import {
+  MAX_CHUNK_SIZE, MIN_CHUNK_SIZE, MAX_TEXT_LEN,
+  DEDUP_SIMILARITY, MEMORY_TTL_MS,
+} from '../../constants.js';
 // Shared: invalidate BM25 index when new memories are stored
 import { markBm25Dirty } from '../hawk-recall/handler.js';
 
 const exec = promisify((require('child_process').exec));
-
-// ─── Sensitive Information Sanitizer ───────────────────────────────────────
-// Applied before storing memories to prevent PII/secrets from being captured.
-// Each pattern returns a two-element tuple [regex, replacement].
-
-const SANITIZE_PATTERNS: Array<[RegExp, string]> = [
-  // API keys / secrets: api_key=xxx, secret: "xxx", token: 'xxx'
-  [/(?:api[_-]?key|secret|token|password|passwd|pwd|private[_-]?key)\s*[:=]\s*["']?([\w-]{8,})["']?/gi, '$1: [REDACTED]'],
-  // Bearer / Authorization tokens
-  [/(Bearer\s+)[\w.-]{10,}/gi, '$1[REDACTED]'],
-  // AWS keys
-  [/(AKIA[0-9A-Z]{16})/g, '[AWS_KEY_REDACTED]'],
-  // GitHub tokens
-  [/(ghp_[a-zA-Z0-9]{36}|gho_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{22,})/g, '[GITHUB_TOKEN_REDACTED]'],
-  // Generic long alphanumeric strings that look like keys (≥32 chars)
-  [/\b[a-zA-Z0-9]{32,}\b/g, '[KEY_REDACTED]'],
-  // Chinese mobile phone numbers (11 digits starting with 1)
-  [/\b1[3-9]\d{9}\b/g, '[PHONE_REDACTED]'],
-  // Email addresses
-  [/\b[\w.-]+@[\w.-]+\.\w{2,}\b/g, '[EMAIL_REDACTED]'],
-  // Chinese ID card numbers
-  [/\b[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b/g, '[ID_REDACTED]'],
-  // Credit card numbers (16 digits, with or without spaces/dashes)
-  [/\b(?:\d{4}[- ]?){3}\d{4}\b/g, '[CARD_REDACTED]'],
-  // IP addresses (IPv4)
-  [/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '[IP_REDACTED]'],
-  // URLs with credentials
-  [/\/\/[^:@\/]+:[^@\/]+@/g, '//[CREDS_REDACTED]@'],
-];
-
-/**
- * Remove or redact sensitive information from text before storage.
- * Applied at capture time — already-captured memories are not retroactively sanitized.
- */
-function sanitize(text: string): string {
-  let result = text;
-  for (const [pattern, replacement] of SANITIZE_PATTERNS) {
-    result = result.replace(pattern, replacement);
-  }
-  return result;
-}
 
 let db: HawkDB | null = null;
 let embedder: Embedder | null = null;
@@ -74,74 +40,216 @@ async function getEmbedder(): Promise<Embedder> {
   return embedder;
 }
 
+// ─── Audit Log ────────────────────────────────────────────────────────────────
+
+const AUDIT_LOG_PATH = path.join(os.homedir(), '.hawk', 'audit.log');
+
+function audit(action: 'capture' | 'skip' | 'reject', reason: string, text: string): void {
+  const config = getConfig();
+  if (!config.audit?.enabled) return;
+  const entry = JSON.stringify({
+    ts: new Date().toISOString(),
+    action,
+    reason,
+    text: text.slice(0, 200),  // truncate for log safety
+  }) + '\n';
+  try {
+    fs.appendFileSync(AUDIT_LOG_PATH, entry);
+  } catch {
+    // Non-critical
+  }
+}
+
+// ─── Content Validation ───────────────────────────────────────────────────────
+
+function isValidChunk(text: string): boolean {
+  if (!text || typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  if (trimmed.length < MIN_CHUNK_SIZE) return false;
+  if (trimmed.length > MAX_TEXT_LEN) return false;
+  // Reject pure numbers or pure symbols
+  if (/^[\d\s.+-]+$/.test(trimmed)) return false;
+  if (/^[^\w\u4e00-\u9fff]+$/.test(trimmed)) return false;  // no letters, no CJK
+  return true;
+}
+
+// ─── Truncation ───────────────────────────────────────────────────────────────
+
+function truncate(text: string, maxLen: number = MAX_CHUNK_SIZE): string {
+  if (text.length <= maxLen) return text;
+  return text.slice(0, maxLen).replace(/\s+\S*$/, '');  // break at word boundary
+}
+
+// ─── Harmful Content Filter ───────────────────────────────────────────────────
+
+const HARMFUL_PATTERNS = [
+  /kill|murder|suicide|attack/i,
+  /bomb|explosive|terror/i,
+  /child(?:porn|sexual)|CSAM/i,
+  /fraud|scam|phishing/i,
+  /hack|crack(?:ing)?\s+(?:password|account)/i,
+];
+
+function isHarmful(text: string): boolean {
+  for (const pattern of HARMFUL_PATTERNS) {
+    if (pattern.test(text)) return true;
+  }
+  return false;
+}
+
+// ─── Sensitive Information Sanitizer ─────────────────────────────────────────
+
+const SANITIZE_PATTERNS: Array<[RegExp, string]> = [
+  [/(?:api[_-]?key|secret|token|password|passwd|pwd|private[_-]?key)\s*[:=]\s*["']?([\w-]{8,})["']?/gi, '$1: [REDACTED]'],
+  [/(Bearer\s+)[\w.-]{10,}/gi, '$1[REDACTED]'],
+  [/(AKIA[0-9A-Z]{16})/g, '[AWS_KEY_REDACTED]'],
+  [/(ghp_[a-zA-Z0-9]{36}|gho_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{22,})/g, '[GITHUB_TOKEN_REDACTED]'],
+  [/\b[a-zA-Z0-9]{32,}\b/g, '[KEY_REDACTED]'],
+  [/\b1[3-9]\d{9}\b/g, '[PHONE_REDACTED]'],
+  [/\b[\w.-]+@[\w.-]+\.\w{2,}\b/g, '[EMAIL_REDACTED]'],
+  [/\b[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b/g, '[ID_REDACTED]'],
+  [/\b(?:\d{4}[- ]?){3}\d{4}\b/g, '[CARD_REDACTED]'],
+  [/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '[IP_REDACTED]'],
+  [/\/\/[^:@\/]+:[^@\/]+@/g, '//[CREDS_REDACTED]@'],
+];
+
+function sanitize(text: string): string {
+  let result = text;
+  for (const [pattern, replacement] of SANITIZE_PATTERNS) {
+    result = result.replace(pattern, replacement);
+  }
+  return result;
+}
+
+// ─── Deduplication ─────────────────────────────────────────────────────────────
+
+/** Simple char-based similarity for deduplication (no external deps needed). */
+function textSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  if (!a.length || !b.length) return 0;
+  // Quick length check
+  if (Math.abs(a.length - b.length) / Math.max(a.length, b.length) > 0.3) return 0;
+
+  const setA = new Set(a.split(''));
+  const setB = new Set(b.split(''));
+  const intersection = [...setA].filter(c => setB.has(c)).length;
+  const union = new Set([...setA, ...setB]).size;
+  return union > 0 ? intersection / union : 0;
+}
+
+async function isDuplicate(text: string, threshold: number = DEDUP_SIMILARITY): Promise<boolean> {
+  try {
+    const dbInstance = await getDB();
+    const recent = await dbInstance.listRecent(20);
+    for (const m of recent) {
+      if (textSimilarity(text, m.text) >= threshold) return true;
+    }
+  } catch {
+    // Non-critical
+  }
+  return false;
+}
+
+// ─── Main Capture Handler ──────────────────────────────────────────────────────
+
 const captureHandler = async (event: HookEvent) => {
-  // Only handle message:sent
   if (event.type !== 'message' || event.action !== 'sent') return;
-  if (!event.context?.success) return; // Only on successful sends
+  if (!event.context?.success) return;
 
   try {
     const config = await getConfig();
     if (!config.capture.enabled) return;
 
-    const { maxChunks, importanceThreshold } = config.capture;
+    const { maxChunks, importanceThreshold, ttlMs } = config.capture;
 
-    // Build conversation text from recent messages
-    // We use the outbound content as the trigger for extraction
     const content = event.context?.content;
     if (typeof content !== 'string' || content.length < 50) return;
 
-    // Call Python extractor via subprocess
     const memories = await callExtractor(content, config);
     if (!memories || !memories.length) return;
 
-    // Filter by importance threshold
     const significant = memories.filter(
       (m: any) => m.importance >= importanceThreshold
     ).slice(0, maxChunks);
 
     if (!significant.length) return;
 
-    // Store each memory
     const [dbInstance, embedderInstance] = await Promise.all([
       getDB(),
       getEmbedder(),
     ]);
 
-    const texts = significant.map((m: any) => m.text);
-    const vectors = await embedderInstance.embed(texts);
+    const { batchStore } = dbInstance;
+    let storedCount = 0;
 
-    for (let i = 0; i < significant.length; i++) {
-      const m = significant[i];
-      const vector = vectors[i];
+    for (const m of significant) {
+      let text = m.text.trim();
+
+      // 1. Validate
+      if (!isValidChunk(text)) {
+        audit('skip', 'invalid_chunk', text);
+        continue;
+      }
+
+      // 2. Harmful content check
+      if (isHarmful(text)) {
+        audit('reject', 'harmful_content', text);
+        continue;
+      }
+
+      // 3. Sanitize
+      text = sanitize(text);
+
+      // 4. Truncate
+      text = truncate(text);
+
+      // 5. Deduplication
+      if (await isDuplicate(text)) {
+        audit('skip', 'duplicate', text);
+        continue;
+      }
+
+      // 6. Compute TTL
+      const effectiveTtl = ttlMs || MEMORY_TTL_MS;
+      const expiresAt = effectiveTtl > 0 ? Date.now() + effectiveTtl : 0;
+
+      // 7. Embed & store
       const id = generateId();
-      const sanitizedText = sanitize(m.text);
-
-      await dbInstance.store({
-        id,
-        text: sanitizedText,
-        vector,
-        category: m.category,
-        scope: 'global',
-        importance: m.importance,
-        timestamp: Date.now(),
-        metadata: {
-          l0_abstract: m.abstract,
-          l1_overview: m.overview,
-          source: 'hawk-capture',
-        },
-      });
+      try {
+        const [vector] = await embedderInstance.embed([text]);
+        await dbInstance.store({
+          id,
+          text,
+          vector,
+          category: m.category,
+          scope: 'global',
+          importance: m.importance,
+          timestamp: Date.now(),
+          expiresAt,
+          metadata: {
+            l0_abstract: m.abstract,
+            l1_overview: m.overview,
+            source: 'hawk-capture',
+          },
+        });
+        storedCount++;
+        audit('capture', 'success', text);
+      } catch (storeErr) {
+        audit('reject', 'store_error:' + String(storeErr), text);
+      }
     }
 
-    console.log(`[hawk-capture] Stored ${significant.length} memories`);
-
-    // Notify hawk-recall that BM25 index is stale — will rebuild on next search
-    markBm25Dirty();
+    if (storedCount > 0) {
+      console.log(`[hawk-capture] Stored ${storedCount} memories`);
+      markBm25Dirty();
+    }
 
   } catch (err) {
     console.error('[hawk-capture] Error:', err);
-    // Non-critical
   }
 };
+
+// ─── Python Extractor ─────────────────────────────────────────────────────────
 
 function callExtractor(conversationText: string, config: any): Promise<any[]> {
   return new Promise((resolve) => {
@@ -158,7 +266,6 @@ function callExtractor(conversationText: string, config: any): Promise<any[]> {
     let stdout = '';
     let stderr = '';
 
-    // Auto-kill subprocess after timeout (Node.js spawn does NOT auto-kill on timeout)
     const timer = setTimeout(() => {
       console.warn('[hawk-capture] subprocess timeout, killing...');
       proc.kill('SIGTERM');
@@ -197,9 +304,6 @@ function callExtractor(conversationText: string, config: any): Promise<any[]> {
 }
 
 function buildExtractorScript(conversation: string, apiKey: string, model: string, provider: string, baseURL: string): string {
-  // Escape all variables injected into Python single-quoted strings.
-  // Use a safe JSON-based approach: JSON.stringify forces double-quote context
-  // and prevents any shell/Python injection.
   const safeConv = JSON.stringify(conversation);
   const safeKey = JSON.stringify(apiKey);
   const safeModel = JSON.stringify(model);
