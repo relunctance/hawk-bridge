@@ -60,6 +60,165 @@ function audit(action: 'capture' | 'skip' | 'reject', reason: string, text: stri
   }
 }
 
+// ─── Text Normalizer ──────────────────────────────────────────────────────────
+
+/**
+ * Full text normalization pipeline — applied after sanitization, before dedup.
+ * Consolidates all structural cleaning: invisible chars, whitespace, punctuation,
+ * markdown artifacts, URLs, repeated sentences, timestamps, etc.
+ */
+function normalizeText(text: string): string {
+  let t = text;
+
+  // 1. Remove invisible / zero-width / control characters
+  t = t.replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u2028-\u202F\uFEFF]/g, '');
+
+  // 2. Normalize line endings
+  t = t.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  // 3. Remove HTML / XML tags
+  t = t.replace(/<[^>]+>/g, '');
+
+  // 4. Remove Markdown images: ![alt](url) → [图片]
+  t = t.replace(/!\[([^\]]*)\]\([^)]+\)/g, '[图片]');
+
+  // 5. Remove Markdown links: [text](url) → text
+  t = t.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+
+  // 6. Remove Markdown formatting markers: **bold**, *italic*, __underline__
+  t = t.replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, '$1');
+
+  // 7. Remove Markdown headers: # ## ### ...
+  t = t.replace(/^#{1,6}\s+/gm, '');
+
+  // 8. Remove Markdown code fences (keep content): ```lang\n...\n```
+  t = t.replace(/```[\w*]*\n([\s\S]*?)```/g, (_, code) => code.trim());
+
+  // 9. Remove inline code markers: `code` → code
+  t = t.replace(/`([^`]+)`/g, '$1');
+
+  // 10. Remove Markdown blockquote markers
+  t = t.replace(/^>\s+/gm, '');
+
+  // 11. Remove Markdown list markers
+  t = t.replace(/^[\s]*[-*+]\s+/gm, '');
+  t = t.replace(/^[\s]*\d+\.\s+/gm, '');
+
+  // 12. Remove console.log / debug comments: console.log(...) → [日志]
+  t = t.replace(/\bconsole\s*\.\s*(log|debug|info|warn|error)\s*\([^)]*\)/gi, '[日志]');
+  t = t.replace(/\bprint\s*\([^)]*\)/g, '[日志]');
+  t = t.replace(/\bprint\b(?!\s*=)/g, '[日志]');  // Python print
+  t = t.replace(/\blogger\s*\.\s*(debug|info|warn|error)\s*\([^)]*\)/gi, '[日志]');
+
+  // 13. Remove stack trace lines (keep first and last frame)
+  t = t.replace(/(^\tat\s+[^\n]+\n)((\tat\s+[^\n]+\n)*)(\bat\s+[^\n]+$)/gm,
+    (_, head, middle, tail) => head + (middle ? '\n  ...\n' : '') + tail);
+
+  // 14. Merge broken URLs (URL split by newline/hyphen)
+  t = t.replace(/(https?:\/\/[^\s\n,，]+)[\n-]([^\s,，]+)/g, '$1$2');
+
+  // 15. Compress over-long URLs: keep domain + TLD + first 60 path chars
+  t = t.replace(/(https?:\/\/[^\s　'"<>】】]+)\/([^\s　'"<>】】]{0,60}[^\s　'"<>】】]*)/g,
+    (_, domain, path) => {
+      const fullPath = path.length > 60 ? path.slice(0, 60) + '...' : path;
+      return domain + '/' + fullPath;
+    });
+
+  // 16. Remove Emoji
+  t = t.replace(
+    /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2300}-\u{23FF}]|[\u{2B50}]|[\u{1FA00}-\u{1FAFF}]|[\u{1F900}-\u{1F9FF}]/gu,
+    ''
+  );
+
+  // 17. Normalize Chinese punctuation → English equivalents
+  t = t
+    .replace(/。/g, '.')
+    .replace(/，/g, ',')
+    .replace(/；/g, ';')
+    .replace(/：/g, ':')
+    .replace(/？/g, '?')
+    .replace(/！/g, '!')
+    .replace(/"/g, '"')
+    .replace(/"/g, '"')
+    .replace(/'/g, "'")
+    .replace(/'/g, "'")
+    .replace(/（/g, '(')
+    .replace(/）/g, ')')
+    .replace(/【/g, '[')
+    .replace(/】/g, ']')
+    .replace(/《/g, '<')
+    .replace(/》/g, '>')
+    .replace(/、/g, ',')
+    .replace(/…/g, '...')
+    .replace(/～/g, '~');
+
+  // 18. Normalize timestamps: various date/time formats → [时间]
+  t = t.replace(
+    /\b(?:\d{4}[-/年]\d{1,2}[-/月]\d{1,2}[日]?\s*(?:[时分]?\s*\d{1,2}[：:]\d{1,2}(?:[：:]\d{1,2})?\s*(?:AM|PM|am|pm)?)?|\d{1,2}[-/月]\d{1,2}[日]?(?:\s*\d{1,2}:\d{2}(?::\d{2})?)?)\b/g,
+    '[时间]'
+  );
+
+  // 19. Compact whitespace: multiple spaces → single space
+  t = t.replace(/[ \t]{2,}/g, ' ');
+
+  // 20. Collapse multiple newlines to max 2
+  t = t.replace(/\n{3,}/g, '\n\n');
+
+  // 21. Trim each line (remove leading/trailing whitespace)
+  t = t.split('\n').map(line => line.trim()).join('\n');
+
+  // 22. Remove blank lines at start/end
+  t = t.trim();
+
+  // 23. Simplify large numbers: 1,500,000 → 1.5M
+  t = t.replace(/\b(\d{1,3}(?:,\d{3}){2,})(?:\b|[^\d])/g, (match) => {
+    const num = parseInt(match.replace(/,/g, ''), 10);
+    if (num >= 1e9) return (num / 1e9).toFixed(1) + 'B';
+    if (num >= 1e6) return (num / 1e6).toFixed(1) + 'M';
+    if (num >= 1e3) return (num / 1e3).toFixed(1) + 'K';
+    return match;
+  });
+
+  // 24. Replace over-long base64 strings: >100 chars of base64 → [BASE64数据]
+  t = t.replace(/\b[A-Za-z0-9+/]{100,}={0,2}\b/g, '[BASE64数据]');
+
+  // 25. Compress JSON: {"key": "value"} → {"key":"value"}
+  // Only applied to standalone JSON lines or blocks
+  t = t.replace(/(\{"[^"]+":\s*"[^"]+"\})/g, (json) => {
+    try { return JSON.stringify(JSON.parse(json)); } catch { return json; }
+  });
+
+  // 26. Collapse repeated sentences (exact duplicate sentences)
+  {
+    const sentences = t.split(/(?<=[.!?])\s+/);
+    const seen = new Set<string>();
+    t = sentences.filter(s => {
+      const normalized = s.toLowerCase().trim();
+      if (seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    }).join(' ');
+  }
+
+  // 27. Collapse repeated paragraphs (exact duplicate blocks separated by \n\n)
+  {
+    const paras = t.split(/\n\n+/);
+    const seenPara = new Set<string>();
+    t = paras.filter(p => {
+      const normalized = p.trim().toLowerCase();
+      if (seenPara.has(normalized)) return false;
+      seenPara.add(normalized);
+      return true;
+    }).join('\n\n');
+  }
+
+  // 28. Minimize spaces between Chinese and English (中文 text 中文 → 中文text中文)
+  t = t.replace(/([\u4e00-\u9fff])([A-Za-z])/g, '$1$2');
+  t = t.replace(/([A-Za-z])([\u4e00-\u9fff])/g, '$1$2');
+
+  return t;
+}
+
 // ─── Content Validation ───────────────────────────────────────────────────────
 
 function isValidChunk(text: string): boolean {
@@ -185,7 +344,10 @@ const captureHandler = async (event: HookEvent) => {
     for (const m of significant) {
       let text = m.text.trim();
 
-      // 1. Validate
+      // 0. Full text normalization (structural cleaning)
+      text = normalizeText(text);
+
+      // 1. Validate (after normalization so length is accurate)
       if (!isValidChunk(text)) {
         audit('skip', 'invalid_chunk', text);
         continue;
@@ -197,7 +359,7 @@ const captureHandler = async (event: HookEvent) => {
         continue;
       }
 
-      // 3. Sanitize
+      // 3. Sanitize (sensitive info redaction — after normalize so URL/JSON is cleaned)
       text = sanitize(text);
 
       // 4. Truncate

@@ -867,6 +867,88 @@ function audit(action, reason, text) {
   } catch {
   }
 }
+function normalizeText(text) {
+  let t = text;
+  t = t.replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u2028-\u202F\uFEFF]/g, "");
+  t = t.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  t = t.replace(/<[^>]+>/g, "");
+  t = t.replace(/!\[([^\]]*)\]\([^)]+\)/g, "[\u56FE\u7247]");
+  t = t.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+  t = t.replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, "$1");
+  t = t.replace(/^#{1,6}\s+/gm, "");
+  t = t.replace(/```[\w*]*\n([\s\S]*?)```/g, (_, code) => code.trim());
+  t = t.replace(/`([^`]+)`/g, "$1");
+  t = t.replace(/^>\s+/gm, "");
+  t = t.replace(/^[\s]*[-*+]\s+/gm, "");
+  t = t.replace(/^[\s]*\d+\.\s+/gm, "");
+  t = t.replace(/\bconsole\s*\.\s*(log|debug|info|warn|error)\s*\([^)]*\)/gi, "[\u65E5\u5FD7]");
+  t = t.replace(/\bprint\s*\([^)]*\)/g, "[\u65E5\u5FD7]");
+  t = t.replace(/\bprint\b(?!\s*=)/g, "[\u65E5\u5FD7]");
+  t = t.replace(/\blogger\s*\.\s*(debug|info|warn|error)\s*\([^)]*\)/gi, "[\u65E5\u5FD7]");
+  t = t.replace(
+    /(^\tat\s+[^\n]+\n)((\tat\s+[^\n]+\n)*)(\bat\s+[^\n]+$)/gm,
+    (_, head, middle, tail) => head + (middle ? "\n  ...\n" : "") + tail
+  );
+  t = t.replace(/(https?:\/\/[^\s\n,，]+)[\n-]([^\s,，]+)/g, "$1$2");
+  t = t.replace(
+    /(https?:\/\/[^\s　'"<>】】]+)\/([^\s　'"<>】】]{0,60}[^\s　'"<>】】]*)/g,
+    (_, domain, path4) => {
+      const fullPath = path4.length > 60 ? path4.slice(0, 60) + "..." : path4;
+      return domain + "/" + fullPath;
+    }
+  );
+  t = t.replace(
+    /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2300}-\u{23FF}]|[\u{2B50}]|[\u{1FA00}-\u{1FAFF}]|[\u{1F900}-\u{1F9FF}]/gu,
+    ""
+  );
+  t = t.replace(/。/g, ".").replace(/，/g, ",").replace(/；/g, ";").replace(/：/g, ":").replace(/？/g, "?").replace(/！/g, "!").replace(/"/g, '"').replace(/"/g, '"').replace(/'/g, "'").replace(/'/g, "'").replace(/（/g, "(").replace(/）/g, ")").replace(/【/g, "[").replace(/】/g, "]").replace(/《/g, "<").replace(/》/g, ">").replace(/、/g, ",").replace(/…/g, "...").replace(/～/g, "~");
+  t = t.replace(
+    /\b(?:\d{4}[-/年]\d{1,2}[-/月]\d{1,2}[日]?\s*(?:[时分]?\s*\d{1,2}[：:]\d{1,2}(?:[：:]\d{1,2})?\s*(?:AM|PM|am|pm)?)?|\d{1,2}[-/月]\d{1,2}[日]?(?:\s*\d{1,2}:\d{2}(?::\d{2})?)?)\b/g,
+    "[\u65F6\u95F4]"
+  );
+  t = t.replace(/[ \t]{2,}/g, " ");
+  t = t.replace(/\n{3,}/g, "\n\n");
+  t = t.split("\n").map((line) => line.trim()).join("\n");
+  t = t.trim();
+  t = t.replace(/\b(\d{1,3}(?:,\d{3}){2,})(?:\b|[^\d])/g, (match) => {
+    const num = parseInt(match.replace(/,/g, ""), 10);
+    if (num >= 1e9) return (num / 1e9).toFixed(1) + "B";
+    if (num >= 1e6) return (num / 1e6).toFixed(1) + "M";
+    if (num >= 1e3) return (num / 1e3).toFixed(1) + "K";
+    return match;
+  });
+  t = t.replace(/\b[A-Za-z0-9+/]{100,}={0,2}\b/g, "[BASE64\u6570\u636E]");
+  t = t.replace(/(\{"[^"]+":\s*"[^"]+"\})/g, (json) => {
+    try {
+      return JSON.stringify(JSON.parse(json));
+    } catch {
+      return json;
+    }
+  });
+  {
+    const sentences = t.split(/(?<=[.!?])\s+/);
+    const seen = /* @__PURE__ */ new Set();
+    t = sentences.filter((s) => {
+      const normalized = s.toLowerCase().trim();
+      if (seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    }).join(" ");
+  }
+  {
+    const paras = t.split(/\n\n+/);
+    const seenPara = /* @__PURE__ */ new Set();
+    t = paras.filter((p) => {
+      const normalized = p.trim().toLowerCase();
+      if (seenPara.has(normalized)) return false;
+      seenPara.add(normalized);
+      return true;
+    }).join("\n\n");
+  }
+  t = t.replace(/([\u4e00-\u9fff])([A-Za-z])/g, "$1$2");
+  t = t.replace(/([A-Za-z])([\u4e00-\u9fff])/g, "$1$2");
+  return t;
+}
 function isValidChunk(text) {
   if (!text || typeof text !== "string") return false;
   const trimmed = text.trim();
@@ -957,6 +1039,7 @@ var captureHandler = async (event) => {
     let storedCount = 0;
     for (const m of significant) {
       let text = m.text.trim();
+      text = normalizeText(text);
       if (!isValidChunk(text)) {
         audit("skip", "invalid_chunk", text);
         continue;
