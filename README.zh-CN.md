@@ -565,11 +565,6 @@ Jina AI 提供**免费额度**，足够个人使用，无需信用卡：
 
 没有 API Key 不会报错 — 自动降级到当前可用的最佳模式。
 
----
-
-## 🌱 种子记忆
-
-首次安装时自动写入 11 条基础记忆：
 
 - 团队成员结构（main/wukong/bajie/bailong/tseng 角色）
 - 协作规范（GitHub inbox → done 工作流）

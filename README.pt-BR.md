@@ -59,7 +59,6 @@ Agentes IA esquecem tudo após cada sessão. **hawk-bridge** conecta o sistema d
 | 5 | **4 Providers de embedding** | Ollama (local) / sentence-transformers (CPU) / Jina AI (API gratuita) / OpenAI |
 | 6 | **Degradação elegante** | Alterna automaticamente quando chaves API não estão disponíveis |
 | 7 | **Injeção contextual** | Score BM25 usado diretamente quando não há embedder disponível |
-| 8 | **Seed Memory** | Pré-preenchida com estrutura da equipe, normas e contexto do projeto |
 | 9 | **Recall sub-100ms** | Índice ANN LanceDB para recuperação instantânea |
 | 10 | **Instalação multiplataforma** | Um comando, funciona no Ubuntu/Debian/Fedora/Arch/Alpine/openSUSE |
 
@@ -401,20 +400,6 @@ Nada configurado?          → BM25-only (apenas palavras-chave, sem chamadas AP
 ```
 
 Sem chave API = sem crash = degradação elegante.
-
----
-
-## 🌱 Seed Memory
-
-Na primeira instalação, 11 memórias fundacionais são populadas automaticamente:
-
-- Estrutura da equipe (papéis main/wukong/bajie/bailong/tseng)
-- Normas de colaboração (workflow GitHub inbox → done)
-- Contexto do projeto (hawk-bridge, qujingskills, gql-openclaw)
-- Preferências de comunicação
-- Princípios de execução
-
-Isso garante que hawk-recall tenha algo para injetar desde o primeiro dia.
 
 ---
 

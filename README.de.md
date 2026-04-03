@@ -59,7 +59,6 @@ KI-Agenten vergessen nach jeder Sitzung alles. **hawk-bridge** verbindet OpenCla
 | 5 | **4 Embedding-Provider** | Ollama (lokal) / sentence-transformers (CPU) / Jina AI (gratis API) / OpenAI |
 | 6 | **Graceful Degradation** | Wechselt automatisch wenn API-Schlüssel nicht verfügbar sind |
 | 7 | **Kontextbewusste Injektion** | BM25-Rangpunktzahl wird direkt verwendet wenn kein Embedder verfügbar |
-| 8 | **Seed Memory** | Vorgefüllt mit Teamstruktur, Normen und Projektkontext |
 | 9 | **Sub-100ms Recall** | LanceDB ANN-Index für sofortigen Abruf |
 | 10 | **Plattformübergreifende Installation** | Ein Befehl, funktioniert auf Ubuntu/Debian/Fedora/Arch/Alpine/openSUSE |
 
@@ -401,20 +400,6 @@ Nichts konfiguriert?             → BM25-only (nur Schlüsselwörter, keine API
 ```
 
 Kein API-Schlüssel = kein Absturz = Graceful Degradation.
-
----
-
-## 🌱 Seed Memory
-
-Bei der Erstinstallation werden 11 fundamentale Erinnerungen automatisch geseedt:
-
-- Teamstruktur (Rollen main/wukong/bajie/bailong/tseng)
-- Kollaborationsnormen (GitHub Inbox → Done Workflow)
-- Projektkontext (hawk-bridge, qujingskills, gql-openclaw)
-- Kommunikationspräferenzen
-- Ausführungsprinzipien
-
-Dies stellt sicher, dass hawk-recall vom ersten Tag an etwas zum Injizieren hat.
 
 ---
 
