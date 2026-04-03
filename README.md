@@ -137,7 +137,7 @@ Session (persistent, on disk)
 | 5 | **5 Embedding Providers** | Ollama (local GPU) / Jina AI (free cloud) / Qianwen / OpenAI / Cohere |
 | 6 | **Graceful Degradation** | Automatically falls back when API keys are unavailable |
 | 7 | **Context-Aware Injection** | BM25 rank score used directly when no embedder available |
-| 8 | **Seed Memory** | Pre-populated with 11 foundational memories — customize after install |
+| 8 | — | (seed memory removed) |
 | 9 | **Sub-100ms Recall** | LanceDB ANN index for instant retrieval |
 | 10 | **Cross-Platform Install** | One command, works on all major Linux distros |
 | 11 | **Auto-Dedup** | Text-similarity dedup before storage — prevents duplicate memories |
@@ -589,18 +589,6 @@ No API key = no crash = graceful degradation.
 
 ---
 
-## 🌱 Seed Memory
-
-On first install, 11 foundational memories are seeded automatically:
-
-- Team structure (main/wukong/bajie/bailong/tseng roles)
-- Collaboration norms (GitHub inbox → done workflow)
-- Project context (hawk-bridge, qujingskills, gql-openclaw)
-- Communication preferences
-- Operating principles
-
-These ensure hawk-recall has something to inject from day one.
-
 ---
 
 ## 📁 File Structure
@@ -618,7 +606,6 @@ hawk-bridge/
 │   ├── lancedb.ts             # LanceDB wrapper
 │   ├── embeddings.ts           # 6 embedding providers (Qianwen/Ollama/Jina/Cohere/OpenAI/OpenAI-Compatible)
 │   ├── retriever.ts            # Hybrid search (BM25 + vector + RRF)
-│   ├── seed.ts                # Seed memory initializer
 │   └── hooks/
 │       ├── hawk-recall/       # agent:bootstrap hook
 │       │   ├── handler.ts
