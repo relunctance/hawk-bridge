@@ -71,13 +71,23 @@
         "properties": {
           "enabled": { "type": "boolean", "default": true },
           "maxChunks": { "type": "number", "default": 3 },
-          "importanceThreshold": { "type": "number", "default": 0.5 }
+          "importanceThreshold": { "type": "number", "default": 0.5 },
+          "ttlMs": { "type": "number", "default": 2592000000, "description": "记忆 TTL，0=永不过期，默认30天（毫秒）" },
+          "maxChunkSize": { "type": "number", "default": 2000, "description": "单条记忆最大字符数" },
+          "minChunkSize": { "type": "number", "default": 20, "description": "单条记忆最小字符数" },
+          "dedupSimilarity": { "type": "number", "default": 0.95, "description": "去重相似度阈值 0~1" }
+        }
+      },
+      "audit": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true, "description": "启用审计日志 ~/.hawk/audit.log" }
         }
       },
       "python": {
         "type": "object",
         "properties": {
-          "pythonPath": { "type": "string", "default": "python3.12" },
+          "pythonPath": { "type": "string", "description": "Python 解释器路径，自动检测" },
           "hawkDir": { "type": "string", "default": "~/.openclaw/hawk" }
         }
       }

@@ -41,7 +41,13 @@ metadata:
 | **四层记忆衰减** | Working → Short → Long → Archive，自动淘汰低价值记忆 |
 | **混合检索** | 向量 + BM25 + RRF融合 + 噪声过滤 + 交叉编码重排 |
 | **Markdown兼容** | 一键导入用户已有 `.md` 记忆文件 |
-| **零配置** | 自动读取 OpenClaw 配置（minimax等），无需额外 API Key |
+| **零配置** | 默认 Jina 免费 Embedding API，装完就能用，无需任何 API Key |
+| **28条文本清洗** | Markdown/URL/标点/时间戳/Emoji/HTML/调试日志等自动清理 |
+| **敏感信息安全** | API Key/电话/邮箱/身份证/信用卡自动脱敏后存储 |
+| **TTL 过期** | 记忆默认30天自动过期，节省存储空间 |
+| **Recall 阈值门控** | relevance score < minScore 的记忆不注入上下文 |
+| **审计日志** | 所有 capture/skip/reject/recall 事件记录到 `~/.hawk/audit.log` |
+| **有害内容过滤** | 暴力/欺诈/黑客/CSAM 等内容在 capture 阶段直接拒绝 |
 
 ---
 
@@ -124,6 +130,10 @@ export LLM_PROVIDER="groq"               # 切换LLM后端
 
 ## 配置项（openclaw.json）
 
+**大部分情况不需要配置**——装完默认 Jina 免费 API 就能跑。
+
+如需定制，在 `openclaw.json` 的 `plugins.entries.hawk-bridge.config` 下添加：
+
 ```json
 {
   "plugins": {
@@ -132,11 +142,15 @@ export LLM_PROVIDER="groq"               # 切换LLM后端
         "enabled": true,
         "config": {
           "embedding": {
-            "provider": "openclaw",
-            "apiKey": "",
-            "model": "embedding-minimax",
-            "baseURL": "",
-            "dimensions": 1536
+            "provider": "jina",
+            "apiKey": "",          // jina 免费，无需填
+            "model": "jina-embeddings-v5-small",
+            "dimensions": 1024
+          },
+          "llm": {
+            "provider": "groq",
+            "apiKey": "",          // groq 免费，无需填
+            "model": "llama-3.3-70b-versatile"
           },
           "recall": {
             "topK": 5,
@@ -146,7 +160,14 @@ export LLM_PROVIDER="groq"               # 切换LLM后端
           "capture": {
             "enabled": true,
             "maxChunks": 3,
-            "importanceThreshold": 0.5
+            "importanceThreshold": 0.5,
+            "ttlMs": 2592000000,
+            "maxChunkSize": 2000,
+            "minChunkSize": 20,
+            "dedupSimilarity": 0.95
+          },
+          "audit": {
+            "enabled": true
           },
           "python": {
             "pythonPath": "python3.12",
@@ -231,44 +252,70 @@ python3.12 -c "from hawk_memory.governance import Governance; print(Governance()
 
 ## 与 context-hawk 的关系
 
-**context-hawk** 是本 Skill 的底层 Python 引擎，已整合进 `python/hawk_memory/` 目录。
+**不要单独装 context-hawk！** hawk-bridge 安装脚本会自动克隆 context-hawk 到 `~/.openclaw/workspace/context-hawk`，并通过符号链接 `~/.openclaw/hawk` 指向它。
 
-如果你之前装了 context-hawk 作为独立 Skill，可以卸载：
+| | hawk-bridge | context-hawk |
+|---|---|---|
+| **安装方式** | `openclaw plugins install` 或 `clawhub install` | 由 hawk-bridge 自动管理 |
+| **手动安装 context-hawk？** | ❌ 不要 | 会造成双份记忆数据 |
+| **独立使用？** | ❌ 不支持，必须配合 OpenClaw | ✅ 可以，Python 库方式单独使用 |
+
+**正确的安装流程：**
 ```bash
-openclaw skills uninstall context-hawk
+# 方式1：clawhub（推荐）
+clawhub install hawk-bridge
+
+# 方式2：直接安装脚本（自动处理一切）
+bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/install.sh)
 ```
 
-本 Skill 是 context-hawk 的超集，提供完整功能和自动 Hook。
+**卸载：**
+```bash
+openclaw plugins uninstall hawk-bridge   # 移除插件
+rm -rf ~/.openclaw/hawk ~/.hawk         # 清除记忆数据（不可恢复！）
+rm -rf ~/.openclaw/workspace/context-hawk
+```
 
 ---
 
 ## 目录结构
 
 ```
-hawk-bridge/
-├── SKILL.md                    ← 本文档
-├── openclaw.plugin.json        ← 插件元数据 + 配置schema
+hawk-bridge/                          ← OpenClaw 插件（TypeScript）
+├── SKILL.md
+├── install.sh                        ← 一键安装脚本
+├── openclaw.plugin.json              ← 插件元数据 + 配置schema
+├── manifest.json                     ← Hook 注册信息
 ├── package.json
-├── src/
-│   ├── index.ts              # 插件入口
-│   ├── config.ts             # 自动读取openclaw.json配置
-│   ├── lancedb.ts            # LanceDB封装
-│   ├── embeddings.ts         # 向量化（多后端）
-│   ├── retriever.ts          # 混合检索管线
-│   └── hooks/
-│       ├── recall.ts         # autoRecall hook
-│       └── capture.ts        # autoCapture hook
-└── python/
-    └── hawk_memory/
-        ├── __init__.py
-        ├── memory.py         # MemoryManager 四层衰减
-        ├── compressor.py     # ContextCompressor
-        ├── config.py          # Config
-        ├── self_improving.py # 自我反思
-        ├── extractor.py      # LLM 6类提取
-        ├── governance.py      # 治理指标
-        ├── vector_retriever.py # 向量检索
-        └── markdown_importer.py # Markdown导入
+└── src/
+    ├── index.ts                     # 插件入口
+    ├── config.ts                    # 自动读取 openclaw.json 配置
+    ├── lancedb.ts                   # LanceDB 封装
+    ├── embeddings.ts                # 向量化（多后端）
+    ├── retriever.ts                 # 混合检索管线
+    ├── constants.ts                 # 所有可调参数
+    └── hooks/
+        ├── hawk-recall/
+        │   ├── handler.ts           # autoRecall handler
+        │   └── HOOK.md
+        └── hawk-capture/
+            ├── handler.ts           # autoCapture handler（含 normalize）
+            └── HOOK.md
+
+~/.openclaw/workspace/context-hawk/  ← Python 记忆引擎（安装脚本自动克隆）
+└── hawk/
+    ├── memory.py                    # 四层记忆管理
+    ├── normalize.py                 # 28条文本清洗（与 TypeScript 层同步）
+    ├── extractor.py                  # LLM 6类提取
+    ├── vector_retriever.py           # 向量检索
+    ├── compressor.py                 # 上下文压缩
+    ├── self_improving.py            # 自我反思
+    ├── governance.py                 # 治理指标
+    └── markdown_importer.py          # Markdown 导入
+
+~/.openclaw/hawk → ~/.openclaw/workspace/context-hawk/hawk  ← 符号链接
+~/.hawk/                                             ← LanceDB 数据目录
+~/.hawk/audit.log                                    ← 审计日志
 ```
 
 ---

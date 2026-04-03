@@ -133,15 +133,21 @@ Session (persistent, on disk)
 | 1 | **Auto-Capture Hook** | `message:sent` → hawk extracts 6 categories of memories automatically |
 | 2 | **Auto-Recall Hook** | `agent:bootstrap` → hawk injects relevant memories before first response |
 | 3 | **Hybrid Retrieval** | BM25 + vector search + RRF fusion — no API key required for baseline |
-| 4 | **Zero-Config Fallback** | Works out-of-the-box in BM25-only mode, no API keys needed |
-| 5 | **4 Embedding Providers** | Ollama (local) / sentence-transformers (CPU) / Jina AI (free API) / OpenAI |
+| 4 | **Zero-Config Fallback** | Works out-of-the-box, no API keys needed (Jina free tier default) |
+| 5 | **5 Embedding Providers** | Ollama (local GPU) / Jina AI (free cloud) / Qianwen / OpenAI / Cohere |
 | 6 | **Graceful Degradation** | Automatically falls back when API keys are unavailable |
 | 7 | **Context-Aware Injection** | BM25 rank score used directly when no embedder available |
-| 8 | **Seed Memory** | Pre-populated with generic AI agent team concepts — customize after install |
+| 8 | **Seed Memory** | Pre-populated with 11 foundational memories — customize after install |
 | 9 | **Sub-100ms Recall** | LanceDB ANN index for instant retrieval |
-| 10 | **Cross-Platform Install** | One command, works on Ubuntu/Debian/Fedora/Arch/Alpine/openSUSE |
-| 11 | **SimHash Auto-Dedup** | 64-bit fingerprint dedup — prevents duplicate memories from being stored |
+| 10 | **Cross-Platform Install** | One command, works on all major Linux distros |
+| 11 | **Auto-Dedup** | Text-similarity dedup before storage — prevents duplicate memories |
 | 12 | **MMR Diverse Recall** | Maximal Marginal Relevance — relevant AND diverse, reduces context size |
+| 13 | **28-Rule Text Normalizer** | Cleans markdown, URLs, punctuation, timestamps, emojis, HTML, debug logs |
+| 14 | **Sensitive Info Sanitizer** | Auto-redacts API keys, phone numbers, emails, IDs, credit cards on capture |
+| 15 | **TTL / Expiry** | Memories auto-expire after configurable TTL (default 30 days) |
+| 16 | **Recall MinScore Gate** | Memories below relevance threshold are not injected into context |
+| 17 | **Audit Logging** | All capture/skip/reject/recall events logged to `~/.hawk/audit.log` |
+| 18 | **Harmful Content Filter** | Rejects violent/fraud/hack/CSAM content at capture time |
 
 ---
 

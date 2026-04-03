@@ -1,13 +1,8 @@
 {
   "id": "hawk-bridge",
   "name": "hawk-bridge",
-  "description": "AutoCapture + AutoRecall bridge to hawk Python memory system. Zero-config defaults: sentence-transformers (local CPU, no API key) + groq LLM (free).",
+  "description": "AutoCapture + AutoRecall bridge to hawk Python memory system. Zero-config defaults: Jina AI free embedding (no GPU needed) + groq LLM (free tier).",
   "version": "1.1.0",
-  "configSchema": {
-    "type": "object",
-    "additionalProperties": false,
-    "properties": {}
-  },
   "hooks": [
     {
       "name": "hawk-recall",
@@ -30,18 +25,18 @@
         "properties": {
           "provider": {
             "type": "string",
-            "enum": ["sentence-transformers", "ollama", "openai", "jina", "cohere"],
-            "default": "sentence-transformers",
-            "description": "sentence-transformers=local CPU (default, no API key), ollama=local GPU, openai=paid, jina/cohere=free cloud tier"
+            "enum": ["jina", "qianwen", "ollama", "openai", "cohere", "openclaw"],
+            "default": "jina",
+            "description": "jina=Jina AI free tier (default, no GPU), qianwen=阿里云 DashScope, ollama=local GPU, openai=paid, cohere=free tier"
           },
-          "apiKey": { "type": "string", "description": "API key (not needed for ollama)" },
+          "apiKey": { "type": "string", "description": "API key — not needed for ollama" },
           "model": {
             "type": "string",
             "description": "Embedding model name",
-            "default": "all-MiniLM-L6-v2 (sentence-transformers, 384dim) | nomic-embed-text (ollama) | text-embedding-3-small (openai) | jina-embeddings-v5-small (jina)"
+            "default": "jina-embeddings-v5-small (jina) | text-embedding-v1 (qianwen) | nomic-embed-text (ollama)"
           },
           "baseURL": { "type": "string", "description": "Custom API base URL (e.g. http://localhost:11434 for ollama)" },
-          "dimensions": { "type": "number", "default": 384 }
+          "dimensions": { "type": "number", "default": 1024 }
         }
       },
       "llm": {
@@ -50,12 +45,15 @@
         "properties": {
           "provider": {
             "type": "string",
-            "enum": ["ollama", "groq", "openai", "openrouter"],
+            "enum": ["groq", "ollama", "openai", "openrouter"],
             "default": "groq",
             "description": "groq=free Llama-3 (no key), ollama=local free, openai=paid"
           },
           "apiKey": { "type": "string" },
-          "model": { "type": "string", "default": "llama-3.3-70b-versatile (groq) | llama3 (ollama)" }
+          "model": {
+            "type": "string",
+            "default": "llama-3.3-70b-versatile (groq) | llama3 (ollama)"
+          }
         }
       },
       "recall": {
@@ -71,13 +69,23 @@
         "properties": {
           "enabled": { "type": "boolean", "default": true },
           "maxChunks": { "type": "number", "default": 3 },
-          "importanceThreshold": { "type": "number", "default": 0.5 }
+          "importanceThreshold": { "type": "number", "default": 0.5 },
+          "ttlMs": { "type": "number", "default": 2592000000, "description": "Memory TTL in ms, 0=never expire, default 30 days" },
+          "maxChunkSize": { "type": "number", "default": 2000, "description": "Max characters per memory chunk" },
+          "minChunkSize": { "type": "number", "default": 20, "description": "Min characters for valid chunk" },
+          "dedupSimilarity": { "type": "number", "default": 0.95, "description": "Similarity threshold 0~1 for dedup" }
+        }
+      },
+      "audit": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true, "description": "Write audit log to ~/.hawk/audit.log" }
         }
       },
       "python": {
         "type": "object",
         "properties": {
-          "pythonPath": { "type": "string", "default": "python3.12" },
+          "pythonPath": { "type": "string", "description": "Python interpreter path, auto-detected if omitted" },
           "hawkDir": { "type": "string", "default": "~/.openclaw/hawk" }
         }
       }
