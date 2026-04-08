@@ -40,6 +40,7 @@ metadata:
 | **autoRecall Hook** | 每次回复前，自动检索相关记忆 → 注入上下文 |
 | **四层记忆衰减** | Working → Short → Long → Archive，自动淘汰低价值记忆 |
 | **混合检索** | 向量 + BM25 + RRF融合 + 噪声过滤 + 交叉编码重排 |
+| **6大检索优化** | Query扩展 · MMR多样性 · 置信度过滤 · 分域加权BM25 · 会话感知 · 结果压缩 |
 | **Markdown兼容** | 一键导入用户已有 `.md` 记忆文件 |
 | **零配置** | 默认 Jina 免费 Embedding API，装完就能用，无需任何 API Key |
 | **28条文本清洗** | Markdown/URL/标点/时间戳/Emoji/HTML/调试日志等自动清理 |
@@ -57,8 +58,18 @@ metadata:
 OpenClaw Gateway (TypeScript Hooks)
     │
     ├── agent:bootstrap → hawk-recall hook
-    │       → HybridRetriever (向量 + BM25)
-    │       → 检索 LanceDB
+    │       → HybridRetriever
+    │       ┌─────────────────────────────────────────────────────┐
+    │       │ 1. Query Expansion (查询扩展成多个相关表述)          │
+    │       │ 2. Multi-query Vector+BM25 (每个查询独立检索)        │
+    │       │ 3. RRF Fusion (结果融合)                           │
+    │       │ 4. Noise Filter (去除"好的""收到"等噪声)          │
+    │       │ 5. Cross-encoder Rerank (重排)                     │
+    │       │ 6. Confidence Threshold (置信度过滤)                │
+    │       │ 7. MMR Diversity (多样性排序)                       │
+    │       │ 8. Layer Penalty (低层级降权)                      │
+    │       │ 9. Result Compression (长文本压缩)                  │
+    │       └─────────────────────────────────────────────────────┘
     │       → 记忆注入上下文 🦅
     │
     └── message:sent → hawk-capture hook
@@ -172,6 +183,17 @@ export LLM_PROVIDER="groq"               # 切换LLM后端
           "python": {
             "pythonPath": "python3.12",
             "hawkDir": "~/.openclaw/hawk"
+          },
+          "optimizer": {
+            "queryExpansionEnabled": true,
+            "queryExpansionCount": 3,
+            "mmrEnabled": true,
+            "mmrLambda": 0.5,
+            "confidenceThresholdEnabled": true,
+            "confidenceThreshold": 0.3,
+            "fieldWeightedBm25Enabled": true,
+            "compressionEnabled": true,
+            "compressionMaxChars": 200
           }
         }
       }
@@ -228,6 +250,95 @@ si = SelfImproving()
 si.learn_from_error("记忆提取返回空", context={"query": "..."})
 stats = si.get_stats()
 ```
+
+---
+
+## 6 大检索优化策略
+
+### 1. Query Expansion（查询扩展）
+将用户的一个问题扩展成 3-4 个语义相关的表述，分别检索再合并。
+
+```typescript
+query = "openclaw 架构"
+// 扩展为：
+// ["openclaw 架构", "openclaw design", "openclaw 底层原理", "openclaw 系统概览"]
+// 各查询独立检索 → RRF 合并 → 解决"措辞不一致"导致的漏召回
+```
+
+**触发：** `optimizerConfig.queryExpansionEnabled = true`（默认开启）
+
+---
+
+### 2. MMR Diversity（最大边际相关性）
+在选择最终 topK 时，故意选一些"和已有结果不太一样"的内容，保证多样性。
+
+```typescript
+// MMR 公式：λ × 相关性 - (1-λ) × 与已选结果的最大相似度
+while (results.length < topK) {
+  next = max(λ × rerankScore - (1-λ) × maxSimilarityToSelected)
+}
+```
+
+| λ 值 | 效果 |
+|------|------|
+| 0.0 | 只顾相关性，和原 RRF 一样 |
+| 0.5（默认） | 平衡相关性和多样性 |
+| 1.0 | 最高多样性 |
+
+**触发：** `optimizerConfig.mmrEnabled = true, mmrLambda = 0.5`（默认开启）
+
+---
+
+### 3. Confidence Threshold（置信度过滤）
+重排后设一个最低分数阈值，低于阈值的直接丢弃，不进入最终结果。
+
+```typescript
+// 低于 0.3 分的记忆直接丢弃
+.filter(r => r.rerankScore >= 0.3)
+```
+
+**触发：** `optimizerConfig.confidenceThresholdEnabled = true`（默认开启，阈值 0.3）
+
+---
+
+### 4. Field-weighted BM25（分域加权）
+对 text、category、scope 三个字段分别 BM25 检索，给 category 和 scope 更高权重。
+
+```typescript
+// 公式：score = bm25(text)×1.0 + bm25(category)×2.0 + bm25(scope)×1.5
+// category 命中（如 "fact"）比普通文本匹配权重更高
+```
+
+**触发：** `optimizerConfig.fieldWeightedBm25Enabled = true`（默认开启）
+
+---
+
+### 5. Session Context Awareness（会话上下文感知）
+把最近 1-3 轮对话的摘要拼入 query，让检索理解当前话题。
+
+```typescript
+// 从 session messages 中提取最近 user queries，构建 conversationSummary
+// "openclaw 架构 | openclaw 底层原理"  → 组合查询
+sessionContext = {
+  recentQueries: ["openclaw 底层原理", "openclaw 架构"],
+  conversationSummary: "openclaw 底层原理 | openclaw 架构"
+}
+```
+
+**触发：** 自动注入（从 sessionEntry.messages 中提取）
+
+---
+
+### 6. Result Compression（结果压缩）
+对超过 200 字符的记忆文本，在注入上下文前截断到句子边界。
+
+```typescript
+// 超过 maxChars 的文本，截断到最后一个句号或换行符
+compressText(text, maxChars = 200)
+// "这是很长的记忆文本..." → "这是很长的记忆文本。"（自然断句）
+```
+
+**触发：** `optimizerConfig.compressionEnabled = true`（默认开启，200字符）
 
 ---
 
