@@ -13,7 +13,7 @@ import {
   VECTOR_SEARCH_MULTIPLIER, BM25_SEARCH_MULTIPLIER,
   RERANK_CANDIDATE_MULTIPLIER,
 } from './constants.js';
-import type { RetrievedMemory } from './types.js';
+import type { RetrievedMemory, SourceType } from './types.js';
 
 export class HybridRetriever {
   private db: HawkDB;
@@ -212,7 +212,8 @@ export class HybridRetriever {
   async search(
     query: string,
     topK: number = 5,
-    scope?: string
+    scope?: string,
+    sourceTypes?: SourceType[]  // multimodal: filter by source type
   ): Promise<RetrievedMemory[]> {
     // Clamp topK to prevent abuse
     topK = Math.min(Math.max(1, topK), 100);
@@ -227,7 +228,7 @@ export class HybridRetriever {
       // Full pipeline: vector + BM25 + RRF + rerank
       try {
         const queryVector = await this.embedder.embedQuery(query);
-        const vectorResults = await this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, 0.0, scope);
+        const vectorResults = await this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, 0.0, scope, sourceTypes);
 
         const vectorRanked = vectorResults
           .map((r, i) => ({ id: r.id, score: 1 - i * 0.01, text: r.text }))

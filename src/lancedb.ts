@@ -3,6 +3,7 @@
 
 import * as path from 'path';
 import * as os from 'os';
+import type { SourceType } from './types.js';
 
 // Batch memory map type — avoids '>>' TypeScript parsing ambiguity in generic return types
 type MemoryMap = Map<string, {
@@ -15,6 +16,7 @@ type MemoryMap = Map<string, {
   timestamp: number;
   expiresAt: number;
   metadata: Record<string, unknown>;
+  source_type: SourceType;
 }>;
 import { BM25_QUERY_LIMIT, DEFAULT_EMBEDDING_DIM } from './constants.js';
 import type { MemoryEntry, RetrievedMemory } from './types.js';
@@ -53,6 +55,7 @@ export class HawkDB {
           access_count: 0,
           last_accessed_at: Date.now(),
           metadata: '{}',
+          source_type: 'text',
         });
         const table = makeArrowTable([sampleRow]);
         this.table = await this.db.createTable(TABLE_NAME, table);
@@ -60,11 +63,12 @@ export class HawkDB {
         await this.table.delete(`id = '__init__'`);
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
-        // Migrate schema: add expires_at / created_at columns if missing
+        // Migrate schema: add expires_at / created_at / source_type columns if missing
         try {
           await this.table.alterAddColumns([
             { name: 'expires_at', type: { type: 'int64' } },
             { name: 'created_at', type: { type: 'int64' } },
+            { name: 'source_type', type: { type: 'utf8' } },  // multimodal: text | audio | video
           ]);
         } catch (_) {
           // Columns may already exist — ignore
@@ -89,6 +93,7 @@ export class HawkDB {
     access_count: number;
     last_accessed_at: number;
     metadata: string;
+    source_type: SourceType;
   }): any {
     // Use a dummy zero vector if embedding is empty.
     // DEFAULT_EMBEDDING_DIM must match your embedding model's output dimension.
@@ -106,6 +111,7 @@ export class HawkDB {
       access_count: data.access_count,
       last_accessed_at: BigInt(data.last_accessed_at),
       metadata: data.metadata,
+      source_type: data.source_type,
     };
   }
 
@@ -125,6 +131,7 @@ export class HawkDB {
       access_count: 0,
       last_accessed_at: now,
       metadata: JSON.stringify(entry.metadata || {}),
+      source_type: entry.source_type || 'text',  // 默认为 text
     });
     await this.table.add([row]);
   }
@@ -133,7 +140,8 @@ export class HawkDB {
     queryVector: number[],
     topK: number,
     minScore: number,
-    scope?: string
+    scope?: string,
+    sourceTypes?: SourceType[]
   ): Promise<RetrievedMemory[]> {
     if (!this.table) await this.init();
 
@@ -144,6 +152,14 @@ export class HawkDB {
 
     if (scope) {
       results = results.filter((r: any) => r.scope === scope);
+    }
+
+    // Filter by source types (multimodal support)
+    if (sourceTypes && sourceTypes.length > 0) {
+      results = results.filter((r: any) => {
+        const type = r.source_type || 'text';
+        return sourceTypes.includes(type);
+      });
     }
 
     // Filter expired memories
@@ -163,6 +179,7 @@ export class HawkDB {
         score,
         category: row.category,
         metadata: JSON.parse(row.metadata || '{}'),
+        source_type: (row.source_type || 'text') as SourceType,
       });
       if (retrieved.length >= topK) break;
     }
@@ -204,6 +221,7 @@ export class HawkDB {
       accessCount: r.access_count,
       lastAccessedAt: Number(r.last_accessed_at),
       metadata: JSON.parse(r.metadata || '{}'),
+      source_type: (r.source_type || 'text') as SourceType,
     }));
   }
 
@@ -235,6 +253,7 @@ export class HawkDB {
         timestamp: Number(r.timestamp),
         expiresAt: Number(r.expires_at || 0),
         metadata: JSON.parse(r.metadata || '{}'),
+        source_type: (r.source_type || 'text') as SourceType,
       };
     } catch {
       return null;
@@ -261,6 +280,7 @@ export class HawkDB {
           timestamp: Number(r.timestamp),
           expiresAt: Number(r.expires_at || 0),
           metadata: JSON.parse(r.metadata || '{}'),
+          source_type: (r.source_type || 'text') as SourceType,
         });
       }
     } catch {

@@ -49,6 +49,84 @@ metadata:
 | **Recall 阈值门控** | relevance score < minScore 的记忆不注入上下文 |
 | **审计日志** | 所有 capture/skip/reject/recall 事件记录到 `~/.hawk/audit.log` |
 | **有害内容过滤** | 暴力/欺诈/黑客/CSAM 等内容在 capture 阶段直接拒绝 |
+| **多模态记忆** | 支持 text / audio / video 三种来源，统一存储统一检索 |
+
+---
+
+## 多模态记忆
+
+hawk-bridge v1.2+ 支持多模态记忆，统一存储 text、audio、video 类型的记忆。
+
+### 记忆来源类型
+
+| source_type | 说明 | 典型场景 |
+|-------------|------|----------|
+| `text` | 文本对话（默认） | 聊天记录、文档内容 |
+| `audio` | 音频记忆 | 通话录音、会议录音、语音消息 |
+| `video` | 视频记忆 | 会议录像、课程视频、演示文稿 |
+
+### 数据模型
+
+所有记忆统一存储在 `hawk_memories` 表，通过 `source_type` 字段区分：
+
+```typescript
+interface MemoryEntry {
+  id: string;
+  text: string;              // ASR 转录文本 / 视频描述
+  vector: number[];          // 文本嵌入向量
+  category: string;          // fact | preference | decision | entity
+  scope: string;
+  importance: number;
+  timestamp: number;
+  expiresAt: number;
+  metadata: Record<string, unknown>;  // 类型特有元数据
+  source_type: 'text' | 'audio' | 'video';  // 记忆来源
+}
+```
+
+### metadata 结构
+
+```typescript
+// audio 记忆
+metadata: {
+  audio: {
+    path: "/path/to/audio.mp3",
+    duration_ms: 180000,           // 180秒
+    speaker: "张三",
+    emotion: "neutral",
+    transcript_segments: [
+      { start: 0, end: 5000, text: "大家好..." },
+      { start: 5000, end: 12000, text: "今天讨论..." }
+    ]
+  }
+}
+
+// video 记忆
+metadata: {
+  video: {
+    path: "/path/to/video.mp4",
+    duration_ms: 300000,
+    description: "产品发布会演示文稿讲解",
+    keyframes: [
+      { timestamp: 10000, description: "开场白" },
+      { timestamp: 60000, description: "产品介绍" }
+    ]
+  }
+}
+```
+
+### 检索示例
+
+```typescript
+// 检索所有记忆（默认 text only）
+const results = await retriever.search("用户偏好");
+
+// 检索 text + audio
+const results = await retriever.search("上周那个客户电话说了什么", 5, undefined, ["text", "audio"]);
+
+// 检索所有类型
+const results = await retriever.search("那个演示文稿", 5, undefined, ["text", "audio", "video"]);
+```
 
 ---
 
