@@ -645,6 +645,47 @@ hawk-bridge/
 
 ---
 
+## 🎯 Roadmap: 50-Year Memory Architecture
+
+hawk-bridge is evolving toward **permanent, constitutional memory** — designed to last 50 years or more.
+
+### Core Concept: Memory Constitutional Hierarchy
+
+> Just as nations have: Constitution → Laws → Administrative Regulations → Local Rules → Temporary files
+> 
+> hawk-bridge memory has: Constitutional → Lifetime → Period → Event → Working
+
+### Five Memory Tiers
+
+| Tier | Name | Description | Storage |
+|------|------|-------------|---------|
+| **L0** | Constitutional | Core identity, fundamental values, permanent agreements | 100+ years |
+| **L1** | Lifetime | Life milestones — career, relationships, major decisions | 50+ years |
+| **L2** | Period | Decade buckets with era context | 30+ years |
+| **L3** | Event | Regular memories with decay | 5-10 years |
+| **L4** | Working | Session context only | Session lifetime |
+
+### Key Design Principles
+
+1. **Constitutional Layer is the anchor** — memories either become constitutional or fade away
+2. **DARK File Format** — every memory = one independent JSON file (never depend on a database)
+3. **Append-only** — no overwrite, no delete without explicit user action
+4. **Multi-replica** — GitHub + Gitee + local NAS (no single point of failure)
+5. **Migration-ready** — format can change, content must survive 100 years
+
+### Coming in v2.0+
+
+- **L0 Constitutional Memory**: Immutable memories with amendment-mode updates
+- **L1 Lifetime Memory**: Life milestone tracking with phase awareness
+- **DARK Archive System**: Append-only JSON files synced to Git (GitHub + Gitee dual push)
+- **Tier Promotion Engine**: L3 events promoted to L1/L0 based on access frequency
+- **Cold Storage Pipeline**: AWS S3 Glacier / 阿里云归档 for long-term preservation
+- **Format Migration System**: Every 5 years, migrate to new format with full rollback capability
+
+See [TODO.md](TODO.md) for detailed implementation roadmap.
+
+---
+
 ## 📖 Related
 
 - [🦅 context-hawk](https://github.com/relunctance/context-hawk) — Python memory library
