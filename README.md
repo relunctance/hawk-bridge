@@ -645,42 +645,74 @@ hawk-bridge/
 
 ---
 
-## 🎯 Roadmap: 50-Year Memory Architecture
+## 🎯 Unified Memory Architecture: 5-Tier × 3-Scope
 
-hawk-bridge is evolving toward **permanent, constitutional memory** — designed to last 50 years or more.
+hawk-bridge uses a **dual-dimension** architecture that solves both personal 100-year memory AND enterprise ToB scenarios.
 
-### Core Concept: Memory Constitutional Hierarchy
+### Core Concept: Tier × Scope Matrix
 
-> Just as nations have: Constitution → Laws → Administrative Regulations → Local Rules → Temporary files
-> 
-> hawk-bridge memory has: Constitutional → Lifetime → Period → Event → Working
+**Tier = Time dimension** (how long the memory lives)
+**Scope = Ownership dimension** (whose memory it is)
 
-### Five Memory Tiers
+```
+            Scope →
+Tier ↓      Personal      Org           System
+────────────────────────────────────────────────────
+L0 宪法     个人价值观     企业宪章        连接器协议
+L1 生命     人生里程碑     企业里程碑      组织沿革
+L2 周期     十年分桶       项目/财年周期   行业周期
+L3 事件     日常记忆       团队决策        外部系统事件
+L4 工作     会话上下文     项目上下文       实时数据流
+```
+
+### 5 Tiers (Time Dimension)
 
 | Tier | Name | Description | Storage |
 |------|------|-------------|---------|
-| **L0** | Constitutional | Core identity, fundamental values, permanent agreements | 100+ years |
-| **L1** | Lifetime | Life milestones — career, relationships, major decisions | 50+ years |
+| **L0** | Constitutional | Core identity, values, permanent agreements | 100+ years |
+| **L1** | Lifetime | Life milestones — career, relationships | 50+ years |
 | **L2** | Period | Decade buckets with era context | 30+ years |
 | **L3** | Event | Regular memories with decay | 5-10 years |
 | **L4** | Working | Session context only | Session lifetime |
 
+### 3 Scopes (Ownership Dimension)
+
+| Scope | Description | Examples |
+|-------|-------------|---------|
+| **personal** | Belongs to individual | User preferences, habits, work style |
+| **org** | Shared within organization | Department strategy, team decisions, OKRs |
+| **system** | External enterprise systems (pluggable connectors) | SAP ERP, Confluence, Jira, Feishu |
+
+### Enterprise Connector Plugin System
+
+External systems are **pluggable connectors** that map to `Scope=system`:
+
+| Connector | Enterprise System | Memory Type |
+|-----------|------------------|-------------|
+| `FeishuConnector` | 飞书 | Calendar, docs, approvals |
+| `ConfluenceConnector` | Confluence | Internal knowledge base |
+| `JiraConnector` | JIRA | Project tasks, bug status |
+| `GitHubConnector` | GitHub | Code decisions, PR reviews |
+| `SapConnector` | SAP ERP | Inventory, procurement |
+
 ### Key Design Principles
 
-1. **Constitutional Layer is the anchor** — memories either become constitutional or fade away
-2. **DARK File Format** — every memory = one independent JSON file (never depend on a database)
-3. **Append-only** — no overwrite, no delete without explicit user action
-4. **Multi-replica** — GitHub + Gitee + local NAS (no single point of failure)
-5. **Migration-ready** — format can change, content must survive 100 years
+1. **Tier = Time, Scope = Ownership** — two independent dimensions, not one hierarchy
+2. **Constitutional Layer is the anchor** — memories become constitutional or fade away
+3. **DARK File Format** — every memory = one independent JSON file (never depend on a database)
+4. **Append-only** — no overwrite, no delete without explicit user action
+5. **Multi-replica** — GitHub + Gitee + local NAS (no single point of failure)
+6. **Connector Plugin System** — enterprises plug in their own systems as `Scope=system`
+7. **Migration-ready** — format can change, content must survive 100 years
 
 ### Coming in v2.0+
 
-- **L0 Constitutional Memory**: Immutable memories with amendment-mode updates
-- **L1 Lifetime Memory**: Life milestone tracking with phase awareness
-- **DARK Archive System**: Append-only JSON files synced to Git (GitHub + Gitee dual push)
-- **Tier Promotion Engine**: L3 events promoted to L1/L0 based on access frequency
-- **Cold Storage Pipeline**: AWS S3 Glacier / 阿里云归档 for long-term preservation
-- **Format Migration System**: Every 5 years, migrate to new format with full rollback capability
+- **v2.0**: Unified Schema (Tier + Scope dual-field) + L0/L1/L2 layers
+- **v2.1**: DARK Archive + Cold Storage pipeline (GitHub + Gitee dual push)
+- **v2.2**: Enterprise Connector System + Scope=system implementation
+- **v2.3**: Org Memory Layer + Scope=org + access control
+- **v2.4**: Tier Promotion Engine (L3 → L2 → L1 → L0)
+- **v2.5**: Tier-Aware + Scope-Aware unified retrieval
 
 See [TODO.md](TODO.md) for detailed implementation roadmap.
 

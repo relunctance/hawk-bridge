@@ -1,130 +1,240 @@
 # 🦅 hawk-bridge Roadmap & TODO
 
 > Last updated: 2026-04-10
-> Based on: "记忆宪法" design discussion with GQL
+> Based on: Unified Memory Architecture discussion with GQL
 
 ---
 
-## 🎯 50-Year Memory Architecture (Core Roadmap)
+## 🎯 Unified Memory Architecture: 5-Tier × 3-Scope
+
+### Core Concept
+
+The unified architecture solves **two dimensions at once**:
+
+| Dimension | Purpose | Values |
+|-----------|---------|--------|
+| **Tier** (时间维度) | Memory longevity | constitutional, lifetime, period, event, working |
+| **Scope** (所有权维度) | Memory ownership | personal, org, system |
+
+**5 Tiers × 3 Scopes = Complete coverage** from personal 100-year memory to enterprise ToB systems.
+
+### Tier × Scope Matrix
+
+```
+            Scope →
+Tier ↓      Personal      Org           System（外部企业系统）
+─────────────────────────────────────────────────────────────
+L0 宪法     个人价值观     企业宪章        连接器协议、数据契约
+L1 生命     人生里程碑     企业里程碑      组织架构沿革
+L2 周期     十年分桶       项目/财年周期   行业周期
+L3 事件     日常记忆       团队决策        外部系统事件
+L4 工作     会话上下文     项目上下文       实时数据流
+```
+
+### Unified Schema
+
+```typescript
+interface UnifiedMemory {
+  id: string;
+  fingerprint: string;           // SHA-256
+  
+  // Tier（时间维度）
+  tier: 'constitutional' | 'lifetime' | 'period' | 'event' | 'working';
+  
+  // Scope（所有权维度）
+  scope: {
+    level: 'personal' | 'org' | 'system';
+    entity?: string;             // org: 'market_dept'; system: 'SAP_ERP'
+  };
+  
+  // 内容
+  content: string;
+  category: 'fact' | 'preference' | 'decision' | 'entity' | 'relationship';
+  
+  // 时间
+  created: Date;
+  expires: Date | null;         // null = 永久
+  periodId?: string;            // L2 用：'2020_2029'
+  
+  // 溯源
+  source: {
+    type: 'user_interaction' | 'connector' | 'system';
+    connectorId?: string;
+    originalId?: string;
+  };
+  
+  // 晋升链
+  promotionHistory: {
+    from: string;
+    to: string;
+    reason: string;
+    date: Date;
+  }[];
+  
+  // L0 宪法特殊字段
+  amendments?: {
+    id: string;
+    text: string;
+    date: Date;
+  }[];
+}
+```
+
+---
+
+## 📋 Implementation Roadmap
 
 ### Phase 1: Constitutional Memory Foundation
 **Target: v2.0**
 
+- [ ] **Unified Schema Implementation**
+  - [ ] Define `tier` + `scope` dual-field schema
+  - [ ] Update `MemoryManager.store()` to accept tier + scope
+  - [ ] Update `MemoryManager.recall()` to filter by tier + scope
+  - [ ] Add `fingerprint` (SHA-256) generation on write
+  - [ ] Add `promotionHistory` tracking
+
 - [ ] **L0 Constitutional Layer**
-  - [ ] Define `constitutional` memory tier schema
-  - [ ] Implement `immutable: true` flag — constitutional memories cannot be modified/deleted
-  - [ ] Amendment mode: new statements append, never overwrite
-  - [ ] Constitutional memories stored with multi-replica sync (GitHub + Gitee)
-  - [ ] `related_constitutional_amendments` linking for cross-tier references
+  - [ ] `immutable: true` flag — constitutional memories cannot be modified/deleted
+  - [ ] Amendment mode: new statements append via `amendments[]`, never overwrite
+  - [ ] Multi-replica sync (GitHub + Gitee) for L0 memories
+  - [ ] Constitutional consistency checker (L1 memories cannot contradict L0)
 
 - [ ] **L1 Lifetime Layer**
-  - [ ] Define `lifetime.milestone` memory schema
-  - [ ] Milestone events: career, personal, relationship, health
-  - [ ] Life phase tracking (幼年 → 求学 → 职业期 → 退休)
-  - [ ] Promotion pipeline: L3 events → L1 lifetime memories
+  - [ ] `lifetime.milestone` schema with life phases
+  - [ ] Milestone types: career, personal, relationship, health
+  - [ ] Promotion pipeline: L3 → L1 with user confirmation
   - [ ] `related_constitutional_amendments` linking to L0
 
-- [ ] **Cross-tier Integrity**
-  - [ ] Integrity verification cron job (checksum validation)
-  - [ ] Constitutional consistency checker (no L1 memory contradicts L0)
+- [ ] **L2 Period Layer**
+  - [ ] Decade bucket naming: `period_id: "2020_2029"`
+  - [ ] Period closure: when decade ends, period becomes read-only archive
+  - [ ] Era context fields for period memories
 
 ### Phase 2: DARK Archive System
 **Target: v2.1**
 
 - [ ] **DARK File Format (Dogged Archive Record Keeper)**
   - [ ] Each memory = one independent JSON file
-  - [ ] Schema: `id`, `fingerprint` (SHA-256), `created`, `expires`, `category`, `scope`, `content`, `source`, `decay_tier`, `vector_embedding`, `migrated_at`
+  - [ ] Schema: `id`, `fingerprint`, `created`, `expires`, `tier`, `scope`, `content`, `source`, `migrated_at`
   - [ ] JSON files are self-contained — readable without any database
 
 - [ ] **Cold Storage Pipeline**
-  - [ ] Daily cron job: `~/.hawk/archive/YYYY/MM/dark_YYYYMMDD_HHMMSS.json`
-  - [ ] Git-based versioning: `git add ~/.hawk/archive/ && git commit && git push` (GitHub + Gitee dual push)
+  - [ ] Daily cron: `~/.hawk/archive/YYYY/MM/dark_YYYYMMDD_HHMMSS.json`
+  - [ ] Git versioning: `git add ~/.hawk/archive/ && git commit && git push` (GitHub + Gitee)
   - [ ] Checksum verification on every write
-  - [ ] Archive verification alerting (daily health check)
+  - [ ] Archive health check cron
 
-- [ ] **Multi-Platform Replication**
-  - [ ] GitHub primary repository
-  - [ ] Gitee mirror (automatic sync)
-  - [ ] Optional: AWS S3 Glacier / 阿里云归档 bucket
-  - [ ] Local NAS backup with 3-2-1 rule
+- [ ] **Restore from Archive**
+  - [ ] `rebuild_lancedb_from_archive()` script
+  - [ ] Re-embedding on restore (use current embedding service)
+  - [ ] Verification: checksum comparison pre/post restore
 
-### Phase 3: Format Migration System
+### Phase 3: Enterprise Connector System
 **Target: v2.2**
 
-- [ ] **Format Migration Infrastructure**
-  - [ ] Migration scripts versioned in Git alongside data
-  - [ ] Each migration: vN → v(N+1) with rollback capability
-  - [ ] Re-embedding on migration (use current embedding service)
-  - [ ] Migration verification: checksum comparison pre/post
+- [ ] **Connector Interface (Plugin Contract)**
+  - [ ] `EnterpriseConnector` interface definition
+  - [ ] `fetch()`, `push?()`, `query()`, `health()` methods
+  - [ ] Connector registry and lifecycle management
 
-- [ ] **Scheduled Migration Cadence**
-  - [ ] Every 5 years: major format review and migration
-  - [ ] Annual: minor format cleanup
-  - [ ] Migration log: who, when, what changed
+- [ ] **Built-in Connectors**
+  - [ ] `FeishuConnector` — 飞书日历/文档/审批
+  - [ ] `ConfluenceConnector` — 内部文档知识库
+  - [ ] `JiraConnector` — 项目任务/Bug状态
+  - [ ] `GitHubConnector` — 代码决策/PR评论
+  - [ ] `SapConnector` — SAP ERP数据（可选，企业自选）
 
-### Phase 4: Tier Promotion Engine
+- [ ] **Scope=system Implementation**
+  - [ ] System memories stored with `scope.level: 'system'`
+  - [ ] Read-only by default (connector controls updates)
+  - [ ] `push()` support: internal decisions → write back to external systems
+
+### Phase 4: Org Memory Layer
 **Target: v2.3**
+
+- [ ] **Scope=org Foundation**
+  - [ ] `org` memory schema: department, team, project
+  - [ ] Access control: users only see their org's memories
+  - [ ] Org hierarchy: company → department → team → project
+
+- [ ] **Org Memory Features**
+  - [ ] Department shared memory (市场部/研发部/销售部)
+  - [ ] Team memory: current sprint, decisions, internal docs
+  - [ ] Cross-team memory sharing (with permission)
+  - [ ] Org-level OKR and strategy tracking
+
+### Phase 5: Tier Promotion Engine
+**Target: v2.4**
 
 - [ ] **Smart Promotion Pipeline**
   - [ ] Track `access_count` per memory
   - [ ] LLM-based promotion assessment (score > threshold → proposal)
   - [ ] User confirmation flow for low-confidence promotions
-  - [ ] Promotion from L3 → L1 with constitutional amendment creation
-  - [ ] Promotion history log
+  - [ ] Promotion: L3 → L2 → L1 → L0 with constitutional amendment
 
 - [ ] **Decay + Promotion Balance**
-  - [ ] L3 decay schedule: 30d → Short → 90d → Long → 1y → Archive → 5y → soft-delete → 10y → hard-delete
-  - [ ] Promotion interrupts decay (promoted memories bypass decay)
-  - [ ] Decay pause option (user-suspend decay for specific memories)
+  - [ ] Decay schedule: 30d → Short → 90d → Long → 1y → Archive → 5y → soft-delete → 10y → hard-delete
+  - [ ] Promotion interrupts decay
+  - [ ] Decay pause for user-suspended memories
 
-### Phase 5: Query & Retrieval Upgrade
-**Target: v2.4**
+### Phase 6: Query & Retrieval Upgrade
+**Target: v2.5**
 
 - [ ] **Tier-Aware Retrieval**
-  - [ ] L0: Exact ID lookup (constitutional statements have stable IDs)
+  - [ ] L0: Exact ID lookup (constitutional statements stable IDs)
   - [ ] L1: Timeline-ordered retrieval with phase context
   - [ ] L2: Period-based retrieval with era context
-  - [ ] L3: Hybrid vector + BM25 retrieval (existing behavior)
-  - [ ] Tier-weighted result ranking (L0 > L1 > L2 > L3)
+  - [ ] L3: Hybrid vector + BM25 (existing behavior)
+  - [ ] Tier-weighted result ranking: Constitutional(0.4) > Lifetime(0.3) > Period(0.2) > Event(0.1)
 
-- [ ] **Constitutional Memory Query Interface**
-  - [ ] `recall_constitutional(query)` — exact match with ID preservation
-  - [ ] `recall_lifetime(person)` — all milestones for a person/entity
-  - [ ] `recall_period(year_range)` — all memories from specific era
+- [ ] **Scope-Aware Retrieval**
+  - [ ] Filter by `scope.level` (personal/org/system)
+  - [ ] Filter by `scope.entity` (specific dept or system)
+  - [ ] Cross-scope aggregation with weighted ranking
+  - [ ] Role-based access control per scope
+
+- [ ] **Unified Query Interface**
+  ```typescript
+  interface UnifiedQuery {
+    text: string;
+    tiers?: ('constitutional' | 'lifetime' | 'period' | 'event')[];
+    scopes?: ('personal' | 'org' | 'system')[];
+    orgEntity?: string;      // 'market_dept'
+    systemEntity?: string;   // 'SAP_ERP'
+    dateRange?: { start: Date; end: Date };
+  }
+  ```
 
 ---
 
 ## 🔧 Technical TODOs
 
-### Storage & Durability
-- [ ] Implement DARK file writer (append-only JSON per memory)
-- [ ] Implement archive verification cron job
-- [ ] Add SHA-256 fingerprinting to all memories at write time
-- [ ] Build restore-from-archive script (rebuild LanceDB from DARK files)
-- [ ] Dual Git push script (GitHub + Gitee)
-
-### Schema Changes
+### Schema Changes (v2.0)
 - [ ] Add `tier` field: `constitutional | lifetime | period | event | working`
-- [ ] Add `immutable` field (boolean)
-- [ ] Add `expires` field with null = permanent
+- [ ] Add `scope.level` field: `personal | org | system`
+- [ ] Add `scope.entity` field (optional string)
 - [ ] Add `fingerprint` field (SHA-256)
-- [ ] Add `period_id` field for period-tier memories
-- [ ] Add `promotion_history` array field
+- [ ] Add `periodId` field for period-tier
+- [ ] Add `promotionHistory[]` array
+- [ ] Add `amendments[]` for constitutional tier
+- [ ] Add `source.connectorId` and `source.originalId`
 
 ### API Changes
-- [ ] `MemoryManager.store()` accepts `tier` parameter
-- [ ] `MemoryManager.promote(memory_id, target_tier)` 
-- [ ] `MemoryManager.recall()` respects tier-aware ranking
-- [ ] `MemoryManager.verify_integrity()` returns consistency report
+- [ ] `MemoryManager.store(tier, scope, ...)` — tier + scope required
+- [ ] `MemoryManager.recall(query: UnifiedQuery)` — unified query interface
+- [ ] `MemoryManager.promote(memoryId, targetTier)` — tier promotion
+- [ ] `MemoryManager.verifyIntegrity()` — consistency report
+- [ ] `ConnectorRegistry.register(connector)` — plugin system
+- [ ] `ConnectorRegistry.get(id)` — lookup connector
 
 ### Configuration
-- [ ] Add `archive.enabled` config flag
-- [ ] Add `archive.darkFileDir` path config
-- [ ] Add `archive.gitRemotes` array (multi-platform)
-- [ ] Add `archive.coldStorage` config (S3/阿里云)
-- [ ] Add `archive.dailyArchiveCron` schedule
-- [ ] Add `constitutional.immutableCategories` list
-- [ ] Add `capture.promotionThreshold` score
+- [ ] `memory.tierDefaults` — default tier per scope
+- [ ] `memory.scopeAccessControl` — role-based scope permissions
+- [ ] `connectors` — connector registry config
+- [ ] `archive.enabled` — DARK archive toggle
+- [ ] `archive.gitRemotes[]` — multi-platform sync
+- [ ] `archive.dailyCron` — archive schedule
 
 ---
 
@@ -133,28 +243,32 @@
 | Version | Theme | Target |
 |---------|-------|--------|
 | v1.x | Current: 4-tier decay, hybrid retrieval | ✅ Released |
-| v2.0 | Constitutional + Lifetime memory layers | TBD |
+| v2.0 | Unified Schema + L0/L1 Constitutional + L2 Period | TBD |
 | v2.1 | DARK Archive + Cold Storage pipeline | TBD |
-| v2.2 | Format migration system | TBD |
-| v2.3 | Tier promotion engine | TBD |
-| v2.4 | Tier-aware retrieval | TBD |
+| v2.2 | Enterprise Connector System + Scope=system | TBD |
+| v2.3 | Org Memory Layer + Scope=org | TBD |
+| v2.4 | Tier Promotion Engine | TBD |
+| v2.5 | Tier-Aware + Scope-Aware Retrieval | TBD |
 
 ---
 
 ## 💡 Design Principles
 
-1. **Constitutional Layer is the anchor** — all memories eventually become constitutional or fade away
-2. **Every memory is a file** — never depend on a database format for long-term storage
-3. **Append-only** — no overwrite, no delete without explicit user action
-4. **Multi-replica** — GitHub + Gitee + local NAS = no single point of failure
-5. **Migration-ready** — format can change, content must survive
-6. **User in the loop** — promotions and deletions require user confirmation for constitutional memories
+1. **Tier = Time dimension** — how long the memory lives (100+ years for constitutional)
+2. **Scope = Ownership dimension** — whose memory (personal/org/system)
+3. **Constitutional Layer is the anchor** — memories either become constitutional or fade away
+4. **DARK File Format** — every memory = one independent JSON file (never depend on a database)
+5. **Append-only** — no overwrite, no delete without explicit user action
+6. **Multi-replica** — GitHub + Gitee + local NAS (no single point of failure)
+7. **Connector Plugin System** — enterprises plug in their own systems as Scope=system
+8. **Migration-ready** — format can change, content must survive 100 years
 
 ---
 
 ## 🔗 References
 
 - Design discussion: 2026-04-10 conversation with GQL
-- Core analogy: 国家宪法层级 (Constitutional hierarchy) applied to memory architecture
+- Core analogy: 国家宪法层级 (Constitutional hierarchy) + 企业组织架构 (Org structure)
 - Human life stages: 幼年 → 成年 → 中年 → 老年
 - Enterprise life stages: 初创 → 爬升期 → 稳定期 → 衰退期
+- 5 Tiers × 3 Scopes = Unified Memory Architecture for personal 100-year + enterprise ToB
