@@ -7,7 +7,9 @@ import * as path from 'path';
 import { homedir } from 'os';
 import { HawkDB } from '../../lancedb.js';
 import { HybridRetriever } from '../../retriever.js';
+import { Embedder } from '../../embeddings.js';
 import { getConfig } from '../../config.js';
+import { getEmbedder } from '../../embeddings.js';
 import { RELIABILITY_THRESHOLD_HIGH } from '../../constants.js';
 
 // Recall injection control
@@ -20,9 +22,33 @@ const COMPOSITE_WEIGHT_SCORE = 0.6;
 let sharedDb: HawkDB | null = null;
 function getSharedDb(): HawkDB { if (!sharedDb) sharedDb = new HawkDB(); return sharedDb; }
 
+// Shared embedder instance
+let sharedEmbedder: Embedder | null = null;
+async function getSharedEmbedder(): Promise<Embedder> {
+  if (!sharedEmbedder) {
+    const config = await getConfig();
+    sharedEmbedder = new Embedder(config.embedding);
+  }
+  return sharedEmbedder;
+}
+
+// For restore handler — use shared embedder
+async function getEmbedder(): Promise<Embedder> { return getSharedEmbedder(); }
+
 // Global dirty flag
 let bm25DirtyGlobal = false;
 export function markBm25Dirty(): void { bm25DirtyGlobal = true; }
+
+// Search history: last 20 queries with timestamps
+const SEARCH_HISTORY_MAX = 20;
+const searchHistory: Array<{ q: string; ts: number; resultCount: number }> = [];
+export { searchHistory };
+
+// Record a search query
+export function recordSearch(query: string, resultCount: number): void {
+  searchHistory.unshift({ q: query, ts: Date.now(), resultCount });
+  if (searchHistory.length > SEARCH_HISTORY_MAX) searchHistory.pop();
+}
 
 // Retriever cache
 let retrieverPromise: Promise<HybridRetriever> | null = null;
@@ -61,6 +87,8 @@ const REVIEW_PATTERN     = /^hawk\s*回顾(?:\s+(\d+))?$/i;
 const SCOPE_PATTERN      = /^hawk\s*(?:scope|作用域)\s*(\d+)\s+(personal|team|project)$/i;
 const CONFLICT_PATTERN   = /^hawk\s*冲突\s*(\d+)$/i;
 const EXPORT_PATTERN    = /^hawk\s*导出(?:\s+(.+?))?$/i;   // hawk导出 / hawk导出 /path/to/file.json
+const RESTORE_PATTERN   = /^hawk\s*恢复\s*(.+)$/i;   // hawk恢复 /path/to/backup.json
+const SEARCH_HISTORY_PATTERN = /^hawk\s*搜索历史$/i;   // hawk搜索历史
 const CLEAR_PATTERN     = /^hawk\s*清空$/i;                 // hawk清空
 const BATCHLOCK_PATTERN = /^hawk\s*锁定\s*all(?:\s+(.+))?$/i;  // hawk锁定all / hawk锁定all fact
 const BATCHUNLOCK_PATTERN = /^hawk\s*解锁\s*all$/i;
@@ -445,6 +473,67 @@ const recallHandler = async (event: HookEvent) => {
       return;
     }
 
+    // ─── hawk恢复 <filepath> ─────────────────────────────────────────
+    var m = trimmed.match(RESTORE_PATTERN);
+    if (m) {
+      const filepath = m[1].trim();
+      try {
+        const { readFileSync, existsSync } = require('fs');
+        if (!existsSync(filepath)) {
+          event.messages.push(`\n${injectEmoji} ❌ 文件不存在: ${filepath}\n`);
+          return;
+        }
+        const raw = JSON.parse(readFileSync(filepath, 'utf-8'));
+        const memories = raw.memories || [];
+        if (!memories.length) {
+          event.messages.push(`\n${injectEmoji} 文件为空或格式错误: ${filepath}\n`);
+          return;
+        }
+        const embedderInstance = await getEmbedder();
+        let imported = 0, skipped = 0, failed = 0;
+        const existingIds = new Set((await db.getAllMemories()).map((m: any) => m.id));
+        for (const mem of memories) {
+          if (existingIds.has(mem.id)) { skipped++; continue; }
+          try {
+            const [vector] = await embedderInstance.embed([mem.text]);
+            await db.store({
+              id: mem.id || ('hawk_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8)),
+              text: mem.text,
+              vector,
+              category: mem.category || 'fact',
+              scope: mem.scope || 'global',
+              importance: mem.importance ?? 0.5,
+              timestamp: mem.createdAt ? new Date(mem.createdAt).getTime() : Date.now(),
+              expiresAt: 0,
+              locked: mem.locked ?? false,
+              metadata: { source: 'hawk-restore', original_id: mem.id },
+            });
+            imported++;
+          } catch { failed++; }
+        }
+        event.messages.push(`\n${injectEmoji} ✅ 恢复完成：导入 ${imported}，跳过（已存在）${skipped}，失败 ${failed}\n`);
+      } catch (err: any) {
+        event.messages.push(`\n${injectEmoji} ❌ 恢复失败: ${err.message}\n`);
+      }
+      return;
+    }
+
+    // ─── hawk搜索历史 ─────────────────────────────────────────────
+    if (SEARCH_HISTORY_PATTERN.test(trimmed)) {
+      if (!searchHistory.length) {
+        event.messages.push(`\n${injectEmoji} 暂无搜索历史。\n`);
+        return;
+      }
+      const lines = [`\n${injectEmoji} ** 最近搜索历史 **\n`];
+      for (let i = 0; i < searchHistory.length; i++) {
+        const h = searchHistory[i];
+        const time = new Date(h.ts).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        lines.push(`  ${i + 1}. [${time}] "${h.q}" → ${h.resultCount} 条`);
+      }
+      event.messages.push(lines.join('\n') + '\n');
+      return;
+    }
+
     // ─── hawk清空 ──────────────────────────────────────────────────
     if (CLEAR_PATTERN.test(trimmed)) {
       const all = await db.getAllMemories();
@@ -663,6 +752,7 @@ const recallHandler = async (event: HookEvent) => {
     const retriever = await getRetriever();
     const memories  = await retriever.search(trimmed, topK);
     const useable   = memories.filter(m => m.score >= minScore || m.reliability >= RELIABILITY_THRESHOLD_HIGH);
+    recordSearch(trimmed, useable.length);  // track search history
     if (!useable.length) {
       // Did-you-mean: search for similar terms in memory texts
       const all = await db.getAllMemories(getAgentId(ctx));
