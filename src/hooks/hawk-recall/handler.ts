@@ -10,6 +10,11 @@ import type { MemoryStore } from '../../store/interface.js';
 import { HybridRetriever } from '../../retriever.js';
 import { Embedder } from '../../embeddings.js';
 import { getConfig } from '../../config.js';
+import { t } from '../../i18n/index.js';
+
+// Language from env (set via HAWK_LANG=zh or HAWK_LANG=en)
+// Full i18n Phase 2: migrate output strings to t() calls
+const LANG = (process.env.HAWK_LANG as 'zh' | 'en') || 'zh';
 import { getEmbedder } from '../../embeddings.js';
 import { RELIABILITY_THRESHOLD_HIGH } from '../../constants.js';
 
