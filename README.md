@@ -137,17 +137,30 @@ Session (persistent, on disk)
 | 5 | **5 Embedding Providers** | Ollama (local GPU) / Jina AI (free cloud) / Qianwen / OpenAI / Cohere |
 | 6 | **Graceful Degradation** | Automatically falls back when API keys are unavailable |
 | 7 | **Context-Aware Injection** | BM25 rank score used directly when no embedder available |
-| 8 | — | (seed memory removed) |
-| 9 | **Sub-100ms Recall** | LanceDB ANN index for instant retrieval |
-| 10 | **Cross-Platform Install** | One command, works on all major Linux distros |
-| 11 | **Auto-Dedup** | Text-similarity dedup before storage — prevents duplicate memories |
-| 12 | **MMR Diverse Recall** | Maximal Marginal Relevance — relevant AND diverse, reduces context size |
-| 13 | **28-Rule Text Normalizer** | Cleans markdown, URLs, punctuation, timestamps, emojis, HTML, debug logs |
-| 14 | **Sensitive Info Sanitizer** | Auto-redacts API keys, phone numbers, emails, IDs, credit cards on capture |
-| 15 | **TTL / Expiry** | Memories auto-expire after configurable TTL (default 30 days) |
-| 16 | **Recall MinScore Gate** | Memories below relevance threshold are not injected into context |
-| 17 | **Audit Logging** | All capture/skip/reject/recall events logged to `~/.hawk/audit.log` |
-| 18 | **Harmful Content Filter** | Rejects violent/fraud/hack/CSAM content at capture time |
+| 8 | **Sub-100ms Recall** | LanceDB ANN index for instant retrieval |
+| 9 | **Cross-Platform Install** | One command, works on all major Linux distros |
+| 10 | **Auto-Dedup** | Text-similarity dedup before storage — prevents duplicate memories |
+| 11 | **MMR Diverse Recall** | Maximal Marginal Relevance — relevant AND diverse, reduces context size |
+| 12 | **28-Rule Text Normalizer** | Cleans markdown, URLs, punctuation, timestamps, emojis, HTML, debug logs |
+| 13 | **Sensitive Info Sanitizer** | Auto-redacts API keys, phone numbers, emails, IDs, credit cards on capture |
+| 14 | **TTL / Expiry** | Memories auto-expire after configurable TTL (default 30 days) |
+| 15 | **Recall MinScore Gate** | Memories below relevance threshold are not injected into context |
+| 16 | **Audit Logging** | All capture/skip/reject/recall events logged to `~/.hawk/audit.log` |
+| 17 | **Harmful Content Filter** | Rejects violent/fraud/hack/CSAM content at capture time |
+| 18 | **Composite Score Ranking** | score×0.6 + reliability×0.4 — prioritizes reliable memories |
+| 19 | **Multi-Turn Joint Extraction** | Merges consecutive user messages before LLM extraction — better context |
+| 20 | **Code Block + URL Extraction** | Auto-captures code blocks (fact/0.8) and URLs (fact/0.7) as memories |
+| 21 | **24h Embedder Cache** | Embedding results cached 24h — avoids repeat API calls, faster capture |
+| 22 | **Incremental BM25** | ≤10 new memories → lazy merge; >10 → full rebuild — scales to 1000+ memories |
+| 23 | **Pre-Filter** | Skips pure numbers / single emojis / <30-char content before calling LLM |
+| 24 | **Did-You-Mean** | Empty recall results → suggests similar memories by keyword overlap |
+| 25 | **Memory Stats** | `hawk统计` — category/scope/reliability distribution dashboard |
+| 26 | **Effect Feedback** | `hawk否认 N` → reliability -5%; `hawk确认 N 对/纠正` → reliability -30% |
+| 27 | **Multi-Agent Isolation** | Per-agent memory pool via `owner_agent` field — personal + team memories |
+| 28 | **LanceDB trygc** | Automatic garbage collection after decay — keeps DB lean |
+| 29 | **Structured JSON Output** | All LLM calls use `response_format=json_object` — reliable parsing |
+
+
 
 ---
 
