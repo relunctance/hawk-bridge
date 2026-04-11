@@ -100,6 +100,8 @@ const BATCHLOCK_PATTERN = /^hawk\s*锁定\s*all(?:\s+(.+))?$/i;  // hawk锁定al
 const BATCHUNLOCK_PATTERN = /^hawk\s*解锁\s*all$/i;
 const COMPARE_PATTERN   = /^hawk\s*对比\s*(\d+)\s+(\d+)$/i;  // hawk对比 3 4
 const PURGE_PATTERN     = /^hawk\s*清理$/i;  // hawk清理 强制执行decay+purge
+const ADD_PATTERN       = /^hawk\s*添加\s*(.+)$/i;  // hawk添加 <记忆内容>
+const DELETE_IDX_PATTERN = /^hawk\s*删除\s*(\d+)$/i;  // hawk删除 3
 const STATS_PATTERN     = /^hawk\s*统计$/i;  // hawk统计 显示记忆分布
 const QUALITY_PATTERN   = /^hawk\s*质量$/i;  // hawk质量 记忆健康评分
 const STATUS_PATTERN     = /^hawk\s*状态$/i;  // hawk状态 系统状态面板
@@ -285,7 +287,9 @@ const recallHandler = async (event: HookEvent) => {
       if (totalPages > 1) lines.push(`\n→ hawk记忆 ${category} ${page+1}`);
       lines.push(`\n→ hawk重要 N ×2  标记为重要`);
       lines.push(`→ hawk不重要 N     降低重要性`);
+      lines.push(`→ hawk删除 N       删除记忆`);
       event.messages.push(`\n${lines.join('\n')}\n`);
+      ctx._hawkListIndex = sorted.map((mem: any) => mem.id);  // for hawk删除 N
       return;
     }
 
@@ -806,6 +810,68 @@ const recallHandler = async (event: HookEvent) => {
         } else {
           event.messages.push(`\n${injectEmoji} 没有找到与"${keyword}"相关的记忆。\n`);
         }
+        return;
+      }
+    }
+
+    // ─── hawk添加 <text> ───────────────────────────────────────────────
+    {
+      const m = trimmed.match(ADD_PATTERN);
+      if (m) {
+        const text = m[1].trim();
+        if (text.length < 5) {
+          event.messages.push(`\n${injectEmoji} 内容太短，至少5个字。\n`);
+          return;
+        }
+        const embedderInstance = await getSharedEmbedder();
+        try {
+          const [vector] = await embedderInstance.embed([text]);
+          await db.store({
+            id: 'hawk_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8),
+            text,
+            vector,
+            category: 'fact',
+            scope: 'personal',
+            importance: 0.8,
+            timestamp: Date.now(),
+            expiresAt: 0,
+            locked: false,
+            metadata: { source: 'hawk-添加' },
+          });
+          event.messages.push(`\n${injectEmoji} ✅ 已添加记忆：${text.slice(0, 60)}${text.length > 60 ? '...' : ''}\n`);
+        } catch (err: any) {
+          event.messages.push(`\n${injectEmoji} ❌ 添加失败: ${err.message}\n`);
+        }
+        return;
+      }
+    }
+
+    // ─── hawk删除 N ───────────────────────────────────────────────────
+    {
+      const m = trimmed.match(DELETE_IDX_PATTERN);
+      if (m) {
+        const idx = parseInt(m[1], 10) - 1;
+        // Get the currently displayed list from context
+        const targetIds: string[] = ctx._hawkListIndex || [];
+        const id = targetIds[idx];
+        if (!id) {
+          // Fallback: find from sorted list
+          const all = await db.getAllMemories(getAgentId(ctx));
+          const sorted = [...all].sort((a, b) => {
+            if (a.locked !== b.locked) return a.locked ? -1 : 1;
+            return b.reliability - a.reliability;
+          });
+          if (idx < 0 || idx >= sorted.length) {
+            event.messages.push(`\n${injectEmoji} 无效编号。\n`);
+            return;
+          }
+          const mem = sorted[idx];
+          const ok = await db.forget(mem.id);
+          event.messages.push(`\n${injectEmoji} ${ok ? '✅ 已删除：' + mem.text.slice(0, 50) + '...' : '❌ 已锁定，无法删除。'}\n`);
+          return;
+        }
+        const ok = await db.forget(id);
+        event.messages.push(`\n${injectEmoji} ${ok ? '✅ 已删除。' : '❌ 已锁定，无法删除。'}\n`);
         return;
       }
     }
