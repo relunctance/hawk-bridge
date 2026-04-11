@@ -9,7 +9,8 @@ import { DEFAULT_MIN_SCORE } from './constants.js';
 import { getEnvOverrides, deepMerge } from './config/env.js';
 import type { HawkConfig } from './types.js';
 
-const OPENCLAW_CONFIG_PATH = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+const OPENCLAW_CONFIG_PATH    = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+const OPENCLAW_AGENT_MODELS = path.join(os.homedir(), '.openclaw', 'agents', 'main', 'agent', 'models.json');
 const HAWK_CONFIG_DIR = path.join(os.homedir(), '.hawk');
 
 export interface OpenClawModelProvider {
@@ -38,6 +39,7 @@ export interface OpenClawConfig {
 }
 
 let cachedOpenClawConfig: OpenClawConfig | null = null;
+let cachedAgentModels: Record<string, unknown> | null = null;
 
 function loadOpenClawConfig(): OpenClawConfig | null {
   if (cachedOpenClawConfig) return cachedOpenClawConfig;
@@ -50,6 +52,31 @@ function loadOpenClawConfig(): OpenClawConfig | null {
   }
 }
 
+function loadAgentModels(): Record<string, unknown> | null {
+  if (cachedAgentModels !== null) return cachedAgentModels;
+  try {
+    cachedAgentModels = JSON.parse(fs.readFileSync(OPENCLAW_AGENT_MODELS, 'utf-8'));
+    return cachedAgentModels;
+  } catch {
+    cachedAgentModels = null;
+    return null;
+  }
+}
+
+/** Get apiKey + baseUrl for a provider from OpenClaw's agent models.json (contains real credentials). */
+function getAgentModelKey(provider: string): { apiKey: string; baseUrl: string } | null {
+  const agents = loadAgentModels();
+  if (!agents) return null;
+  const providers = (agents.providers as Record<string, Record<string, unknown>> | undefined);
+  if (!providers) return null;
+  const p = providers[provider];
+  if (!p) return null;
+  return {
+    apiKey:  (p.apiKey  as string | undefined) ?? '',
+    baseUrl: (p.baseUrl as string | undefined) ?? '',
+  };
+}
+
 export function getConfiguredProvider(providerName: string = 'minimax'): OpenClawModelProvider | null {
   const config = loadOpenClawConfig();
   if (!config?.models?.providers) return null;
@@ -57,9 +84,15 @@ export function getConfiguredProvider(providerName: string = 'minimax'): OpenCla
 }
 
 export function getDefaultModelId(): string {
-  const config = loadOpenClawConfig();
-  if (!config?.models?.providers) return 'MiniMax-M2.7';
-  const prov = config.models.providers['minimax'];
+  // Priority: agents.defaults.model.primary > first minimax model
+  const cfg = loadOpenClawConfig();
+  const primary = cfg?.auth?.profiles?.default?.mode; // just provider name
+  const openclawPrimary = (cfg as any)?.agents?.defaults?.model?.primary;
+  if (openclawPrimary && typeof openclawPrimary === 'string') {
+    return openclawPrimary; // e.g. "minimax/MiniMax-M2.7-highspeed"
+  }
+  if (!cfg?.models?.providers) return 'MiniMax-M2.7';
+  const prov = cfg.models.providers['minimax'];
   if (!prov?.models?.length) return 'MiniMax-M2.7';
   return prov.models[0].id;
 }
@@ -150,9 +183,15 @@ export async function getConfig(): Promise<HawkConfig> {
         config = deepMerge(config, envOverrides);
       }
 
-      // 4. Auto-detect embedding provider from env vars (legacy compat)
-      //    This block preserves the existing "auto-detect from env" behavior
-      if (process.env.OLLAMA_BASE_URL) {
+      // 4. Auto-detect embedding provider — OpenClaw minimax first (zero-config), then legacy env vars
+      const openclawkEmbed = getAgentModelKey('minimax');
+      if (openclawkEmbed?.apiKey) {
+        config.embedding.provider = 'minimax';
+        config.embedding.apiKey  = openclawkEmbed.apiKey;
+        config.embedding.baseURL = openclawkEmbed.baseUrl || 'https://api.minimaxi.com/v1';
+        config.embedding.model  = 'text-embedding-v2';
+        config.embedding.dimensions = 1024;
+      } else if (process.env.OLLAMA_BASE_URL) {
         config.embedding.provider = 'ollama';
         config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
         config.embedding.model = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
@@ -184,13 +223,14 @@ export async function getConfig(): Promise<HawkConfig> {
       }
 
       // 5. Default LLM to OpenClaw's configured model (if not set in yaml or env)
+      //    Uses agents/main/agent/models.json for real credentials (getAgentModelKey)
       if (!config.llm.model || !config.llm.apiKey) {
-        const openclawProvider = getConfiguredProvider('minimax');
-        if (openclawProvider) {
+        const openclawkKey = getAgentModelKey('minimax');
+        if (openclawkKey?.apiKey) {
           config.llm = config.llm || {} as any;
-          config.llm.model = config.llm.model || openclawProvider.models?.[0]?.id || 'MiniMax-M2.7';
-          config.llm.apiKey = config.llm.apiKey || openclawProvider.apiKey || '';
-          config.llm.baseURL = config.llm.baseURL || openclawProvider.baseURL || '';
+          config.llm.model    = config.llm.model || getDefaultModelId();
+          config.llm.apiKey   = openclawkKey.apiKey;
+          config.llm.baseURL  = config.llm.baseURL || openclawkKey.baseUrl || '';
           config.llm.provider = config.llm.provider || 'minimax';
         }
       }

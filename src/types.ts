@@ -44,8 +44,8 @@ export interface TextMetadata {
 
 export interface HawkConfig {
   embedding: {
-    /** Embedding provider: openai | qianwen | jina | cohere | ollama | openai-compat */
-    provider: 'openai' | 'qianwen' | 'jina' | 'cohere' | 'ollama' | 'openai-compat';
+    /** Embedding provider: openai | qianwen | jina | cohere | ollama | openai-compat | minimax */
+    provider: 'openai' | 'qianwen' | 'jina' | 'cohere' | 'ollama' | 'openai-compat' | 'minimax';
     apiKey: string;
     model: string;
     baseURL: string;
