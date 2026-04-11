@@ -7,30 +7,38 @@ import { HawkDB } from '../../lancedb.js';
 import { Embedder, formatRecallForContext } from '../../embeddings.js';
 import { HybridRetriever } from '../../retriever.js';
 import { getConfig } from '../../config.js';
+import { RELIABILITY_THRESHOLD_HIGH } from '../../constants.js';
 
 // Global dirty flag: set by hawk-capture after storing new memories
-// Checked at start of each search to trigger BM25 index rebuild
 let bm25DirtyGlobal = false;
 export function markBm25Dirty(): void { bm25DirtyGlobal = true; }
 
-// Promise-based cache prevents concurrent initialization (race condition fix)
+// Shared HawkDB instance — single connection, reused across handler calls
+let sharedDb: HawkDB | null = null;
+
+function getSharedDb(): HawkDB {
+  if (!sharedDb) {
+    sharedDb = new HawkDB();
+  }
+  return sharedDb;
+}
+
+// Promise-based cache prevents concurrent initialization
 let retrieverPromise: Promise<HybridRetriever> | null = null;
 
 async function getRetriever(): Promise<HybridRetriever> {
   if (!retrieverPromise) {
     retrieverPromise = (async () => {
       const config = await getConfig();
-      const db = new HawkDB();
+      const db = getSharedDb();
       await db.init();
       const embedder = new Embedder(config.embedding);
       const r = new HybridRetriever(db, embedder);
       await r.buildNoisePrototypes();
-      // BM25 index is built lazily on first search via _ensureBm25Index()
       return r;
     })();
   }
   const retriever = await retrieverPromise;
-  // If hawk-capture stored new memories, invalidate BM25 index so it rebuilds on next search
   if (bm25DirtyGlobal) {
     retriever.markDirty();
     bm25DirtyGlobal = false;
@@ -64,17 +72,33 @@ const recallHandler = async (event: HookEvent) => {
 
     if (!latestUserMessage || latestUserMessage.trim().length < 2) return;
 
-    const db = new HawkDB();
+    const db = getSharedDb();
     await db.init();
+
+    // ─── Handle "Show Memories" ──────────────────────────────────────────────
+    if (latestUserMessage.trim() === 'hawk记忆' || latestUserMessage.trim() === 'hawk 记忆') {
+      const all = await db.getAllMemories();
+      if (!all.length) {
+        event.messages.push(`\n${injectEmoji} 还没有任何记忆。\n`);
+        return;
+      }
+      const lines = [`${injectEmoji} ** 当前记忆列表（共 ${all.length} 条） **`];
+      for (const m of all.slice(0, 20)) {
+        const rel = m.reliability >= RELIABILITY_THRESHOLD_HIGH ? '✅' : m.reliability >= 0.4 ? '⚠️' : '❌';
+        lines.push(`${rel} [${m.category}] ${m.text.slice(0, 80)}${m.text.length > 80 ? '...' : ''}`);
+      }
+      if (all.length > 20) lines.push(`...还有 ${all.length - 20} 条`);
+      event.messages.push(`\n${lines.join('\n')}\n`);
+      return;
+    }
 
     // ─── Handle Forget ────────────────────────────────────────────────────────
     const forgetKeyword = detectForget(latestUserMessage);
     if (forgetKeyword) {
-      const id = await findMemoryForForget(db, forgetKeyword);
+      const id = await findMemoryByKeyword(db, forgetKeyword);
       if (id) {
         await db.forget(id);
         event.messages.push(`\n${injectEmoji} 已遗忘相关记忆。\n`);
-        console.log(`[hawk-recall] Forgotten: ${forgetKeyword}`);
         return;
       } else {
         event.messages.push(`\n${injectEmoji} 没有找到与"${forgetKeyword}"相关的记忆。\n`);
@@ -83,25 +107,36 @@ const recallHandler = async (event: HookEvent) => {
     }
 
     // ─── Handle Correct ───────────────────────────────────────────────────────
+    // Reliable patterns: "纠正: 新内容" 或 "correct: 新内容"
+    // 只提取新内容，然后通过语义匹配找最可能的记忆来替换
     const correctResult = detectCorrect(latestUserMessage);
     if (correctResult) {
-      const { wrong, correct } = correctResult;
-      const id = await findMemoryForCorrect(db, wrong, correct);
-      if (id) {
-        await db.verify(id, false, correct);
-        event.messages.push(`\n${injectEmoji} 已纠正记忆：${correct}\n`);
-        console.log(`[hawk-recall] Corrected memory ${id}: ${correct}`);
-        return;
+      const { correct } = correctResult;
+      // 用新内容做搜索，找最相关的记忆来纠正
+      const candidates = await db.getAllMemories();
+      if (candidates.length) {
+        // 简单匹配：新内容包含某个关键词，或者记忆文本包含新内容的片段
+        const match = candidates.find(m =>
+          m.text.toLowerCase().includes(correct.toLowerCase().slice(0, 10)) ||
+          correct.toLowerCase().includes(m.text.toLowerCase().slice(0, 10))
+        );
+        if (match) {
+          await db.verify(match.id, false, correct);
+          event.messages.push(`\n${injectEmoji} 已纠正记忆：${correct}\n`);
+          return;
+        }
       }
+      event.messages.push(`\n${injectEmoji} 没有找到需要纠正的记忆，请先说清楚要纠正哪条。\n`);
+      return;
     }
 
     // ─── Normal Recall ─────────────────────────────────────────────────────────
     const retrieverInstance = await getRetriever();
     const memories = await retrieverInstance.search(latestUserMessage, topK);
 
-    // 高可靠性记忆可以 override 低分数阈值（但低可靠性记忆需要更高分数）
+    // 高可靠性记忆可以 override 低分数阈值
     const useable = memories.filter(m =>
-      m.score >= minScore || m.reliability >= 0.7
+      m.score >= minScore || m.reliability >= RELIABILITY_THRESHOLD_HIGH
     );
 
     if (!useable.length) return;
@@ -118,7 +153,7 @@ const recallHandler = async (event: HookEvent) => {
     // 成功应用的记忆提升可靠性
     for (const m of useable) {
       if (m.score >= minScore) {
-        await db.verify(m.id, true); // confirmed=true → +0.1
+        await db.verify(m.id, true); // confirmed=true → +boost
       }
     }
 
@@ -131,31 +166,28 @@ const recallHandler = async (event: HookEvent) => {
   }
 };
 
-// ─── Forget / Correct Detection ───────────────────────────────────────────────
+// ─── Intent Detection ─────────────────────────────────────────────────────────
 
 const FORGET_PATTERNS = [
-  /忘掉[。,]?\s*(.+)/,
-  /忘记[。,]?\s*(.+)/,
-  /别记得[。,]?\s*(.+)/,
-  /不用记[。,]?\s*(.+)/,
-  /forget[。,\s]+(.+)/i,
-  /delete[。,\s]+(.+)/i,
+  /^忘掉\s*(.+)/,
+  /^忘记\s*(.+)/,
+  /^别记得\s*(.+)/,
+  /^不用记\s*(.+)/,
+  /^forget\s+(.+)/i,
+  /^delete\s+(.+)/i,
 ];
 
-const CORRECT_PATTERNS = [
-  /^不对[，。]?(.+)/,
-  /不是[（(]?(.*?)[)）][。,]?(.+)/,
-  /纠正[，,]?\s*(.+)/,
-  /其实[是]?[。,]?\s*(.+)/,
-  /correct[：:]\s*(.+)/i,
-];
+// 只保留明确的纠正句式，避免误判
+// 格式：纠正: 新内容  / correct: 新内容
+const CORRECT_PATTERN = /^(?:纠正|correct)\s*[:：]\s*(.+)/i;
 
 /**
  * 从用户消息中检测 forget 意图
  */
 function detectForget(queryText: string): string | null {
+  const text = queryText.trim();
   for (const pattern of FORGET_PATTERNS) {
-    const match = queryText.match(pattern);
+    const match = text.match(pattern);
     if (match) return match[1].trim();
   }
   return null;
@@ -163,37 +195,24 @@ function detectForget(queryText: string): string | null {
 
 /**
  * 从用户消息中检测 correct 意图
+ * 返回新内容（纠正后的正确说法）
  */
-function detectCorrect(queryText: string): { wrong: string; correct: string } | null {
-  for (const pattern of CORRECT_PATTERNS) {
-    const match = queryText.match(pattern);
-    if (match && match.length >= 2) {
-      const wrong = (match[1] || '').trim();
-      const correct = (match.slice(2).join(' ') || wrong).trim();
-      if (wrong && correct) return { wrong, correct };
-    }
-  }
+function detectCorrect(queryText: string): { correct: string } | null {
+  const text = queryText.trim();
+  const match = text.match(CORRECT_PATTERN);
+  if (match && match[1]) return { correct: match[1].trim() };
   return null;
 }
 
 /**
- * 查找与关键词最匹配的记忆 ID（用于 forget）
+ * 用关键词搜索找匹配的记忆（不加载全量）
  */
-async function findMemoryForForget(db: HawkDB, keyword: string): Promise<string | null> {
-  const all = await db.getAllMemories?.() ?? [];
+async function findMemoryByKeyword(db: HawkDB, keyword: string): Promise<string | null> {
+  const all = await db.getAllMemories();
   const lower = keyword.toLowerCase();
-  const match = all.find(m => m.text.toLowerCase().includes(lower));
-  return match ? match.id : null;
-}
-
-/**
- * 查找与错误说法最匹配的记忆（用于 correct）
- */
-async function findMemoryForCorrect(db: HawkDB, wrongText: string, correctText: string): Promise<string | null> {
-  const all = await db.getAllMemories?.() ?? [];
-  const lower = wrongText.toLowerCase();
-  const match = all.find(m => m.text.toLowerCase().includes(lower));
-  return match ? match.id : null;
+  // 优先精确匹配
+  const exact = all.find(m => m.text.toLowerCase().includes(lower));
+  return exact ? exact.id : null;
 }
 
 // ─── Recall Formatter with Reliability ────────────────────────────────────────
@@ -211,7 +230,7 @@ function formatRecallWithReliability(
   return lines.join('\n');
 }
 
-// ─── Recall Sanitizer ─────────────────────────────────────────────────────────
+// ─── Sanitizer ────────────────────────────────────────────────────────────────
 
 const RECALL_SANITIZE_PATTERNS: Array<[RegExp, string]> = [
   [/(?:api[_-]?key|secret|token|password)\s*[:=]\s*["']?[\w-]{8,}["']?/gi, '$1: [RECALLED_REDACTED]'],
@@ -228,7 +247,7 @@ function sanitizeForRecall(text: string): string {
   return result;
 }
 
-// ─── Audit Log ────────────────────────────────────────────────────────────────
+// ─── Audit ───────────────────────────────────────────────────────────────────
 
 function auditRecall(count: number, query: string): void {
   try {
@@ -246,20 +265,6 @@ function auditRecall(count: number, query: string): void {
   } catch {
     // Non-critical
   }
-}
-
-function extractQueryFromSession(sessionEntry: any): string {
-  if (!sessionEntry) return '';
-  const messages: any[] = sessionEntry.messages || [];
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.role === 'user' && msg.content) {
-      return typeof msg.content === 'string'
-        ? msg.content
-        : JSON.stringify(msg.content);
-    }
-  }
-  return '';
 }
 
 export default recallHandler;

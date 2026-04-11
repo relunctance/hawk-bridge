@@ -152,6 +152,15 @@ export class HawkDB {
     };
   }
 
+  /**
+   * Internal: run a query and return all rows as plain objects
+   * (LanceDB 0.26.x uses toArray(), not toList())
+   */
+  private async _queryAll(limit: number = BM25_QUERY_LIMIT): Promise<any[]> {
+    const rows = await this.table.query().limit(limit).toArray();
+    return rows;
+  }
+
   private _rowToRetrieved(r: any, score: number): RetrievedMemory {
     const reliability = r.reliability ?? INITIAL_RELIABILITY;
     return {
@@ -203,7 +212,7 @@ export class HawkDB {
     let results = await this.table
       .search(queryVector)
       .limit(topK * 4)
-      .toList();
+      .toArray();
 
     // Filter: soft-deleted (forgotten) memories are excluded
     results = results.filter((r: any) => r.deleted_at === null);
@@ -259,7 +268,7 @@ export class HawkDB {
 
   async listRecent(limit: number = 10): Promise<MemoryEntry[]> {
     if (!this.table) await this.init();
-    const rows = await this.table.query().limit(limit * 2).toList();
+    const rows = await this.table.query().limit(limit * 2).toArray();
     return rows
       .filter((r: any) => r.deleted_at === null)
       .slice(0, limit)
@@ -274,7 +283,7 @@ export class HawkDB {
   async getAllTexts(): Promise<Array<{ id: string; text: string }>> {
     if (!this.table) await this.init();
     // BM25_QUERY_LIMIT prevents runaway queries on very large memory stores
-    const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toList();
+    const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
     return rows
       .filter((r: any) => r.deleted_at === null)
       .map((r: any) => ({ id: r.id, text: r.text }));
@@ -283,7 +292,7 @@ export class HawkDB {
   async getById(id: string): Promise<MemoryEntry | null> {
     if (!this.table) await this.init();
     try {
-      const rows = await this.table.query().where('id = ?', [id]).limit(1).toList();
+      const rows = await this.table.query().where(`id = '${id.replace(/'/g, "''")}'`).limit(1).toArray();
       if (!rows.length) return null;
       const r = rows[0];
       if (r.deleted_at !== null) return null;
@@ -295,7 +304,7 @@ export class HawkDB {
 
   async getAllMemories(): Promise<MemoryEntry[]> {
     if (!this.table) await this.init();
-    const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toList();
+    const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
     return rows
       .filter((r: any) => r.deleted_at === null)
       .map((r: any) => this._rowToMemory(r));
@@ -307,9 +316,9 @@ export class HawkDB {
     const results = new Map<string, any>();
     if (!ids.length) return results;
     try {
-      // Build OR query: id = ? OR id = ? OR ...
-      const conditions = ids.map(() => 'id = ?').join(' OR ');
-      const rows = await this.table.query().where(conditions, ids).limit(ids.length).toList();
+      // Build predicate: id = 'xxx' OR id = 'yyy' OR ...
+      const predicate = ids.map(id => `id = '${id.replace(/'/g, "''")}'`).join(' OR ');
+      const rows = await this.table.query().where(predicate).limit(ids.length).toArray();
       for (const r of rows) {
         if (r.deleted_at !== null) continue;
         results.set(r.id, {
@@ -388,6 +397,83 @@ export class HawkDB {
   }
 
   /**
+   * 记忆衰减：降低长期未访问记忆的 importance，根据 accessCount 调整层级
+   * 同时调用 purgeForgotten 清理过期软删除
+   */
+  async decay(): Promise<{ updated: number; deleted: number }> {
+    if (!this.table) await this.init();
+
+    const DECAY_RATE = 0.95;
+    const SHORT_TTL_DAYS = 7;
+    const LONG_TTL_DAYS = 90;
+    const ARCHIVE_TTL_DAYS = 180;
+    const IMPORTANCE_THRESHOLD_LOW = 0.3;
+    const IMPORTANCE_THRESHOLD_HIGH = 0.8;
+
+    const LAYER_THRESHOLDS = { working: 0, short: 3, long: 10, archive: 100 };
+    const LAYERS = ['working', 'short', 'long', 'archive'];
+
+    function computeLayer(importance: number, accessCount: number): string {
+      if (accessCount >= LAYER_THRESHOLDS.long || importance >= IMPORTANCE_THRESHOLD_HIGH) return 'long';
+      if (accessCount >= LAYER_THRESHOLDS.short || importance >= IMPORTANCE_THRESHOLD_HIGH * 0.75) return 'short';
+      if (importance < IMPORTANCE_THRESHOLD_LOW) return 'archive';
+      return 'working';
+    }
+
+    const memories = await this.getAllMemories();
+    let updated = 0;
+    let deleted = 0;
+    const now = Date.now();
+
+    for (const m of memories) {
+      const daysIdle = Math.max(0, Math.floor((now - m.lastAccessedAt) / 86400000));
+
+      if (m.scope === 'archive') {
+        // archive 超过 180 天删除
+        if (daysIdle > ARCHIVE_TTL_DAYS) {
+          try {
+            await this.table.delete(`id = '${m.id}'`);
+            deleted++;
+          } catch { /* ignore */ }
+        }
+        continue;
+      }
+
+      if (daysIdle > 0) {
+        const newImportance = m.importance * Math.pow(DECAY_RATE, daysIdle);
+        const newLayer = computeLayer(newImportance, m.accessCount);
+
+        if (LAYERS.indexOf(newLayer) < LAYERS.indexOf(m.scope)) {
+          // 降级（升级靠 access 时主动升）
+          try {
+            await this.table.update({
+              where: 'id = ?',
+              whereParams: [m.id],
+              updates: { importance: newImportance, scope: newLayer },
+            });
+            updated++;
+          } catch { /* ignore */ }
+        } else if (newImportance !== m.importance) {
+          try {
+            await this.table.update({
+              where: 'id = ?',
+              whereParams: [m.id],
+              updates: { importance: newImportance },
+            });
+            updated++;
+          } catch { /* ignore */ }
+        }
+      }
+    }
+
+    // 清理过期软删除
+    const purged = await this.purgeForgotten();
+    deleted += purged;
+
+    return { updated, deleted };
+  }
+
+  /**
    * 彻底删除软删除超过 graceDays 天的记忆
    */
   async purgeForgotten(graceDays: number = FORGET_GRACE_DAYS): Promise<number> {
@@ -395,7 +481,7 @@ export class HawkDB {
     const cutoff = Date.now() - graceDays * 86400000;
     let deleted = 0;
     try {
-      const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toList();
+      const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
       const toDelete = rows.filter((r: any) =>
         r.deleted_at !== null && Number(r.deleted_at) < cutoff
       );
