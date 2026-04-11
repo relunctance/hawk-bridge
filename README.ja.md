@@ -114,6 +114,18 @@ openclaw plugins install /tmp/hawk-bridge
 | 4 | `context-hawk` を `~/.openclaw/workspace/context-hawk` にクローン |
 | 5 | `~/.openclaw/hawk` シンボリックリンクを作成 |
 | 6 | **Ollama** をインストール（存在しない場合） |
+| 7 | **Composite Score Ranking** | score×0.6 + reliability×0.4 — prioritizes reliable memories |
+| 8 | **Multi-Turn Joint Extraction** | Merges consecutive user messages before LLM extraction |
+| 9 | **Code Block + URL Extraction** | Auto-captures code blocks (fact/0.8) and URLs (fact/0.7) |
+| 10 | **24h Embedder Cache** | Embedding results cached 24h — avoids repeat API calls |
+| 11 | **Incremental BM25** | ≤10 new memories → lazy merge; >10 → full rebuild |
+| 12 | **Pre-Filter** | Skips pure numbers / single emojis / <30-char content before LLM |
+| 13 | **Did-You-Mean** | Empty recall → suggests similar memories by keyword overlap |
+| 14 | **Memory Stats** | `hawk统计` — category/scope/reliability distribution dashboard |
+| 15 | **Effect Feedback** | `hawk否认 N` → -5%; `hawk确认 N 对/纠正` → -30% reliability |
+| 16 | **Multi-Agent Isolation** | Per-agent memory pool via `owner_agent` field |
+| 17 | **LanceDB trygc** | Automatic garbage collection after decay |
+| 18 | **Structured JSON Output** | All LLM calls use `response_format=json_object` |
 | 7 | `nomic-embed-text` 埋め込みモデルをダウンロード |
 | 8 | TypeScript Hooks をビルド + 初期メモリをシード |
 

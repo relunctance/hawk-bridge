@@ -61,6 +61,18 @@ Agentes IA esquecem tudo após cada sessão. **hawk-bridge** conecta o sistema d
 | 7 | **Injeção contextual** | Score BM25 usado diretamente quando não há embedder disponível |
 | 9 | **Recall sub-100ms** | Índice ANN LanceDB para recuperação instantânea |
 | 10 | **Instalação multiplataforma** | Um comando, funciona no Ubuntu/Debian/Fedora/Arch/Alpine/openSUSE |
+| 11 | **Composite Score Ranking** | score×0.6 + reliability×0.4 — prioritizes reliable memories |
+| 12 | **Multi-Turn Joint Extraction** | Merges consecutive user messages before LLM extraction |
+| 13 | **Code Block + URL Extraction** | Auto-captures code blocks (fact/0.8) and URLs (fact/0.7) |
+| 14 | **24h Embedder Cache** | Embedding results cached 24h — avoids repeat API calls |
+| 15 | **Incremental BM25** | ≤10 new memories → lazy merge; >10 → full rebuild |
+| 16 | **Pre-Filter** | Skips pure numbers / single emojis / <30-char content before LLM |
+| 17 | **Did-You-Mean** | Empty recall → suggests similar memories by keyword overlap |
+| 18 | **Memory Stats** | `hawk统计` — category/scope/reliability distribution dashboard |
+| 19 | **Effect Feedback** | `hawk否认 N` → -5%; `hawk确认 N 对/纠正` → -30% reliability |
+| 20 | **Multi-Agent Isolation** | Per-agent memory pool via `owner_agent` field |
+| 21 | **LanceDB trygc** | Automatic garbage collection after decay |
+| 22 | **Structured JSON Output** | All LLM calls use `response_format=json_object` |
 
 ---
 

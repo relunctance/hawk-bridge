@@ -95,6 +95,8 @@ const BATCHUNLOCK_PATTERN = /^hawk\s*解锁\s*all$/i;
 const COMPARE_PATTERN   = /^hawk\s*对比\s*(\d+)\s+(\d+)$/i;  // hawk对比 3 4
 const PURGE_PATTERN     = /^hawk\s*清理$/i;  // hawk清理 强制执行decay+purge
 const STATS_PATTERN     = /^hawk\s*统计$/i;  // hawk统计 显示记忆分布
+const QUALITY_PATTERN   = /^hawk\s*质量$/i;  // hawk质量 记忆健康评分
+const STATUS_PATTERN     = /^hawk\s*状态$/i;  // hawk状态 系统状态面板
 const DENY_PATTERN      = /^hawk\s*否认\s*(\d+)$/i;  // hawk否认 3
 
 function matchFirst(text: string, patterns: RegExp[]): string | null {
@@ -620,6 +622,75 @@ const recallHandler = async (event: HookEvent) => {
         `**按可靠性**: high≥80%:${byRel.high||0} | mid50-80%:${byRel.mid||0} | low<50%:${byRel.low||0}`,
       ];
       event.messages.push(lines.join('\n') + '\n');
+      return;
+    }
+
+    // ─── hawk质量 ───────────────────────────────────────────────────
+    if (QUALITY_PATTERN.test(trimmed)) {
+      const all = await db.getAllMemories(getAgentId(ctx));
+      if (!all.length) { event.messages.push(`\n${injectEmoji} 暂无记忆。\n`); return; }
+
+      const total = all.length;
+      const now = Date.now();
+
+      // Compute health score components
+      const avgRel = all.reduce((s, m) => s + m.reliability, 0) / total;
+      const avgImp = all.reduce((s, m) => s + m.importance, 0) / total;
+      const lockedRatio = all.filter(m => m.locked).length / total;
+      const expiredCount = all.filter(m => m.expiresAt > 0 && m.expiresAt < now).length;
+      const recentCount = all.filter(m => now - m.timestamp < 7 * 86400000).length;
+
+      // Composite health score (0-100)
+      const relScore = avgRel * 40;          // reliability weight 40
+      const impScore = avgImp * 25;          // importance weight 25
+      const lockScore = lockedRatio * 15;   // lock ratio weight 15
+      const recencyScore = Math.min(recentCount / Math.max(total * 0.3, 1), 1) * 20;  // recency weight 20
+      const healthScore = Math.round(relScore + impScore + lockScore + recencyScore);
+
+      const grade = healthScore >= 80 ? '🟢 优秀' : healthScore >= 60 ? '🟡 良好' : healthScore >= 40 ? '🟠 一般' : '🔴 需优化';
+
+      event.messages.push(
+        `\n${injectEmoji} ** hawk 记忆健康评分 **\n` +
+        `健康度: ${grade} (${healthScore}/100)\n` +
+        `平均可靠性: ${(avgRel * 100).toFixed(1)}% | 平均重要性: ${(avgImp * 100).toFixed(1)}%\n` +
+        `总记忆: ${total} | 锁定: ${lockedRatio > 0 ? (lockedRatio * 100).toFixed(1) + '%' : '0'} | 已过期: ${expiredCount}\n` +
+        `近7天新增: ${recentCount} 条\n\n` +
+        `评分说明: 可靠性40% + 重要性25% + 锁定率15% + 活跃度20%\n`
+      );
+      return;
+    }
+
+    // ─── hawk状态 ───────────────────────────────────────────────────
+    if (STATUS_PATTERN.test(trimmed)) {
+      const all = await db.getAllMemories(getAgentId(ctx));
+      const now = Date.now();
+      const total = all.length;
+      const expired = all.filter(m => m.expiresAt > 0 && m.expiresAt < now).length;
+      const locked = all.filter(m => m.locked).length;
+
+      // Embedder cache stats
+      const embedderInstance = await getSharedEmbedder();
+      const cacheSize = (embedderInstance as any).cache?.size ?? 0;
+
+      // BM25 corpus size (via retriever if available)
+      let bm25Size = 0;
+      try {
+        const retriever = await getRetriever();
+        bm25Size = (retriever as any).corpus?.length ?? 0;
+      } catch { /* non-critical */ }
+
+      // Last decay time (from last successful decay run)
+      const lastDecay = (global as any).__hawk_last_decay__;
+      const decayAgo = lastDecay ? Math.round((now - lastDecay) / 60000) + ' 分钟前' : '从未';
+
+      event.messages.push(
+        `\n${injectEmoji} ** hawk 系统状态 **\n` +
+        `记忆总数: ${total} | 已过期: ${expired} | 锁定: ${locked}\n` +
+        `BM25索引: ${bm25Size} 条\n` +
+        `Embed缓存: ${cacheSize} 条\n` +
+        `最后Decay: ${decayAgo}\n` +
+        `搜索历史: ${searchHistory.length} 条\n`
+      );
       return;
     }
 

@@ -25,6 +25,9 @@ const decayHandler = async (event: HookEvent) => {
     // Run importance decay + layer management
     const decayResult = await db.decay();
 
+    // Track last decay time globally (for hawk状态)
+    (global as any).__hawk_last_decay__ = Date.now();
+
     // Purge soft-deleted memories past grace period
     const purged = await db.purgeForgotten(FORGET_GRACE_DAYS);
 
