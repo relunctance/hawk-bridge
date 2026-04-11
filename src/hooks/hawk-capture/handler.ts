@@ -578,6 +578,8 @@ const captureHandler = async (event: HookEvent) => {
             capture_confidence: m.importance,
             l0_abstract: m.abstract,
             l1_overview: m.overview,
+            name: (m as any).name || '',
+            description: (m as any).description || '',
             source: 'hawk-capture',
           },
         }, sessionId);

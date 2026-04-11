@@ -185,6 +185,29 @@ export const FORGET_GRACE_DAYS = parseInt(process.env.HAWK_FORGET_GRACE_DAYS || 
  */
 export const DRIFT_THRESHOLD_DAYS = parseInt(process.env.HAWK_DRIFT_THRESHOLD_DAYS || '7', 10);
 
+/**
+ * Days since drift was detected before requiring re-verification.
+ * After DRIFT_THRESHOLD_DAYS * 2, memories with drift are queued for forced re-verify.
+ * Range: 1-365. Default 14 days.
+ */
+export const DRIFT_REVERIFY_DAYS = parseInt(process.env.HAWK_DRIFT_REVERIFY_DAYS || '14', 10);
+
+// ─── Evolution Source Importance ────────────────────────────────────────────────
+
+/**
+ * Importance score boost for memories from successful evolution fixes.
+ * These memories are automatically boosted to top results during recall.
+ * Range: 0.0-1.0. Default 0.95.
+ */
+export const EVOLUTION_SUCCESS = parseFloat(process.env.HAWK_EVOLUTION_SUCCESS || '0.95');
+
+/**
+ * Importance score penalty for memories from failed evolution attempts.
+ * These memories are demoted and require explicit trigger to appear in recall.
+ * Range: 0.0-1.0. Default 0.25.
+ */
+export const EVOLUTION_FAILURE = parseFloat(process.env.HAWK_EVOLUTION_FAILURE || '0.25');
+
 // ─── Reliability: Time Decay ────────────────────────────────────────────────────
 
 /**

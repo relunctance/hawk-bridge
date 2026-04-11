@@ -5,10 +5,12 @@
 import type { HookEvent } from '../../../../../../.npm-global/lib/node_modules/openclaw/dist/v10/types/hooks.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { spawn } from 'child_process';
 import { getMemoryStore } from '../../store/factory.js';
 import type { MemoryStore } from '../../store/interface.js';
 import { getConfig } from '../../config.js';
+import { DRIFT_THRESHOLD_DAYS, DRIFT_REVERIFY_DAYS } from '../../constants.js';
 
 // Dream state file (tracks last consolidation time)
 const DREAM_STATE_FILE = path.join(
@@ -48,6 +50,9 @@ const DREAM_CONFIG = {
   similarityThreshold: 0.75, // merge memories with similarity > this
   driftCheckReliability: 0.6, // re-verify memories with reliability > this (trust but verify)
 };
+
+// Drift verify queue — memories requiring forced re-verify after extended drift
+const DRIFT_VERIFY_QUEUE = path.join(os.homedir(), '.hawk', 'drift-verify-queue.jsonl');
 
 // ─── Consolidation Lock (prevents concurrent dream runs) ────────────────────
 // Lock file: ~/.hawk/.consolidate-lock
@@ -116,6 +121,54 @@ function rollbackConsolidationLock(priorMtime: number | null): void {
 
 let lastDreamRun = 0;
 const DREAM_INTERVAL_MS = 6 * 60 * 60 * 1000; // min 6h between dream runs
+
+/**
+ * After consolidation, check for memories with driftDetectedAt > 0 AND age > DRIFT_THRESHOLD_DAYS * 2.
+ * Write them to ~/.hawk/drift-verify-queue.jsonl for forced re-verification.
+ */
+async function writeDriftVerifyQueue(db: any, now: number): Promise<void> {
+  try {
+    const allMemories = await db.getAllMemories();
+    const activeMemories = allMemories.filter((m: any) => m.deletedAt === null);
+    const ageThresholdMs = DRIFT_THRESHOLD_DAYS * 2 * 24 * 60 * 60 * 1000;
+
+    // Load existing queue to avoid duplicates
+    const existingIds = new Set<string>();
+    try {
+      if (fs.existsSync(DRIFT_VERIFY_QUEUE)) {
+        const lines = fs.readFileSync(DRIFT_VERIFY_QUEUE, 'utf-8').trim().split('\n').filter(Boolean);
+        for (const line of lines) {
+          try { existingIds.add(JSON.parse(line).memory_id); } catch { /* ignore */ }
+        }
+      }
+    } catch { /* non-critical */ }
+
+    const toVerify: Array<{ memory_id: string; text: string; detected_at: number }> = [];
+    for (const m of activeMemories) {
+      const driftDetectedAt = (m as any).driftDetectedAt || 0;
+      if (driftDetectedAt > 0) {
+        const ageMs = now - m.createdAt;
+        if (ageMs > ageThresholdMs && !existingIds.has(m.id)) {
+          toVerify.push({
+            memory_id: m.id,
+            text: m.text.slice(0, 200),
+            detected_at: driftDetectedAt,
+          });
+        }
+      }
+    }
+
+    if (toVerify.length > 0) {
+      const dir = path.dirname(DRIFT_VERIFY_QUEUE);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const lines = toVerify.map(item => JSON.stringify(item)).join('\n') + '\n';
+      fs.appendFileSync(DRIFT_VERIFY_QUEUE, lines);
+      console.log(`[hawk-dream] queued ${toVerify.length} memories for drift re-verify`);
+    }
+  } catch (e) {
+    console.warn('[hawk-dream] drift verify queue error:', e);
+  }
+}
 
 /**
  * Calculate text similarity (simple Jaccard + length normalized)
@@ -316,6 +369,11 @@ async function runDreamConsolidation(state: DreamState, now: number): Promise<vo
     }
 
     console.log(`[hawk-dream] done: merged=${merged}, drifted=${drifted}, confirmed=${confirmed}`);
+
+    // ─── Drift timeout auto re-verify ──────────────────────────────────
+    // After consolidation, check for memories with driftDetectedAt > 0 AND age > DRIFT_THRESHOLD_DAYS * 2
+    // These are written to drift-verify-queue.jsonl for forced re-verification
+    await writeDriftVerifyQueue(db, now);
 
   // Update state
   writeDreamState({

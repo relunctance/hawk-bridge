@@ -4,6 +4,7 @@
 
 import type { HookEvent } from '../../../../../.npm-global/lib/node_modules/openclaw/dist/v10/types/hooks.js';
 import * as path from 'path';
+import * as fs from 'fs';
 import { homedir } from 'os';
 import { getMemoryStore } from '../../store/factory.js';
 import type { MemoryStore } from '../../store/interface.js';
@@ -16,7 +17,7 @@ import { t } from '../../i18n/index.js';
 // Full i18n Phase 2: migrate output strings to t() calls
 const LANG = (process.env.HAWK_LANG as 'zh' | 'en') || 'zh';
 import { getEmbedder } from '../../embeddings.js';
-import { RELIABILITY_THRESHOLD_HIGH, DRIFT_THRESHOLD_DAYS } from '../../constants.js';
+import { RELIABILITY_THRESHOLD_HIGH, DRIFT_THRESHOLD_DAYS, EVOLUTION_SUCCESS, EVOLUTION_FAILURE } from '../../constants.js';
 
 // Recall injection control
 const INJECTION_LIMIT = 5;          // 最多注入 5 条记忆
@@ -319,10 +320,35 @@ function sanitize(text: string): string { let r = text; for (const [p, repl] of 
 
 // ─── Main Handler ─────────────────────────────────────────────────────────
 
+const DRIFT_VERIFY_QUEUE = path.join(os.homedir(), '.hawk', 'drift-verify-queue.jsonl');
+
+// Check drift verify queue on startup — warn about pending verifications
+function checkDriftVerifyQueue(): string[] {
+  try {
+    if (!fs.existsSync(DRIFT_VERIFY_QUEUE)) return [];
+    const lines = fs.readFileSync(DRIFT_VERIFY_QUEUE, 'utf-8').trim().split('\n').filter(Boolean);
+    return lines.map(l => {
+      try { return JSON.parse(l); } catch { return null; }
+    }).filter(Boolean);
+  } catch { return []; }
+}
+
 const recallHandler = async (event: HookEvent) => {
   if (event.type !== 'agent' || event.action !== 'bootstrap') return;
 
   try {
+    // Check drift verify queue on every bootstrap
+    const pending = checkDriftVerifyQueue();
+    if (pending.length > 0) {
+      const lines = [`⚠️ ** hawk 待验证过期记忆 (${pending.length}条) **`];
+      for (const item of pending.slice(0, 10)) {
+        lines.push(`🕐 [${item.memory_id}] ${(item.text || '').slice(0, 60)}`);
+      }
+      if (pending.length > 10) lines.push(`...还有 ${pending.length - 10} 条`);
+      lines.push(`\n提示: 使用 hawk过期 查看详情，hawk确认 N 对 验证记忆`);
+      event.messages?.push('\n' + lines.join('\n') + '\n');
+    }
+
     const config = await getConfig();
     const { topK, injectEmoji, minScore } = config.recall;
     const sessionEntry = event.context?.sessionEntry;
@@ -1055,8 +1081,27 @@ const recallHandler = async (event: HookEvent) => {
       return;
     }
 
-    // Sort by composite score (reliability × 0.4 + score × 0.6)
-    const sorted = [...useable].sort((a, b) => compositeScore(b) - compositeScore(a));
+    // Evolution source boosting: evolution-success → boost to top 3, evolution-failure → demote
+    const withEvolution = useable.map(m => {
+      const src = (m.metadata as any)?.source || '';
+      let score = compositeScore(m);
+      if (src === 'evolution-success') {
+        score = Math.min(1.0, score + EVOLUTION_SUCCESS * 0.3);
+      } else if (src === 'evolution-failure') {
+        score = score * 0.5; // demote, requires explicit trigger
+      }
+      return { ...m, _evolutionScore: score };
+    });
+
+    // Sort by composite score (reliability × 0.4 + score × 0.6), evolution-boosted first
+    const sorted = [...withEvolution].sort((a, b) => {
+      // evolution-success always ranks above non-evolution
+      const aEvol = (a.metadata as any)?.source === 'evolution-success';
+      const bEvol = (b.metadata as any)?.source === 'evolution-success';
+      if (aEvol && !bEvol) return -1;
+      if (!aEvol && bEvol) return 1;
+      return (b._evolutionScore as number) - (a._evolutionScore as number);
+    });
 
     // Take top N and track char budget
     const result: any[] = [];
