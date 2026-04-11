@@ -44,6 +44,22 @@ async function getEmbedder(): Promise<Embedder> {
 
 const AUDIT_LOG_PATH = path.join(os.homedir(), '.hawk', 'audit.log');
 
+// Retry utility: attempts fn up to maxAttempts times
+async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 3, delayMs = 1000): Promise<T> {
+  let lastErr: any;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxAttempts) {
+        await new Promise(res => setTimeout(res, delayMs * attempt));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 function audit(action: 'capture' | 'skip' | 'reject', reason: string, text: string): void {
   const config = getConfig();
   if (!config.audit?.enabled) return;
@@ -424,7 +440,7 @@ const captureHandler = async (event: HookEvent) => {
       enrichedContent = merged.map(m => `user: ${m.text}`).join('\n\n');
     }
 
-    const memories = await callExtractor(enrichedContent, config);
+    const memories = await withRetry(() => callExtractor(enrichedContent, config), 3, 2000);
     if (!memories || !memories.length) return;
 
     // Merge pre-extracted memories (code blocks + URLs) with LLM-extracted memories
@@ -513,7 +529,7 @@ const captureHandler = async (event: HookEvent) => {
         : m.category === 'preference' ? 'preference_signal'
         : 'general_content';
       try {
-        const [vector] = await embedderInstance.embed([text]);
+        const [vector] = await withRetry(() => embedderInstance.embed([text]), 3, 1000);
         await dbInstance.store({
           id,
           text,
