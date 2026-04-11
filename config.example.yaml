@@ -1,54 +1,46 @@
-# hawk-bridge 配置文件示例
-# 复制到 ~/.hawk/config.yaml 即可生效
-# 支持 ${ENV_VAR} 占位符，会自动替换为环境变量值
+# hawk-bridge Configuration Example
+# Copy this to ~/.hawk/config.yaml and edit as needed.
 
+# Database provider: lancedb | qdrant | chroma
 db:
-  provider: lancedb  # lancedb | qdrant | chroma
+  provider: lancedb
 
+# Embedding provider: jina | openai | qianwen | ollama | cohere
 embedding:
-  provider: jina  # jina | openai | qianwen | ollama | cohere
-  apiKey: ${JINA_API_KEY}  # 支持 env 占位符
+  provider: jina
+  apiKey: ${JINA_API_KEY}  # Supports env var placeholder — filled from JINA_API_KEY env var
   model: jina-embeddings-v5-small
   baseURL: ""
   dimensions: 1024
 
+# LLM provider for memory operations
 llm:
-  provider: groq  # groq | openai | qianwen | ollama
-  apiKey: ${GROQ_API_KEY}
+  provider: groq
+  apiKey: ""
   model: llama-3.3-70b-versatile
   baseURL: ""
 
-recall:
-  topK: 5
-  minScore: 0.3
-  injectEmoji: "🦅"
-
-audit:
-  enabled: true
-
+# Memory capture settings
 capture:
   enabled: true
   maxChunks: 3
   importanceThreshold: 0.5
-  ttlMs: 2592000000  # 30 days in ms
+  ttlMs: 2592000000  # 30 days in milliseconds
   maxChunkSize: 2000
   minChunkSize: 20
   dedupSimilarity: 0.95
 
+# Memory recall settings
+recall:
+  topK: 5
+  minScore: 0.6
+  injectEmoji: "🦅"
+
+# Audit settings
+audit:
+  enabled: true
+
+# Python settings
 python:
-  pythonPath: python3
+  pythonPath: python3.12
   hawkDir: ~/.openclaw/hawk
-
-# Rerank 配置（可选，不配置则用 cosine similarity 兜底）
-rerank:
-  # 优先级: JINA > COHERE > MIXEDBREAD > RERANK_BASE_URL > cosine
-  jinaApiKey: ${JINA_RERANKER_API_KEY}  # https://jina.ai/reranker/ 免费额度
-  cohereApiKey: ${COHERE_API_KEY}
-  mixedbreadApiKey: ${MIXTBREAD_API_KEY}  # https://www.mixedbread.ai/ 免费额度
-  # 通用 OpenAI-compatible rerank 端点
-  baseUrl: ""   # e.g. https://api.myservice.com
-  apiKey: ${RERANK_API_KEY}
-  model: ""    # e.g. gpt-4o-mini-retrieval
-
-i18n:
-  lang: zh  # zh | en — 界面语言

@@ -2877,8 +2877,10 @@ function deepMerge(base, override) {
 
 // src/config.ts
 var OPENCLAW_CONFIG_PATH = path.join(os.homedir(), ".openclaw", "openclaw.json");
+var OPENCLAW_AGENT_MODELS = path.join(os.homedir(), ".openclaw", "agents", "main", "agent", "models.json");
 var HAWK_CONFIG_DIR = path.join(os.homedir(), ".hawk");
 var cachedOpenClawConfig = null;
+var cachedAgentModels = null;
 function loadOpenClawConfig() {
   if (cachedOpenClawConfig) return cachedOpenClawConfig;
   try {
@@ -2889,10 +2891,39 @@ function loadOpenClawConfig() {
     return null;
   }
 }
-function getConfiguredProvider(providerName = "minimax") {
-  const config = loadOpenClawConfig();
-  if (!config?.models?.providers) return null;
-  return config.models.providers[providerName] || null;
+function loadAgentModels() {
+  if (cachedAgentModels !== null) return cachedAgentModels;
+  try {
+    cachedAgentModels = JSON.parse(fs.readFileSync(OPENCLAW_AGENT_MODELS, "utf-8"));
+    return cachedAgentModels;
+  } catch {
+    cachedAgentModels = null;
+    return null;
+  }
+}
+function getAgentModelKey(provider) {
+  const agents = loadAgentModels();
+  if (!agents) return null;
+  const providers = agents.providers;
+  if (!providers) return null;
+  const p = providers[provider];
+  if (!p) return null;
+  return {
+    apiKey: p.apiKey ?? "",
+    baseUrl: p.baseUrl ?? ""
+  };
+}
+function getDefaultModelId() {
+  const cfg = loadOpenClawConfig();
+  const primary = cfg?.auth?.profiles?.default?.mode;
+  const openclawPrimary = cfg?.agents?.defaults?.model?.primary;
+  if (openclawPrimary && typeof openclawPrimary === "string") {
+    return openclawPrimary;
+  }
+  if (!cfg?.models?.providers) return "MiniMax-M2.7";
+  const prov = cfg.models.providers["minimax"];
+  if (!prov?.models?.length) return "MiniMax-M2.7";
+  return prov.models[0].id;
 }
 var DEFAULT_CONFIG = {
   embedding: {
@@ -2969,7 +3000,14 @@ async function getConfig() {
       if (Object.keys(envOverrides).length > 0) {
         config = deepMerge(config, envOverrides);
       }
-      if (process.env.OLLAMA_BASE_URL) {
+      const openclawkEmbed = getAgentModelKey("minimax");
+      if (openclawkEmbed?.apiKey) {
+        config.embedding.provider = "minimax";
+        config.embedding.apiKey = openclawkEmbed.apiKey;
+        config.embedding.baseURL = openclawkEmbed.baseUrl || "https://api.minimaxi.com/v1";
+        config.embedding.model = "text-embedding-v2";
+        config.embedding.dimensions = 1024;
+      } else if (process.env.OLLAMA_BASE_URL) {
         config.embedding.provider = "ollama";
         config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
         config.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
@@ -3000,12 +3038,12 @@ async function getConfig() {
         config.embedding.dimensions = 1024;
       }
       if (!config.llm.model || !config.llm.apiKey) {
-        const openclawProvider = getConfiguredProvider("minimax");
-        if (openclawProvider) {
+        const openclawkKey = getAgentModelKey("minimax");
+        if (openclawkKey?.apiKey) {
           config.llm = config.llm || {};
-          config.llm.model = config.llm.model || openclawProvider.models?.[0]?.id || "MiniMax-M2.7";
-          config.llm.apiKey = config.llm.apiKey || openclawProvider.apiKey || "";
-          config.llm.baseURL = config.llm.baseURL || openclawProvider.baseURL || "";
+          config.llm.model = config.llm.model || getDefaultModelId();
+          config.llm.apiKey = openclawkKey.apiKey;
+          config.llm.baseURL = config.llm.baseURL || openclawkKey.baseUrl || "";
           config.llm.provider = config.llm.provider || "minimax";
         }
       }
