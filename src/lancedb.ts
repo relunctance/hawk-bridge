@@ -373,7 +373,7 @@ export class HawkDB {
     return rows.length ? Number(rows[0].access_count || 0) : 0;
   }
 
-  private async incrementAccess(id: string): Promise<void> {
+  async incrementAccess(id: string): Promise<void> {
     try {
       const current = await this._getAccessCount(id);
       await this.table.update(

@@ -309,6 +309,29 @@ async function isDuplicate(text: string, threshold: number = DEDUP_SIMILARITY): 
   return false;
 }
 
+/**
+ * Saturation check: if ≥3 highly-similar memories exist in recent 50,
+ * skip storing a new one — just bump accessTime of existing ones.
+ * Returns true if saturated (store skipped), false otherwise.
+ */
+async function handleSaturation(text: string, threshold: number = 0.70): Promise<boolean> {
+  try {
+    const dbInstance = await getDB();
+    const recent = await dbInstance.listRecent(50);
+    const similar = recent.filter(m => textSimilarity(text, m.text) >= threshold);
+    if (similar.length >= 3) {
+      // Bump accessTime of all similar existing memories
+      for (const m of similar) {
+        await dbInstance.incrementAccess(m.id);
+      }
+      return true;  // saturated, skip store
+    }
+  } catch {
+    // Non-critical
+  }
+  return false;  // not saturated, proceed
+}
+
 // ─── Main Capture Handler ──────────────────────────────────────────────────────
 
 const captureHandler = async (event: HookEvent) => {
@@ -452,6 +475,12 @@ const captureHandler = async (event: HookEvent) => {
       // 5. Deduplication
       if (await isDuplicate(text)) {
         audit('skip', 'duplicate', text);
+        continue;
+      }
+
+      // 5b. Saturation check: if ≥3 similar memories exist, just bump accessTime
+      if (await handleSaturation(text)) {
+        audit('skip', 'saturated', text);
         continue;
       }
 
