@@ -235,7 +235,30 @@ export const DECAY_RATE_MEDIUM_RELIABILITY = parseFloat(process.env.HAWK_DECAY_R
  */
 export const DECAY_RATE_LOW_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_LOW || '1.5');
 
-// ─── Entity Deduplication ────────────────────────────────────────────────────────
+// ─── Cold Start Protection ─────────────────────────────────────────────────────
+
+/**
+ * Number of days a newly captured memory is protected from decay.
+ * Prevents new memories from being wiped before they can be verified.
+ * Range: 1-30. Default 7 days.
+ */
+export const COLD_START_GRACE_DAYS = parseInt(process.env.HAWK_COLD_START_GRACE_DAYS || '7', 10);
+
+/**
+ * Cold start protection decay multiplier (applied during grace period).
+ * Lower = more protection. Default 0.1 = barely decays.
+ */
+export const COLD_START_DECAY_MULTIPLIER = parseFloat(process.env.HAWK_COLD_START_DECAY_MULTIPLIER || '0.1');
+
+// ─── Conflict Detection ───────────────────────────────────────────────────────
+
+/**
+ * Similarity threshold for conflict detection.
+ * When two entity/fact memories exceed this similarity but disagree on content,
+ * flag as potential conflict.
+ * Range: 0.5-1.0. Default 0.6.
+ */
+export const CONFLICT_SIMILARITY_THRESHOLD = parseFloat(process.env.HAWK_CONFLICT_THRESHOLD || '0.6');
 
 /**
  * Similarity threshold for entity deduplication during capture.

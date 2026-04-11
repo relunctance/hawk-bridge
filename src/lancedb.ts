@@ -24,6 +24,9 @@ type MemoryMap = Map<string, {
   sessionId: string | null;
   createdAt: number;
   updatedAt: number;
+  scope2: 'personal' | 'team' | 'project';
+  importanceOverride: number;
+  coldStartUntil: number | null;
   metadata: Record<string, unknown>;
   source_type: SourceType;
 }>;
@@ -33,7 +36,7 @@ import {
   RECENCY_GRACE_DAYS, RECENCY_DECAY_RATE, RECENCY_FACTOR_FLOOR,
   CONSISTENCY_MAX, CORRECTION_PENALTY_MULTIPLIER,
   DECAY_RATE_HIGH_RELIABILITY, DECAY_RATE_MEDIUM_RELIABILITY, DECAY_RATE_LOW_RELIABILITY,
-  ENTITY_DEDUP_THRESHOLD,
+  ENTITY_DEDUP_THRESHOLD, COLD_START_GRACE_DAYS, COLD_START_DECAY_MULTIPLIER, CONFLICT_SIMILARITY_THRESHOLD,
 } from './constants.js';
 import type { MemoryEntry, RetrievedMemory } from './types.js';
 
@@ -93,6 +96,9 @@ export class HawkDB {
             { name: 'correction_history', type: { type: 'utf8' } },
             { name: 'session_id', type: { type: 'utf8' } },
             { name: 'updated_at', type: { type: 'int64' } },
+            { name: 'scope_mem', type: { type: 'utf8' } },
+            { name: 'importance_override', type: { type: 'float' } },
+            { name: 'cold_start_until', type: { type: 'int64' } },
           ]);
         } catch (_) {
           // Columns may already exist — ignore
@@ -124,6 +130,9 @@ export class HawkDB {
     correction_history: string;
     session_id: string | null;
     updated_at: number;
+    scope_mem: 'personal' | 'team' | 'project';
+    importance_override: number;
+    cold_start_until: number | null;
     metadata: string;
     source_type: SourceType;
   }): any {
@@ -148,6 +157,9 @@ export class HawkDB {
       correction_history: data.correction_history,
       session_id: data.session_id ?? null,
       updated_at: BigInt(data.updated_at),
+      scope_mem: data.scope_mem,
+      importance_override: data.importance_override,
+      cold_start_until: data.cold_start_until !== null ? BigInt(data.cold_start_until) : null,
       metadata: data.metadata,
       source_type: data.source_type,
     };
@@ -210,7 +222,7 @@ export class HawkDB {
       text: r.text,
       vector: r.vector || [],
       category: r.category,
-      scope: r.scope,
+      scope: r.scope_mem ?? 'personal',
       importance: r.importance,
       timestamp: Number(r.timestamp),
       expiresAt: Number(r.expires_at || 0),
@@ -225,12 +237,15 @@ export class HawkDB {
       sessionId: r.session_id ?? null,
       createdAt: Number(r.created_at ?? Date.now()),
       updatedAt: Number(r.updated_at ?? Date.now()),
+      scope: (r.scope_mem ?? 'personal') as 'personal' | 'team' | 'project',
+      importanceOverride: r.importance_override ?? 1.0,
+      coldStartUntil: r.cold_start_until !== null ? Number(r.cold_start_until) : null,
       metadata: typeof r.metadata === 'string' ? JSON.parse(r.metadata || '{}') : (r.metadata || {}),
       source_type: (r.source_type || 'text') as SourceType,
     };
   }
 
-  private _rowToRetrieved(r: any, score: number): RetrievedMemory {
+  private _rowToRetrieved(r: any, score: number, matchReason?: string): RetrievedMemory {
     const base = r.reliability ?? INITIAL_RELIABILITY;
     const correctionHistory: Array<{ ts: number; oldText: string; newText: string }> =
       typeof r.correction_history === 'string'
@@ -260,6 +275,10 @@ export class HawkDB {
       sessionId: r.session_id ?? null,
       createdAt: Number(r.created_at ?? Date.now()),
       updatedAt: Number(r.updated_at ?? Date.now()),
+      scope: (r.scope_mem ?? 'personal') as 'personal' | 'team' | 'project',
+      importanceOverride: r.importance_override ?? 1.0,
+      coldStartUntil: r.cold_start_until !== null ? Number(r.cold_start_until) : null,
+      matchReason: matchReason,
     };
   }
 
@@ -267,12 +286,14 @@ export class HawkDB {
     if (!this.table) await this.init();
     const now = Date.now();
     const correctionHistory = entry.correctionHistory ?? [];
+    const scope2 = entry.scope ?? 'personal';
+    const coldStartUntil = entry.coldStartUntil ?? (now + COLD_START_GRACE_DAYS * 86400000);
     const row = this._makeRow({
       id: entry.id,
       text: entry.text,
       vector: entry.vector,
       category: entry.category,
-      scope: entry.scope,
+      scope: entry.scope ?? 'global',
       importance: entry.importance,
       timestamp: entry.timestamp,
       expires_at: entry.expiresAt || 0,
@@ -287,6 +308,9 @@ export class HawkDB {
       correction_history: JSON.stringify(correctionHistory),
       session_id: sessionId ?? null,
       updated_at: now,
+      scope_mem: scope2,
+      importance_override: entry.importanceOverride ?? 1.0,
+      cold_start_until: coldStartUntil,
       metadata: JSON.stringify(entry.metadata || {}),
       source_type: entry.source_type || 'text',
     });
@@ -513,30 +537,89 @@ export class HawkDB {
   }
 
   /**
-   * 更新记忆文本（用于 entity merge 或用户编辑）
-   * 更新 updatedAt，reliability 不变
+   * 更新记忆（用于 entity merge、用户编辑、标记重要）
+   * 更新 updatedAt
    */
-  async update(id: string, updates: { text?: string; category?: string; importance?: number }): Promise<boolean> {
+  async update(
+    id: string,
+    updates: {
+      text?: string;
+      category?: string;
+      importance?: number;
+      scope?: 'personal' | 'team' | 'project';
+      importanceOverride?: number;
+    }
+  ): Promise<boolean> {
     if (!this.table) await this.init();
     try {
-      const setClause: string[] = [];
-      const values: any[] = [];
-      if (updates.text !== undefined) { setClause.push('text = ?'); values.push(updates.text); }
-      if (updates.category !== undefined) { setClause.push('category = ?'); values.push(updates.category); }
-      if (updates.importance !== undefined) { setClause.push('importance = ?'); values.push(updates.importance); }
-      setClause.push('updated_at = ?');
-      values.push(BigInt(Date.now()));
-      values.push(id);
-      await this.table.query().where(`id = '${id.replace(/'/g, "''")}'`).toArray();
-      // LanceDB doesn't support direct UPDATE SET, use delete + re-insert pattern
       const existing = await this.getById(id);
       if (!existing) return false;
       await this.table.delete(`id = '${id.replace(/'/g, "''")}'`);
-      await this.store({ ...existing, ...updates, vector: existing.vector });
+      const updated: MemoryEntry = {
+        ...existing,
+        text: updates.text ?? existing.text,
+        category: updates.category ?? existing.category,
+        scope: updates.scope ?? existing.scope,
+        importance: updates.importance ?? existing.importance,
+        importanceOverride: updates.importanceOverride ?? existing.importanceOverride,
+        updatedAt: Date.now(),
+        vector: existing.vector,
+      };
+      await this.store(updated, existing.sessionId ?? undefined);
       return true;
     } catch {
       return false;
     }
+  }
+
+  /**
+   * 标记记忆为重要（调整 importanceOverride）
+   * multiplier: 1.0=不变，2.0=加倍重要，0.5=降低
+   */
+  async markImportant(id: string, multiplier: number = 2.0): Promise<boolean> {
+    return this.update(id, { importanceOverride: multiplier });
+  }
+
+  /**
+   * 检测与新内容可能冲突的记忆
+   * 策略：在同类记忆中找相似度高但内容不同的
+   */
+  async detectConflicts(newText: string, category: string): Promise<MemoryEntry[]> {
+    const all = await this.getAllMemories();
+    const sameCategory = all.filter(m => m.category === category);
+    const newKeywords = this._extractKeywords(newText);
+
+    const conflicts: MemoryEntry[] = [];
+    for (const m of sameCategory) {
+      const memKeywords = this._extractKeywords(m.text);
+      const overlap = newKeywords.filter(k => memKeywords.includes(k)).length;
+      const union = new Set([...newKeywords, ...memKeywords]).size;
+      const similarity = union > 0 ? overlap / union : 0;
+
+      if (similarity >= CONFLICT_SIMILARITY_THRESHOLD && similarity < 0.95) {
+        // Similar enough but not identical → potential conflict
+        // Check if text is actually different
+        const newWords = new Set(newKeywords);
+        const oldWords = new Set(memKeywords);
+        const diff = [...newWords].filter(w => !oldWords.has(w)).length +
+                     [...oldWords].filter(w => !newWords.has(w)).length;
+        if (diff > 2) { // More than 2 keyword differences → actual conflict
+          conflicts.push(m);
+        }
+      }
+    }
+    return conflicts;
+  }
+
+  /**
+   * 获取需要主动回顾的记忆（最低可靠性，未锁定的）
+   */
+  async getReviewCandidates(minReliability: number = 0.5, batchSize: number = 5): Promise<MemoryEntry[]> {
+    const all = await this.getAllMemories();
+    return all
+      .filter(m => !m.locked && m.reliability < minReliability)
+      .sort((a, b) => a.reliability - b.reliability)
+      .slice(0, batchSize);
   }
 
   /**
@@ -640,6 +723,25 @@ export class HawkDB {
     for (const m of memories) {
       // 锁定的记忆完全跳过衰减
       if (m.locked) continue;
+
+      // 冷启动保护期内：几乎不衰减
+      if (m.coldStartUntil && now < m.coldStartUntil) {
+        const daysInGrace = Math.ceil((m.coldStartUntil - now) / 86400000);
+        if (daysInGrace > 1) {
+          // 仍然做轻微衰减，保卫机制有效
+          const newImportance = m.importance * Math.pow(COLD_START_DECAY_MULTIPLIER, 0.5);
+          if (Math.abs(newImportance - m.importance) > 0.001) {
+            try {
+              await this.table.update({
+                where: `id = '${m.id.replace(/'/g, "''")}'`,
+                updates: { importance: newImportance },
+              });
+              updated++;
+            } catch { /* ignore */ }
+          }
+        }
+        continue;
+      }
 
       const daysIdle = Math.max(0, Math.floor((now - m.lastAccessedAt) / 86400000));
 

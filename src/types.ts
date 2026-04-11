@@ -74,6 +74,18 @@ export interface HawkConfig {
     minChunkSize: number;  // min chars for valid chunk
     dedupSimilarity: number;  // 0–1, skip similar memories
   };
+  /** 主动回顾提醒配置 */
+  review?: {
+    enabled: boolean;
+    intervalDays: number;     // 多少天回顾一次
+    minReliability: number;  // 只回顾低于此可靠性的记忆
+    batchSize: number;        // 每次回顾多少条
+  };
+  /** 团队作用域配置 */
+  team?: {
+    enabled: boolean;
+    teamId?: string;
+  };
   python: {
     pythonPath: string;
     hawkDir: string;
@@ -118,6 +130,12 @@ export interface MemoryEntry {
   createdAt: number;
   /** 最后修改时间 */
   updatedAt: number;
+  /** 记忆作用域：personal | team | project */
+  scope: 'personal' | 'team' | 'project';
+  /** 用户手动指定的重要性倍数（覆盖 capture 时的 LLM 判断） */
+  importanceOverride: number;
+  /** 冷启动保护截止时间：此时间前 decay 免疫 */
+  coldStartUntil: number | null;
   metadata: Record<string, unknown>;
   /** 记忆来源类型: text | audio | video */
   source_type: SourceType;
@@ -147,6 +165,14 @@ export interface RetrievedMemory {
   createdAt: number;
   /** 最后修改时间 */
   updatedAt: number;
+  /** 记忆作用域 */
+  scope: 'personal' | 'team' | 'project';
+  /** 用户指定的重要性倍数 */
+  importanceOverride: number;
+  /** 冷启动保护截止时间 */
+  coldStartUntil: number | null;
+  /** 命中原因（用于召回解释） */
+  matchReason?: string;
 }
 
 export interface ExtractionResult {
