@@ -183,6 +183,18 @@ export async function getConfig(): Promise<HawkConfig> {
         config.embedding.dimensions = 1024;
       }
 
+      // 5. Default LLM to OpenClaw's configured model (if not set in yaml or env)
+      if (!config.llm.model || !config.llm.apiKey) {
+        const openclawProvider = getConfiguredProvider('minimax');
+        if (openclawProvider) {
+          config.llm = config.llm || {} as any;
+          config.llm.model = config.llm.model || openclawProvider.models?.[0]?.id || 'MiniMax-M2.7';
+          config.llm.apiKey = config.llm.apiKey || openclawProvider.apiKey || '';
+          config.llm.baseURL = config.llm.baseURL || openclawProvider.baseURL || '';
+          config.llm.provider = config.llm.provider || 'minimax';
+        }
+      }
+
       return config;
     })();
   }

@@ -2903,6 +2903,22 @@ function deepMerge(base, override) {
 // src/config.ts
 var OPENCLAW_CONFIG_PATH = path.join(os.homedir(), ".openclaw", "openclaw.json");
 var HAWK_CONFIG_DIR = path.join(os.homedir(), ".hawk");
+var cachedOpenClawConfig = null;
+function loadOpenClawConfig() {
+  if (cachedOpenClawConfig) return cachedOpenClawConfig;
+  try {
+    const raw = fs.readFileSync(OPENCLAW_CONFIG_PATH, "utf-8");
+    cachedOpenClawConfig = JSON.parse(raw);
+    return cachedOpenClawConfig;
+  } catch {
+    return null;
+  }
+}
+function getConfiguredProvider(providerName = "minimax") {
+  const config = loadOpenClawConfig();
+  if (!config?.models?.providers) return null;
+  return config.models.providers[providerName] || null;
+}
 var DEFAULT_CONFIG = {
   embedding: {
     provider: "qianwen",
@@ -3007,6 +3023,16 @@ async function getConfig() {
         config.embedding.baseURL = "";
         config.embedding.model = "embed-english-v3.0";
         config.embedding.dimensions = 1024;
+      }
+      if (!config.llm.model || !config.llm.apiKey) {
+        const openclawProvider = getConfiguredProvider("minimax");
+        if (openclawProvider) {
+          config.llm = config.llm || {};
+          config.llm.model = config.llm.model || openclawProvider.models?.[0]?.id || "MiniMax-M2.7";
+          config.llm.apiKey = config.llm.apiKey || openclawProvider.apiKey || "";
+          config.llm.baseURL = config.llm.baseURL || openclawProvider.baseURL || "";
+          config.llm.provider = config.llm.provider || "minimax";
+        }
       }
       return config;
     })();
@@ -3711,8 +3737,6 @@ async function withRetry(fn, maxAttempts = 3, delayMs = 1e3) {
   throw lastErr;
 }
 function audit(action, reason, text) {
-  const config = getConfig();
-  if (!config.audit?.enabled) return;
   const entry = JSON.stringify({
     ts: (/* @__PURE__ */ new Date()).toISOString(),
     action,
@@ -4048,10 +4072,10 @@ var captureHandler = async (event) => {
 };
 function callExtractor(conversationText, config) {
   return new Promise((resolve) => {
-    const apiKey = config.embedding.apiKey || process.env.OPENAI_API_KEY || process.env.MINIMAX_API_KEY || "";
-    const model = config.llm?.model || process.env.MINIMAX_MODEL || "MiniMax-M2.7";
+    const apiKey = config.llm?.apiKey || config.embedding.apiKey || "";
+    const model = config.llm?.model || "MiniMax-M2.7";
     const provider = config.llm?.provider || "openclaw";
-    const baseURL = config.llm?.baseURL || process.env.MINIMAX_BASE_URL || "";
+    const baseURL = config.llm?.baseURL || "";
     const proc = spawn(
       config.python.pythonPath,
       ["-c", buildExtractorScript(conversationText, apiKey, model, provider, baseURL)]

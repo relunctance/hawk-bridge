@@ -64,8 +64,6 @@ async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 3, delayMs = 100
 }
 
 function audit(action: 'capture' | 'skip' | 'reject', reason: string, text: string): void {
-  const config = getConfig();
-  if (!config.audit?.enabled) return;
   const entry = JSON.stringify({
     ts: new Date().toISOString(),
     action,
@@ -572,10 +570,10 @@ const captureHandler = async (event: HookEvent) => {
 
 function callExtractor(conversationText: string, config: any): Promise<any[]> {
   return new Promise((resolve) => {
-    const apiKey = config.embedding.apiKey || process.env.OPENAI_API_KEY || process.env.MINIMAX_API_KEY || '';
-    const model = config.llm?.model || process.env.MINIMAX_MODEL || 'MiniMax-M2.7';
+    const apiKey = config.llm?.apiKey || config.embedding.apiKey || '';
+    const model = config.llm?.model || 'MiniMax-M2.7';
     const provider = config.llm?.provider || 'openclaw';
-    const baseURL = config.llm?.baseURL || process.env.MINIMAX_BASE_URL || '';
+    const baseURL = config.llm?.baseURL || '';
 
     const proc = spawn(
       config.python.pythonPath,
