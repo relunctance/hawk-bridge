@@ -159,6 +159,10 @@ Session（持久化磁盘）
 | 27 | **多 Agent 内存隔离** | 通过 `owner_agent` 字段实现每 Agent 记忆池 — 个人 + 团队记忆 |
 | 28 | **LanceDB trygc** | Decay 后自动垃圾回收 — 保持数据库精简 |
 | 29 | **结构化 JSON 输出** | 所有 LLM 调用使用 `response_format=json_object` — 可靠解析 |
+| 30 | **Auto-Dream 自动整合** | 定期后台整合：合并重复记忆、检测过期内容、确认新鲜记忆（每24小时或新增5条记忆后触发） |
+| 31 | **记忆过期检测** | 🕐 可信记忆7天未验证则标记；`hawk过期` 命令扫描所有记忆 |
+| 32 | **多 Provider 精排** | Jina AI / Cohere / Mixedbread AI / OpenAI兼容 精排器，自动回退到余弦相似度 |
+| 33 | **4类记忆分类** | fact / preference / decision / entity — 每类独立可靠性追踪和过期感知召回 |
 
 
 ---

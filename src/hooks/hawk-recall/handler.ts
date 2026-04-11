@@ -16,7 +16,7 @@ import { t } from '../../i18n/index.js';
 // Full i18n Phase 2: migrate output strings to t() calls
 const LANG = (process.env.HAWK_LANG as 'zh' | 'en') || 'zh';
 import { getEmbedder } from '../../embeddings.js';
-import { RELIABILITY_THRESHOLD_HIGH } from '../../constants.js';
+import { RELIABILITY_THRESHOLD_HIGH, DRIFT_THRESHOLD_DAYS } from '../../constants.js';
 
 // Recall injection control
 const INJECTION_LIMIT = 5;          // 最多注入 5 条记忆
@@ -99,6 +99,7 @@ const SCOPE_PATTERN      = /^hawk\s*(?:scope|作用域)\s*(\d+)\s+(personal|team
 const CONFLICT_PATTERN   = /^hawk\s*冲突\s*(\d+)$/i;
 const EXPORT_PATTERN    = /^hawk\s*导出(?:\s+(.+?))?$/i;   // hawk导出 / hawk导出 /path/to/file.json
 const RESTORE_PATTERN   = /^hawk\s*恢复\s*(.+)$/i;   // hawk恢复 /path/to/backup.json
+const DRIFT_PATTERN      = /^hawk\s*(?:drift|过期|陈旧)$/i;   // hawk过期 / hawk drift
 const SEARCH_HISTORY_PATTERN = /^hawk\s*搜索历史$/i;   // hawk搜索历史
 const CLEAR_PATTERN     = /^hawk\s*清空$/i;                 // hawk清空
 const BATCHLOCK_PATTERN = /^hawk\s*锁定\s*all(?:\s+(.+))?$/i;  // hawk锁定all / hawk锁定all fact
@@ -144,13 +145,18 @@ function formatMemoryRow(m: any, idx: number): string {
 function formatRecallResults(memories: any[], emoji: string): string {
   if (!memories.length) return '';
   const lines = [`${emoji} ** hawk 记忆检索 **`];
+  const now = Date.now();
+  const DRIFT_MS = DRIFT_THRESHOLD_DAYS * 24 * 60 * 60 * 1000;
   for (const m of memories) {
     const lock  = m.locked ? ' 🔒' : '';
     const imp   = m.importanceOverride > 1.5 ? ' ⭐' : '';
     const corr  = m.correctionCount > 0 ? ` (纠正×${m.correctionCount})` : '';
     const score = `(${(m.score*100).toFixed(0)}%相关)`;
     const reason = m.matchReason ? `\n   → ${m.matchReason}` : '';
-    lines.push(`${m.reliabilityLabel} ${score}${lock}${imp}${corr} [${m.category}] ${m.text}${reason}`);
+    // Memory drift indicator: reliable memory + not verified recently → 🕐
+    const daysSince = m.lastVerifiedAt ? (now - m.lastVerifiedAt) / 86400000 : Infinity;
+    const drift = (m.reliability >= 0.5 && daysSince > DRIFT_THRESHOLD_DAYS) ? ' 🕐' : '';
+    lines.push(`${m.reliabilityLabel} ${score}${lock}${imp}${corr}${drift} [${m.category}] ${m.text}${reason}`);
   }
   return lines.join('\n');
 }
@@ -487,6 +493,34 @@ const recallHandler = async (event: HookEvent) => {
       } catch (err: any) {
         event.messages.push(`\n${injectEmoji} ❌ 导出失败: ${err.message}\n`);
       }
+      return;
+    }
+
+    // ─── hawk过期 / hawk drift ─────────────────────────────────────
+    if (DRIFT_PATTERN.test(trimmed)) {
+      const all = await db.getAllMemories(getAgentId(ctx));
+      if (!all.length) { event.messages.push(`\n${injectEmoji} 还没有任何记忆。\n`); return; }
+      const now = Date.now();
+      const DRIFT_MS = DRIFT_THRESHOLD_DAYS * 24 * 60 * 60 * 1000;
+      const stale = all.filter(m => m.deletedAt === null && m.reliability >= 0.5 &&
+        (!m.lastVerifiedAt || (now - m.lastVerifiedAt) > DRIFT_MS));
+      const lines = [`${injectEmoji} ** hawk 过期检测 ** (${DRIFT_THRESHOLD_DAYS}天未验证)`];
+      if (!stale.length) {
+        lines.push('✅ 所有记忆都是新鲜的');
+      } else {
+        stale.sort((a, b) => {
+          const aDays = a.lastVerifiedAt ? (now - a.lastVerifiedAt) / 86400000 : Infinity;
+          const bDays = b.lastVerifiedAt ? (now - b.lastVerifiedAt) / 86400000 : Infinity;
+          return bDays - aDays;
+        });
+        for (const m of stale.slice(0, 20)) {
+          const days = m.lastVerifiedAt ? ((now - m.lastVerifiedAt) / 86400000).toFixed(0) : '从未';
+          lines.push(`🕐 [${days}天未验证] [${m.category}] ${m.text.slice(0, 80)}${m.text.length > 80 ? '...' : ''}`);
+        }
+        if (stale.length > 20) lines.push(`...还有 ${stale.length - 20} 条`);
+        lines.push(`\n提示: 使用 hawk确认 N 对 来验证记忆，或 hawk否认 N 来标记不可靠`);
+      }
+      event.messages.push('\n' + lines.join('\n') + '\n');
       return;
     }
 

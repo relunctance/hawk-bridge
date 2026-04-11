@@ -159,6 +159,10 @@ Session (persistent, on disk)
 | 27 | **Multi-Agent Isolation** | Per-agent memory pool via `owner_agent` field — personal + team memories |
 | 28 | **LanceDB trygc** | Automatic garbage collection after decay — keeps DB lean |
 | 29 | **Structured JSON Output** | All LLM calls use `response_format=json_object` — reliable parsing |
+| 30 | **Auto-Dream Consolidation** | Periodic background consolidation: merges duplicates, detects stale memories, confirms fresh ones (every 24h or 5+ new memories) |
+| 31 | **Memory Drift Detection** | 🕐 indicator for reliable memories not verified in 7+ days; `hawk过期` command scans all memories |
+| 32 | **Multi-Provider Rerank** | Jina AI / Cohere / Mixedbread AI / OpenAI-compatible rerankers with automatic fallback to cosine similarity |
+| 33 | **4-Tier Memory Taxonomy** | Claude Code-style classification: fact / preference / decision / entity — each with reliability tracking and drift-aware recall |
 
 
 

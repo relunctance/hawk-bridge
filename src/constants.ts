@@ -178,6 +178,13 @@ export const RELIABILITY_THRESHOLD_MEDIUM = parseFloat(process.env.HAWK_RELIABIL
  */
 export const FORGET_GRACE_DAYS = parseInt(process.env.HAWK_FORGET_GRACE_DAYS || '30', 10);
 
+/**
+ * Days since last verification before a memory is flagged as potentially stale (drift).
+ * Only applies to memories with reliability >= 0.5 (trust but verify).
+ * Range: 1-365. Default 7 days.
+ */
+export const DRIFT_THRESHOLD_DAYS = parseInt(process.env.HAWK_DRIFT_THRESHOLD_DAYS || '7', 10);
+
 // ─── Reliability: Time Decay ────────────────────────────────────────────────────
 
 /**
