@@ -112,6 +112,12 @@ export interface MemoryEntry {
   locked: boolean;
   /** 纠正历史：每次纠正记录 { ts, oldText, newText } */
   correctionHistory: Array<{ ts: number; oldText: string; newText: string }>;
+  /** 所属对话 session ID（用于追溯来源） */
+  sessionId: string | null;
+  /** 记录创建时间 */
+  createdAt: number;
+  /** 最后修改时间 */
+  updatedAt: number;
   metadata: Record<string, unknown>;
   /** 记忆来源类型: text | audio | video */
   source_type: SourceType;
@@ -135,6 +141,12 @@ export interface RetrievedMemory {
   correctionCount: number;
   /** 初始 reliability（未经时间衰减） */
   baseReliability: number;
+  /** 所属 session */
+  sessionId: string | null;
+  /** 创建时间 */
+  createdAt: number;
+  /** 最后修改时间 */
+  updatedAt: number;
 }
 
 export interface ExtractionResult {

@@ -375,6 +375,24 @@ const captureHandler = async (event: HookEvent) => {
       const effectiveTtl = ttlMs || MEMORY_TTL_MS;
       const expiresAt = effectiveTtl > 0 ? Date.now() + effectiveTtl : 0;
 
+      // Get session ID for provenance tracking
+      const sessionId = event.context?.sessionEntry?.sessionId ?? undefined;
+
+      // 7. Entity deduplication: for 'entity' memories, merge with existing similar entity
+      if (m.category === 'entity') {
+        const existing = await dbInstance.findSimilarEntity(text);
+        if (existing) {
+          // Merge: update existing entity memory
+          await dbInstance.update(existing.id, {
+            text,
+            importance: Math.max(existing.importance, m.importance),
+          });
+          storedCount++;
+          audit('capture', `entity_merge:${existing.id}`, text);
+          continue;
+        }
+      }
+
       // 7. Embed & store
       const id = generateId();
       try {
@@ -393,7 +411,7 @@ const captureHandler = async (event: HookEvent) => {
             l1_overview: m.overview,
             source: 'hawk-capture',
           },
-        });
+        }, sessionId);
         storedCount++;
         audit('capture', 'success', text);
       } catch (storeErr) {

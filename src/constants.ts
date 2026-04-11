@@ -234,3 +234,20 @@ export const DECAY_RATE_MEDIUM_RELIABILITY = parseFloat(process.env.HAWK_DECAY_R
  * Range: 1.0-2.0. Default 1.5 (fast decay).
  */
 export const DECAY_RATE_LOW_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_LOW || '1.5');
+
+// ─── Entity Deduplication ────────────────────────────────────────────────────────
+
+/**
+ * Similarity threshold for entity deduplication during capture.
+ * When a new memory has similarity >= this to an existing entity memory,
+ * the existing memory is updated rather than creating a new one.
+ * Range: 0.5-1.0. Default 0.75.
+ */
+export const ENTITY_DEDUP_THRESHOLD = parseFloat(process.env.HAWK_ENTITY_DEDUP_THRESHOLD || '0.75');
+
+/**
+ * Number of recent sessions to check for entity dedup.
+ * Prevents merging memories from very different contexts.
+ * Range: 1-50. Default 10.
+ */
+export const ENTITY_DEDUP_SESSION_WINDOW = parseInt(process.env.HAWK_ENTITY_DEDUP_SESSION_WINDOW || '10', 10);

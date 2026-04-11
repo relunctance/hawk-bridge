@@ -21,6 +21,9 @@ type MemoryMap = Map<string, {
   lastVerifiedAt: number | null;
   locked: boolean;
   correctionHistory: Array<{ ts: number; oldText: string; newText: string }>;
+  sessionId: string | null;
+  createdAt: number;
+  updatedAt: number;
   metadata: Record<string, unknown>;
   source_type: SourceType;
 }>;
@@ -30,6 +33,7 @@ import {
   RECENCY_GRACE_DAYS, RECENCY_DECAY_RATE, RECENCY_FACTOR_FLOOR,
   CONSISTENCY_MAX, CORRECTION_PENALTY_MULTIPLIER,
   DECAY_RATE_HIGH_RELIABILITY, DECAY_RATE_MEDIUM_RELIABILITY, DECAY_RATE_LOW_RELIABILITY,
+  ENTITY_DEDUP_THRESHOLD,
 } from './constants.js';
 import type { MemoryEntry, RetrievedMemory } from './types.js';
 
@@ -85,8 +89,10 @@ export class HawkDB {
             { name: 'reliability', type: { type: 'float' } },
             { name: 'verification_count', type: { type: 'int32' } },
             { name: 'last_verified_at', type: { type: 'int64' } },
-            { name: 'locked', type: { type: 'int8' } },         // 0=unlocked, 1=locked
-            { name: 'correction_history', type: { type: 'utf8' } }, // JSON array
+            { name: 'locked', type: { type: 'int8' } },
+            { name: 'correction_history', type: { type: 'utf8' } },
+            { name: 'session_id', type: { type: 'utf8' } },
+            { name: 'updated_at', type: { type: 'int64' } },
           ]);
         } catch (_) {
           // Columns may already exist — ignore
@@ -115,7 +121,9 @@ export class HawkDB {
     verification_count: number;
     last_verified_at: number | null;
     locked: boolean;
-    correction_history: string; // JSON string
+    correction_history: string;
+    session_id: string | null;
+    updated_at: number;
     metadata: string;
     source_type: SourceType;
   }): any {
@@ -138,6 +146,8 @@ export class HawkDB {
       last_verified_at: data.last_verified_at !== null ? BigInt(data.last_verified_at) : null,
       locked: data.locked ? 1 : 0,
       correction_history: data.correction_history,
+      session_id: data.session_id ?? null,
+      updated_at: BigInt(data.updated_at),
       metadata: data.metadata,
       source_type: data.source_type,
     };
@@ -190,12 +200,10 @@ export class HawkDB {
   }
 
   private _rowToMemory(r: any): MemoryEntry {
-    const base = r.reliability ?? INITIAL_RELIABILITY;
     const correctionHistory: Array<{ ts: number; oldText: string; newText: string }> =
       typeof r.correction_history === 'string'
         ? JSON.parse(r.correction_history || '[]')
         : (r.correction_history || []);
-    const correctionCount = correctionHistory.length;
 
     return {
       id: r.id,
@@ -209,11 +217,14 @@ export class HawkDB {
       accessCount: r.access_count,
       lastAccessedAt: Number(r.last_accessed_at),
       deletedAt: r.deleted_at !== null ? Number(r.deleted_at) : null,
-      reliability: base,
+      reliability: r.reliability ?? INITIAL_RELIABILITY,
       verificationCount: r.verification_count ?? 0,
       lastVerifiedAt: r.last_verified_at !== null ? Number(r.last_verified_at) : null,
       locked: r.locked === 1,
       correctionHistory,
+      sessionId: r.session_id ?? null,
+      createdAt: Number(r.created_at ?? Date.now()),
+      updatedAt: Number(r.updated_at ?? Date.now()),
       metadata: typeof r.metadata === 'string' ? JSON.parse(r.metadata || '{}') : (r.metadata || {}),
       source_type: (r.source_type || 'text') as SourceType,
     };
@@ -246,10 +257,13 @@ export class HawkDB {
       locked: r.locked === 1,
       correctionCount,
       baseReliability: base,
+      sessionId: r.session_id ?? null,
+      createdAt: Number(r.created_at ?? Date.now()),
+      updatedAt: Number(r.updated_at ?? Date.now()),
     };
   }
 
-  async store(entry: Omit<MemoryEntry, 'accessCount' | 'lastAccessedAt'>): Promise<void> {
+  async store(entry: Omit<MemoryEntry, 'accessCount' | 'lastAccessedAt'>, sessionId?: string): Promise<void> {
     if (!this.table) await this.init();
     const now = Date.now();
     const correctionHistory = entry.correctionHistory ?? [];
@@ -271,6 +285,8 @@ export class HawkDB {
       last_verified_at: null,
       locked: entry.locked ?? false,
       correction_history: JSON.stringify(correctionHistory),
+      session_id: sessionId ?? null,
+      updated_at: now,
       metadata: JSON.stringify(entry.metadata || {}),
       source_type: entry.source_type || 'text',
     });
@@ -415,6 +431,9 @@ export class HawkDB {
           correctionHistory: typeof r.correction_history === 'string'
             ? JSON.parse(r.correction_history || '[]')
             : (r.correction_history || []),
+          sessionId: r.session_id ?? null,
+          createdAt: Number(r.created_at ?? Date.now()),
+          updatedAt: Number(r.updated_at ?? Date.now()),
           metadata: JSON.parse(r.metadata || '{}'),
           source_type: (r.source_type || 'text') as SourceType,
         });
@@ -491,6 +510,71 @@ export class HawkDB {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * 更新记忆文本（用于 entity merge 或用户编辑）
+   * 更新 updatedAt，reliability 不变
+   */
+  async update(id: string, updates: { text?: string; category?: string; importance?: number }): Promise<boolean> {
+    if (!this.table) await this.init();
+    try {
+      const setClause: string[] = [];
+      const values: any[] = [];
+      if (updates.text !== undefined) { setClause.push('text = ?'); values.push(updates.text); }
+      if (updates.category !== undefined) { setClause.push('category = ?'); values.push(updates.category); }
+      if (updates.importance !== undefined) { setClause.push('importance = ?'); values.push(updates.importance); }
+      setClause.push('updated_at = ?');
+      values.push(BigInt(Date.now()));
+      values.push(id);
+      await this.table.query().where(`id = '${id.replace(/'/g, "''")}'`).toArray();
+      // LanceDB doesn't support direct UPDATE SET, use delete + re-insert pattern
+      const existing = await this.getById(id);
+      if (!existing) return false;
+      await this.table.delete(`id = '${id.replace(/'/g, "''")}'`);
+      await this.store({ ...existing, ...updates, vector: existing.vector });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 查找与给定文本相似的 entity 记忆（用于 dedup）
+   * 使用关键词 Jaccard 相似度，阈值 ENTITY_DEDUP_THRESHOLD
+   */
+  async findSimilarEntity(text: string, excludeId?: string): Promise<MemoryEntry | null> {
+    const all = await this.getAllMemories();
+    const keywords = this._extractKeywords(text);
+    let best: { m: MemoryEntry; score: number } | null = null;
+
+    for (const m of all) {
+      if (m.category !== 'entity') continue;
+      if (excludeId && m.id === excludeId) continue;
+      const memKeywords = this._extractKeywords(m.text);
+      const overlap = keywords.filter(k => memKeywords.includes(k)).length;
+      const union = new Set([...keywords, ...memKeywords]).size;
+      const score = union > 0 ? overlap / union : 0;
+      if (!best || score > best.score) {
+        best = { m, score };
+      }
+    }
+
+    return best && best.score >= ENTITY_DEDUP_THRESHOLD ? best.m : null;
+  }
+
+  private _extractKeywords(text: string): string[] {
+    const stopWords = new Set(['的', '了', '是', '在', '和', '也', '有', '就', '不', '我', '你', '他', '她', '它', '们', '这', '那', '个', '与', '或', '被', '为', '上', '下', '来', '去']);
+    const words: string[] = [];
+    for (let i = 0; i < text.length - 1; i++) {
+      const w2 = text.slice(i, i + 2);
+      if (!stopWords.has(w2)) words.push(w2);
+    }
+    for (let i = 0; i < text.length - 2; i++) {
+      const w3 = text.slice(i, i + 3);
+      if (!stopWords.has(w3)) words.push(w3);
+    }
+    return [...new Set(words)];
   }
 
   /**
