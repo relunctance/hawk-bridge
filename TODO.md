@@ -386,3 +386,236 @@ hawk_bridge.add_memory(text: "...", category: "fact", tenant_id: "self")
 | Tenant Learnings | 租户私有 | tenant_id 隔离 |
 | Team Learnings | 租户内共享 | team_id 隔离 |
 | Global Learnings | 厂商维护 | 所有租户可见 |
+
+---
+
+## 🏢 企业级 / 生产级能力补全（v2.0+）
+
+> hawk-bridge 当前定位：个人开发工具。要往企业级走，需要以下能力。
+
+### 当前定位 vs 企业级要求
+
+| 维度 | 当前状态 | 企业级要求 | 优先级 |
+|------|----------|----------|--------|
+| 数据可靠性 | 单 LanceDB，无灾备 | 多副本 + 定期快照 + 异地容灾 | 🔴 P0 |
+| 崩溃恢复 | 无 WAL，可能数据损坏 | ACID + WAL + 幂等写入 | 🔴 P0 |
+| 安全隔离 | 无多租户，所有 agent 共用 DB | 租户级加密 + RBAC 访问控制 | 🔴 P0 |
+| 敏感数据 | 明文存储 | 静态加密（BYOK）+ 字段级加密 | 🔴 P0 |
+| 可观测性 | 无 metrics/tracing | OpenTelemetry + Prometheus + Grafana | 🔴 P0 |
+| 水平扩展 | 单 LanceDB 实例 | 分布式向量库（Milvus/Pinecone） | 🔴 P0 |
+| 冷热分层 | 全部存 LanceDB | 热数据向量库 + 冷数据对象存储 | 🟡 P1 |
+| 操作工具 | 无 | backup / restore / migration / upgrade | 🟡 P1 |
+| SLA 保障 | 无 | 99.9%+ 可用承诺 + SLO 监控 | 🟡 P1 |
+
+---
+
+### E-P0-1: 数据可靠性（多副本 + 快照）
+
+**目标**：单机崩溃不丢数据
+
+**实现**：
+```yaml
+# config.yaml
+hawk:
+  storage:
+    replication: 3           # 3 副本
+    snapshot_interval: 1h    # 每小时快照
+    backup_destination: s3://hawk-backup/
+    retention: 30d            # 快照保留 30 天
+```
+
+**验收标准**：
+- 单机硬盘损坏 → 自动从副本恢复，数据零丢失
+- 可恢复到任意时间点（within 快照间隔）
+
+---
+
+### E-P0-2: 崩溃恢复（WAL + 幂等写入）
+
+**目标**：进程崩溃不损坏数据，重启后自动恢复
+
+**实现**：
+- 每次写入先写 WAL（Write-Ahead Log）
+- WAL 完整后才能提交
+- 重启时重放 WAL，恢复到一致状态
+- 所有写入操作幂等（相同输入不重复写入）
+
+**验收标准**：
+- 进程 kill -9 → 重启后数据完整
+- 写入 1000 条，断电 → 重启后数据一致
+
+---
+
+### E-P0-3: 多租户安全隔离（RBAC）
+
+**目标**：不同租户的记忆完全隔离，不可跨租户访问
+
+**实现**：
+```typescript
+interface Tenant {
+  id: string;           // 租户唯一标识
+  name: string;
+  rbac_policy: RBACPolicy;
+  encryption_key: string;  // BYOK，租户自己管理
+}
+
+interface RBACPolicy {
+  can_read: string[];   // 可读的记忆 categories
+  can_write: string[];   // 可写的记忆 categories
+  can_delete: string[];  // 可删除的记忆 categories
+  can_share: string[];   // 可共享的记忆 categories
+}
+```
+
+**验收标准**：
+- Tenant A 的记忆对 Tenant B 完全不可见
+- 即使知道记忆 ID 也无法访问
+- Admin 无法读取普通租户的私有记忆
+
+---
+
+### E-P0-4: 敏感数据静态加密
+
+**目标**：记忆内容加密存储，密钥由租户自己管理
+
+**实现**：
+- BYOK（Bring Your Own Key）：租户提供加密密钥
+- 字段级加密：importance、content、category 分别加密
+- API 访问时解密，内存中明文使用
+
+**验收标准**：
+- 即使 DBA 直接查 DB 也无法读懂记忆内容
+- 密钥轮换（key rotation）不丢数据
+
+---
+
+### E-P0-5: 可观测性（OpenTelemetry）
+
+**目标**：完整的 metrics / traces / logs，出了问题可排查
+
+**实现**：
+```typescript
+// 埋点指标
+- hawk_memory_total{tenant, tier}        // 各 tier 记忆数量
+- hawk_recall_latency_seconds{tenant}    // recall 延迟
+- hawk_capture_total{tenant, category}  // capture 数量
+- hawk_recall_hit_rate{tenant}           // recall 命中率
+- hawk_importance_score{tenant, tier}    // 各 tier 平均 importance
+
+// traces
+- trace_id: 每条 recall 请求有唯一 trace
+- span: capture / embed / search / inject 各阶段耗时
+```
+
+**验收标准**：
+- Grafana 面板能看到所有指标
+- trace ID 可串联 recall 全流程
+- 告警规则：recall 延迟 > 500ms 触发告警
+
+---
+
+### E-P0-6: 水平扩展（分布式向量库）
+
+**目标**：单实例不够用时，水平扩容
+
+**实现**：
+```yaml
+# 从 LanceDB 迁移到 Milvus
+hawk:
+  vector_db:
+    provider: milvus
+    endpoints:
+      - milvus-node-1:19530
+      - milvus-node-2:19530
+      - milvus-node-3:19530
+    collection_shards: 6
+```
+
+**验收标准**：
+- 1000 万记忆时，recall 延迟 < 100ms
+- 扩容不停服
+- 向量搜索结果与单机一致
+
+---
+
+### E-P1-1: 冷热分层存储
+
+**目标**：久远/低价值记忆迁移到对象存储，省成本
+
+**实现**：
+```typescript
+// 热数据：Tier.PERMANENT + Tier.STABLE → LanceDB（SSD）
+// 冷数据：Tier.DECAY + Tier.ARCHIVED → S3/OSS（对象存储）
+
+// 自动分层
+if (memory.tier === TIER_DECAY && last_accessed < now - 7d) {
+  await migrateToColdStorage(memory);  // 压缩后存 S3
+}
+
+// recall 时自动从冷存储捞回热层
+if (isInColdStorage(memory)) {
+  memory = await warmUp(memory);  // 解压，加载到 LanceDB
+}
+```
+
+**验收标准**：
+- 冷数据 recall 延迟 < 2s（可接受）
+- 存储成本下降 70%
+
+---
+
+### E-P1-2: 操作工具链
+
+**目标**：生产环境必备的运维工具
+
+**命令集**：
+```bash
+# 备份
+hawk-admin backup --tenant {id} --destination s3://...
+
+# 恢复
+hawk-admin restore --tenant {id} --from s3://.../backup-2026-04-12.tar.gz
+
+# 迁移
+hawk-admin migrate --from local --to milvus --tenant {id}
+
+# 升级
+hawk-admin upgrade --from 1.x --to 2.0 --backup
+
+# 健康检查
+hawk-admin health --tenant {id}
+```
+
+**验收标准**：
+- 备份/恢复 RTO < 1 小时
+- 升级不停服（蓝绿部署）
+
+---
+
+### E-P1-3: SLA / SLO 保障
+
+**目标**：企业级可用性承诺
+
+**SLO 定义**：
+| 指标 | SLO |
+|------|-----|
+| recall 可用性 | 99.9% / 月 |
+| recall P99 延迟 | < 500ms |
+| capture 成功率 | 99.5% / 月 |
+| 数据持久性 | 99.9999% / 年 |
+
+**验收标准**：
+- SLO 监控面板可见
+- 违反 SLO 自动告警
+- 有 credit 补偿机制
+
+---
+
+## 企业级 vs 个人版路线选择
+
+| 方向 | 定位 | 复杂度 |
+|------|------|--------|
+| 当前路线（v1.x） | 个人开发工具 | 低 |
+| 企业级路线（v2.x） | 多租户 SaaS / 企业内部署 | 极高 |
+
+**建议**：hawk-bridge 当前聚焦 v1.x 闭环能力，企业级需求作为独立路线图。

@@ -2861,6 +2861,7 @@ var RELIABILITY_PENALTY_CORRECT = parseFloat(process.env.HAWK_RELIABILITY_PENALT
 var RELIABILITY_THRESHOLD_HIGH = parseFloat(process.env.HAWK_RELIABILITY_THRESHOLD_HIGH || "0.7");
 var RELIABILITY_THRESHOLD_MEDIUM = parseFloat(process.env.HAWK_RELIABILITY_THRESHOLD_MEDIUM || "0.4");
 var FORGET_GRACE_DAYS = parseInt(process.env.HAWK_FORGET_GRACE_DAYS || "30", 10);
+var DRIFT_THRESHOLD_DAYS = parseInt(process.env.HAWK_DRIFT_THRESHOLD_DAYS || "7", 10);
 var RECENCY_GRACE_DAYS = parseInt(process.env.HAWK_RECENCY_GRACE_DAYS || "30", 10);
 var RECENCY_DECAY_RATE = parseFloat(process.env.HAWK_RECENCY_DECAY_RATE || "0.95");
 var RECENCY_FACTOR_FLOOR = parseFloat(process.env.HAWK_RECENCY_FACTOR_FLOOR || "0.3");
@@ -2874,6 +2875,14 @@ var COLD_START_DECAY_MULTIPLIER = parseFloat(process.env.HAWK_COLD_START_DECAY_M
 var CONFLICT_SIMILARITY_THRESHOLD = parseFloat(process.env.HAWK_CONFLICT_THRESHOLD || "0.6");
 var ENTITY_DEDUP_THRESHOLD = parseFloat(process.env.HAWK_ENTITY_DEDUP_THRESHOLD || "0.75");
 var ENTITY_DEDUP_SESSION_WINDOW = parseInt(process.env.HAWK_ENTITY_DEDUP_SESSION_WINDOW || "10", 10);
+var TIER_PERMANENT_MIN_SCORE = parseFloat(process.env.HAWK_TIER_PERMANENT_MIN_SCORE || "0.85");
+var TIER_STABLE_MIN_SCORE = parseFloat(process.env.HAWK_TIER_STABLE_MIN_SCORE || "0.6");
+var TIER_DECAY_MIN_SCORE = parseFloat(process.env.HAWK_TIER_DECAY_MIN_SCORE || "0.3");
+var RECENCY_HALF_LIFE_MS = parseFloat(process.env.HAWK_RECENCY_HALF_LIFE_MS || String(30 * 24 * 60 * 60 * 1e3));
+var WEIGHT_BASE = parseFloat(process.env.HAWK_WEIGHT_BASE || "0.4");
+var WEIGHT_USEFULNESS = parseFloat(process.env.HAWK_WEIGHT_USEFULNESS || "0.3");
+var WEIGHT_RECENCY = parseFloat(process.env.HAWK_WEIGHT_RECENCY || "0.2");
+var ACCESS_BONUS_MAX = parseFloat(process.env.HAWK_ACCESS_BONUS_MAX || "0.1");
 
 // src/config/env.ts
 function getEnvOverrides() {
@@ -3127,7 +3136,14 @@ var LanceDBAdapter = class {
           access_count: 0,
           last_accessed_at: Date.now(),
           metadata: "{}",
-          source_type: "text"
+          source_type: "text",
+          name: "",
+          description: "",
+          drift_note: null,
+          drift_detected_at: null,
+          last_used_at: 0,
+          usefulness_score: 0.5,
+          recall_count: 0
         });
         const table = makeArrowTable([sampleRow]);
         this.table = await this.db.createTable(TABLE_NAME, table);
@@ -3149,7 +3165,14 @@ var LanceDBAdapter = class {
             { name: "updated_at", type: { type: "int64" } },
             { name: "scope_mem", type: { type: "utf8" } },
             { name: "importance_override", type: { type: "float" } },
-            { name: "cold_start_until", type: { type: "int64" } }
+            { name: "cold_start_until", type: { type: "int64" } },
+            { name: "name", type: { type: "utf8" } },
+            { name: "description", type: { type: "utf8" } },
+            { name: "drift_note", type: { type: "utf8" } },
+            { name: "drift_detected_at", type: { type: "int64" } },
+            { name: "last_used_at", type: { type: "int64" } },
+            { name: "usefulness_score", type: { type: "float" } },
+            { name: "recall_count", type: { type: "int32" } }
           ]);
         } catch (_) {
         }
@@ -3189,7 +3212,12 @@ var LanceDBAdapter = class {
       importance_override: data.importance_override,
       cold_start_until: data.cold_start_until !== null ? BigInt(data.cold_start_until) : null,
       metadata: data.metadata,
-      source_type: data.source_type
+      source_type: data.source_type,
+      drift_note: data.drift_note ?? null,
+      drift_detected_at: data.drift_detected_at !== null ? BigInt(data.drift_detected_at) : null,
+      last_used_at: data.last_used_at != null ? BigInt(data.last_used_at) : null,
+      usefulness_score: data.usefulness_score ?? null,
+      recall_count: data.recall_count ?? 0
     };
   }
   computeEffectiveReliability(base, verificationCount, lastVerifiedAt, correctionCount) {
@@ -3205,6 +3233,80 @@ var LanceDBAdapter = class {
     const correctionPenalty = Math.pow(CORRECTION_PENALTY_MULTIPLIER, correctionCount);
     const effective = base * recencyFactor * confirmBoost * correctionPenalty;
     return Math.max(0, Math.min(1, effective));
+  }
+  /**
+   * Clamp helper.
+   */
+  clamp(val, min, max) {
+    return Math.max(min, Math.min(max, val));
+  }
+  /**
+   * Value-driven importance score — single source of truth for memory "health".
+   * Combines base importance, recency, usefulness, and recall frequency.
+   *
+   * score = base*0.4 + usefulness*0.3 + recency*0.2 + accessBonus
+   * where accessBonus = min(log1p(recall_count)*0.05, 0.1)
+   */
+  computeEffectiveImportance(memory) {
+    const {
+      importance,
+      last_used_at,
+      usefulness_score,
+      recall_count
+    } = memory;
+    const base = importance ?? 0.5;
+    const recency = last_used_at ? Math.exp(-(Date.now() - last_used_at) / (RECENCY_HALF_LIFE_MS / Math.LN2)) : 0;
+    const usefulness = usefulness_score ?? 0.5;
+    const accessBonus = Math.min(Math.log1p(recall_count ?? 0) * 0.05, ACCESS_BONUS_MAX);
+    const score = base * WEIGHT_BASE + usefulness * WEIGHT_USEFULNESS + recency * WEIGHT_RECENCY + accessBonus;
+    return this.clamp(score, 0, 1);
+  }
+  /**
+   * Recompute the tier for a memory based on its effective importance score.
+   */
+  recomputeTier(memory) {
+    const score = this.computeEffectiveImportance(memory);
+    if (score >= TIER_PERMANENT_MIN_SCORE && (memory.recall_count ?? 0) >= 3) {
+      return "permanent";
+    }
+    if (score >= TIER_STABLE_MIN_SCORE) {
+      return "stable";
+    }
+    if (score >= TIER_DECAY_MIN_SCORE) {
+      return "decay";
+    }
+    return "archived";
+  }
+  /**
+   * Run tier maintenance at startup: recompute effective importance and tier
+   * for all memories. Tier changes are persisted back to the DB.
+   * Called once per startup (not on every access) for performance.
+   */
+  async runTierMaintenance() {
+    if (!this.table) await this.init();
+    const memories = await this.getAllMemories();
+    let updated = 0;
+    for (const memory of memories) {
+      if (memory.locked) continue;
+      const newScore = this.computeEffectiveImportance(memory);
+      const oldTier = memory.scope;
+      const newTier = this.recomputeTier(memory);
+      if (oldTier !== newTier || Math.abs(memory.importance - newScore) > 1e-3) {
+        try {
+          await this.table.update(
+            {
+              scope: newTier,
+              importance: String(newScore),
+              updated_at: String(Date.now())
+            },
+            { where: `id = '${memory.id.replace(/'/g, "''")}'` }
+          );
+          updated++;
+        } catch {
+        }
+      }
+    }
+    return { updated };
   }
   _rowToMemory(r) {
     const correctionHistory = typeof r.correction_history === "string" ? JSON.parse(r.correction_history || "[]") : r.correction_history || [];
@@ -3227,11 +3329,18 @@ var LanceDBAdapter = class {
       sessionId: r.session_id ?? null,
       createdAt: Number(r.created_at ?? Date.now()),
       updatedAt: Number(r.updated_at ?? Date.now()),
-      scope: r.scope_mem ?? "personal",
+      scope: r.scope ?? r.scope_mem ?? "personal",
       importanceOverride: r.importance_override ?? 1,
       coldStartUntil: r.cold_start_until !== null ? Number(r.cold_start_until) : null,
       metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata || "{}") : r.metadata || {},
-      source_type: r.source_type || "text"
+      source_type: r.source_type || "text",
+      name: r.name ?? "",
+      description: r.description ?? "",
+      driftNote: r.drift_note ?? null,
+      driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
+      last_used_at: Number(r.last_used_at ?? 0),
+      usefulness_score: r.usefulness_score ?? 0.5,
+      recall_count: r.recall_count ?? 0
     };
   }
   _rowToRetrieved(r, score, matchReason) {
@@ -3259,10 +3368,13 @@ var LanceDBAdapter = class {
       sessionId: r.session_id ?? null,
       createdAt: Number(r.created_at ?? Date.now()),
       updatedAt: Number(r.updated_at ?? Date.now()),
-      scope: r.scope_mem ?? "personal",
+      scope: r.scope ?? r.scope_mem ?? "personal",
       importanceOverride: r.importance_override ?? 1,
       coldStartUntil: r.cold_start_until !== null ? Number(r.cold_start_until) : null,
-      matchReason
+      matchReason,
+      last_used_at: r.last_used_at !== null ? Number(r.last_used_at) : null,
+      usefulness_score: r.usefulness_score ?? null,
+      recall_count: r.recall_count ?? 0
     };
   }
   // ─── MemoryStore Interface Implementation ───────────────────────────────────
@@ -3270,11 +3382,13 @@ var LanceDBAdapter = class {
     if (!this.table) await this.init();
     const now = Date.now();
     const correctionHistory = entry.correctionHistory ?? [];
-    const scope2 = entry.scope ?? "personal";
+    const scope2 = entry.scope_mem ?? entry.scope ?? "personal";
     const coldStartUntil = entry.coldStartUntil ?? now + COLD_START_GRACE_DAYS * 864e5;
     const row = this._makeRow({
       id: entry.id,
       text: entry.text,
+      name: entry.name || "",
+      description: entry.description || "",
       vector: entry.vector,
       category: entry.category,
       scope: entry.scope ?? "global",
@@ -3296,7 +3410,12 @@ var LanceDBAdapter = class {
       importance_override: entry.importanceOverride ?? 1,
       cold_start_until: coldStartUntil,
       metadata: JSON.stringify(entry.metadata || {}),
-      source_type: entry.source_type || "text"
+      source_type: entry.source_type || "text",
+      drift_note: entry.driftNote || null,
+      drift_detected_at: entry.driftDetectedAt || null,
+      last_used_at: entry.last_used_at ?? null,
+      usefulness_score: entry.usefulness_score ?? null,
+      recall_count: entry.recall_count ?? 0
     });
     await this.table.add([row]);
   }
@@ -3309,12 +3428,16 @@ var LanceDBAdapter = class {
       const updated = {
         ...existing,
         text: fields.text ?? existing.text,
+        name: fields.name ?? existing.name,
+        description: fields.description ?? existing.description,
         category: fields.category ?? existing.category,
         scope: fields.scope ?? existing.scope,
         importance: fields.importance ?? existing.importance,
         importanceOverride: fields.importanceOverride ?? existing.importanceOverride,
         updatedAt: Date.now(),
-        vector: existing.vector
+        vector: existing.vector,
+        driftNote: fields.driftNote ?? existing.driftNote,
+        driftDetectedAt: fields.driftDetectedAt ?? existing.driftDetectedAt
       };
       await this.store(updated, existing.sessionId ?? void 0);
       return true;
@@ -3455,8 +3578,15 @@ var LanceDBAdapter = class {
   async incrementAccess(id) {
     try {
       const current = await this._getAccessCount(id);
+      const now = Date.now();
       await this.table.update(
-        { access_count: String(current + 1), last_accessed_at: String(Date.now()) },
+        {
+          access_count: String(current + 1),
+          last_accessed_at: String(now),
+          // Value-driven: track recall for tier computation
+          last_used_at: String(now),
+          recall_count: String(current + 1)
+        },
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch {
@@ -3465,16 +3595,6 @@ var LanceDBAdapter = class {
   async decay() {
     if (!this.table) await this.init();
     const ARCHIVE_TTL_DAYS = 180;
-    const IMPORTANCE_THRESHOLD_LOW = 0.3;
-    const IMPORTANCE_THRESHOLD_HIGH = 0.8;
-    const LAYER_THRESHOLDS = { working: 0, short: 3, long: 10, archive: 100 };
-    const LAYERS = ["working", "short", "long", "archive"];
-    function computeLayer(importance, accessCount) {
-      if (accessCount >= LAYER_THRESHOLDS.long || importance >= IMPORTANCE_THRESHOLD_HIGH) return "long";
-      if (accessCount >= LAYER_THRESHOLDS.short || importance >= IMPORTANCE_THRESHOLD_HIGH * 0.75) return "short";
-      if (importance < IMPORTANCE_THRESHOLD_LOW) return "archive";
-      return "working";
-    }
     function getDecayMultiplier(reliability) {
       if (reliability >= 0.7) return DECAY_RATE_HIGH_RELIABILITY;
       if (reliability >= 0.4) return DECAY_RATE_MEDIUM_RELIABILITY;
@@ -3504,7 +3624,7 @@ var LanceDBAdapter = class {
         continue;
       }
       const daysIdle = Math.max(0, Math.floor((now - m.lastAccessedAt) / 864e5));
-      if (m.scope === "archive") {
+      if (m.scope === "archived" || m.scope === "archive") {
         if (daysIdle > ARCHIVE_TTL_DAYS) {
           try {
             await this.table.delete(`id = '${m.id.replace(/'/g, "''")}'`);
@@ -3518,17 +3638,18 @@ var LanceDBAdapter = class {
         const decayMultiplier = getDecayMultiplier(m.reliability);
         const effectiveDays = Math.ceil(daysIdle * decayMultiplier);
         const newImportance = m.importance * Math.pow(0.95, effectiveDays);
-        const newLayer = computeLayer(newImportance, m.accessCount);
-        if (LAYERS.indexOf(newLayer) < LAYERS.indexOf(m.scope)) {
+        const prospectiveMem = { ...m, importance: newImportance };
+        const newTier = this.recomputeTier(prospectiveMem);
+        if (newTier !== m.scope) {
           try {
             await this.table.update(
-              { importance: String(newImportance), scope: newLayer },
+              { importance: String(newImportance), scope: newTier, updated_at: String(Date.now()) },
               { where: `id = '${m.id.replace(/'/g, "''")}'` }
             );
             updated++;
           } catch {
           }
-        } else if (newImportance !== m.importance) {
+        } else if (Math.abs(newImportance - m.importance) > 1e-3) {
           try {
             await this.table.update(
               { importance: String(newImportance) },
@@ -3634,7 +3755,14 @@ var LanceDBAdapter = class {
           createdAt: Number(r.created_at ?? Date.now()),
           updatedAt: Number(r.updated_at ?? Date.now()),
           metadata: JSON.parse(r.metadata || "{}"),
-          source_type: r.source_type || "text"
+          source_type: r.source_type || "text",
+          name: r.name ?? "",
+          description: r.description ?? "",
+          driftNote: r.drift_note ?? null,
+          driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
+          last_used_at: Number(r.last_used_at ?? 0),
+          usefulness_score: r.usefulness_score ?? 0.5,
+          recall_count: r.recall_count ?? 0
         });
       }
     } catch {
@@ -3723,6 +3851,66 @@ var LanceDBAdapter = class {
   async _getAccessCount(id) {
     const rows = await this.table.query().where(`id = '${id.replace(/'/g, "''")}'`).limit(1).toArray();
     return rows.length ? Number(rows[0].access_count || 0) : 0;
+  }
+  // ─── Feedback Loop ─────────────────────────────────────────────────────────────
+  /** Clamp a usefulness score change based on rating */
+  _clampUsefulness(current, rating) {
+    const base = current ?? 0.5;
+    if (rating === "neutral") return base;
+    if (rating === "helpful") return Math.min(1, base + 0.1);
+    return Math.max(0, base - 0.2);
+  }
+  async rateMemory(id, rating, _sessionId) {
+    if (!this.table) await this.init();
+    const mem = await this.getById(id);
+    if (!mem) return;
+    const now = Date.now();
+    const newUsefulness = this._clampUsefulness(mem.usefulness_score, rating);
+    const newRecallCount = (mem.recall_count ?? 0) + 1;
+    try {
+      await this.table.update(
+        {
+          last_used_at: String(now),
+          usefulness_score: String(newUsefulness),
+          recall_count: String(newRecallCount),
+          updated_at: String(now)
+        },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
+    } catch (e) {
+      console.warn("[hawk-bridge] rateMemory update failed:", e);
+      return;
+    }
+    if (rating === "harmful") {
+      await this.demoteMemory(id);
+    } else if (rating === "helpful") {
+      await this.incrementImportance(id, 0.05);
+    }
+  }
+  async demoteMemory(id) {
+    if (!this.table) await this.init();
+    try {
+      await this.table.update(
+        { scope: "decay", scope_mem: "decay" },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
+    } catch (e) {
+      console.warn("[hawk-bridge] demoteMemory failed:", e);
+    }
+  }
+  async incrementImportance(id, delta) {
+    if (!this.table) await this.init();
+    const mem = await this.getById(id);
+    if (!mem) return;
+    const newImportance = Math.min(1, mem.importance + delta);
+    try {
+      await this.table.update(
+        { importance: String(newImportance), updated_at: String(Date.now()) },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
+    } catch (e) {
+      console.warn("[hawk-bridge] incrementImportance failed:", e);
+    }
   }
 };
 
@@ -4171,6 +4359,54 @@ async function getRetriever() {
   }
   return retriever;
 }
+var SELECT_MEMORIES_SYSTEM_PROMPT = `You are selecting memories that will be useful for answering the user's query.
+You will be given a list of memory files with their names, descriptions, and categories.
+Return a JSON array of the memory IDs that will clearly be helpful (up to 8).
+Only include memories you are certain will be relevant. If none, return [].`;
+async function dualSelect(query, db2, topN = 8) {
+  try {
+    const all = await db2.getAllMemories();
+    if (!all.length) return [];
+    const manifest = all.filter((m) => m.deletedAt === null && m.name).map((m) => ({
+      id: m.id,
+      name: m.name,
+      description: m.description || m.text.slice(0, 200),
+      category: m.category
+    }));
+    if (!manifest.length) return [];
+    const config = await getConfig();
+    const body = manifest.map((m, i) => `[${i}] id=${m.id} name="${m.name}" category=${m.category} desc="${m.description.slice(0, 150)}"`).join("\n");
+    const response = await fetch(`${config.llm.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${config.llm.apiKey}`
+      },
+      body: JSON.stringify({
+        model: config.llm.model,
+        messages: [
+          { role: "system", content: SELECT_MEMORIES_SYSTEM_PROMPT },
+          { role: "user", content: `Query: ${query}
+
+Memories:
+${body}` }
+        ],
+        temperature: 0.1,
+        max_tokens: 500
+      })
+    });
+    if (!response.ok) return [];
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || "";
+    const match = content.match(/\[[\s\S]*?\]/);
+    if (!match) return [];
+    const ids = JSON.parse(match[0]);
+    return ids.slice(0, topN);
+  } catch (e) {
+    console.warn("[hawk-recall] dualSelect failed:", e);
+    return [];
+  }
+}
 var FORGET_PATTERNS = [/^忘掉\s*(.+)/, /^忘记\s*(.+)/, /^别记得\s*(.+)/, /^不用记\s*(.+)/, /^forget\s+(.+)/i, /^delete\s+(.+)/i];
 var CORRECT_PATTERN = /^(?:纠正|correct)\s*[:：]\s*(.+)/i;
 var LOCK_PATTERNS = [/^锁定\s*(.+)/, /^lock\s+(.+)/i];
@@ -4186,6 +4422,7 @@ var SCOPE_PATTERN = /^hawk\s*(?:scope|作用域)\s*(\d+)\s+(personal|team|projec
 var CONFLICT_PATTERN = /^hawk\s*冲突\s*(\d+)$/i;
 var EXPORT_PATTERN = /^hawk\s*导出(?:\s+(.+?))?$/i;
 var RESTORE_PATTERN = /^hawk\s*恢复\s*(.+)$/i;
+var DRIFT_PATTERN = /^hawk\s*(?:drift|过期|陈旧)$/i;
 var SEARCH_HISTORY_PATTERN = /^hawk\s*搜索历史$/i;
 var CLEAR_PATTERN = /^hawk\s*清空$/i;
 var BATCHLOCK_PATTERN = /^hawk\s*锁定\s*all(?:\s+(.+))?$/i;
@@ -4228,6 +4465,8 @@ function formatMemoryRow(m, idx) {
 function formatRecallResults(memories, emoji) {
   if (!memories.length) return "";
   const lines = [`${emoji} ** hawk \u8BB0\u5FC6\u68C0\u7D22 **`];
+  const now = Date.now();
+  const DRIFT_MS = DRIFT_THRESHOLD_DAYS * 24 * 60 * 60 * 1e3;
   for (const m of memories) {
     const lock = m.locked ? " \u{1F512}" : "";
     const imp = m.importanceOverride > 1.5 ? " \u2B50" : "";
@@ -4235,7 +4474,9 @@ function formatRecallResults(memories, emoji) {
     const score = `(${(m.score * 100).toFixed(0)}%\u76F8\u5173)`;
     const reason = m.matchReason ? `
    \u2192 ${m.matchReason}` : "";
-    lines.push(`${m.reliabilityLabel} ${score}${lock}${imp}${corr} [${m.category}] ${m.text}${reason}`);
+    const daysSince = m.lastVerifiedAt ? (now - m.lastVerifiedAt) / 864e5 : Infinity;
+    const drift = m.reliability >= 0.5 && daysSince > DRIFT_THRESHOLD_DAYS ? " \u{1F550}" : "";
+    lines.push(`${m.reliabilityLabel} ${score}${lock}${imp}${corr}${drift} [${m.category}] ${m.text}${reason}`);
   }
   return lines.join("\n");
 }
@@ -4633,6 +4874,37 @@ ${injectEmoji} \u274C \u5BFC\u51FA\u5931\u8D25: ${err.message}
       }
       return;
     }
+    if (DRIFT_PATTERN.test(trimmed)) {
+      const all = await db2.getAllMemories(getAgentId(ctx));
+      if (!all.length) {
+        event.messages.push(`
+${injectEmoji} \u8FD8\u6CA1\u6709\u4EFB\u4F55\u8BB0\u5FC6\u3002
+`);
+        return;
+      }
+      const now = Date.now();
+      const DRIFT_MS = DRIFT_THRESHOLD_DAYS * 24 * 60 * 60 * 1e3;
+      const stale = all.filter((m2) => m2.deletedAt === null && m2.reliability >= 0.5 && (!m2.lastVerifiedAt || now - m2.lastVerifiedAt > DRIFT_MS));
+      const lines = [`${injectEmoji} ** hawk \u8FC7\u671F\u68C0\u6D4B ** (${DRIFT_THRESHOLD_DAYS}\u5929\u672A\u9A8C\u8BC1)`];
+      if (!stale.length) {
+        lines.push("\u2705 \u6240\u6709\u8BB0\u5FC6\u90FD\u662F\u65B0\u9C9C\u7684");
+      } else {
+        stale.sort((a, b) => {
+          const aDays = a.lastVerifiedAt ? (now - a.lastVerifiedAt) / 864e5 : Infinity;
+          const bDays = b.lastVerifiedAt ? (now - b.lastVerifiedAt) / 864e5 : Infinity;
+          return bDays - aDays;
+        });
+        for (const m2 of stale.slice(0, 20)) {
+          const days = m2.lastVerifiedAt ? ((now - m2.lastVerifiedAt) / 864e5).toFixed(0) : "\u4ECE\u672A";
+          lines.push(`\u{1F550} [${days}\u5929\u672A\u9A8C\u8BC1] [${m2.category}] ${m2.text.slice(0, 80)}${m2.text.length > 80 ? "..." : ""}`);
+        }
+        if (stale.length > 20) lines.push(`...\u8FD8\u6709 ${stale.length - 20} \u6761`);
+        lines.push(`
+\u63D0\u793A: \u4F7F\u7528 hawk\u786E\u8BA4 N \u5BF9 \u6765\u9A8C\u8BC1\u8BB0\u5FC6\uFF0C\u6216 hawk\u5426\u8BA4 N \u6765\u6807\u8BB0\u4E0D\u53EF\u9760`);
+      }
+      event.messages.push("\n" + lines.join("\n") + "\n");
+      return;
+    }
     var m = trimmed.match(RESTORE_PATTERN);
     if (m) {
       const filepath = m[1].trim();
@@ -4864,8 +5136,8 @@ ${injectEmoji} ** hawk \u8BB0\u5FC6\u5065\u5EB7\u8BC4\u5206 **
       const cacheSize = embedderInstance.cache?.size ?? 0;
       let bm25Size = 0;
       try {
-        const retriever2 = await getRetriever();
-        bm25Size = retriever2.corpus?.length ?? 0;
+        const retriever = await getRetriever();
+        bm25Size = retriever.corpus?.length ?? 0;
       } catch {
       }
       let dbSizeMB = 0;
@@ -5120,8 +5392,21 @@ ${injectEmoji} \u6CA1\u6709\u627E\u5230\u9700\u8981\u7EA0\u6B63\u7684\u8BB0\u5FC
         return;
       }
     }
-    const retriever = await getRetriever();
-    const memories = await retriever.search(trimmed, topK);
+    let memories = [];
+    const selectedIds = await dualSelect(trimmed, db2, topK * 2);
+    if (selectedIds.length > 0) {
+      const retriever = await getRetriever();
+      const allResults = await retriever.search(trimmed, topK * 3);
+      memories = allResults.filter((m2) => selectedIds.includes(m2.id));
+      if (memories.length < topK) {
+        const selectedSet = new Set(selectedIds);
+        const unselected = allResults.filter((m2) => !selectedSet.has(m2.id)).slice(0, topK - memories.length);
+        memories = [...memories, ...unselected];
+      }
+    } else {
+      const retriever = await getRetriever();
+      memories = await retriever.search(trimmed, topK);
+    }
     const useable = memories.filter((m2) => m2.score >= minScore || m2.reliability >= RELIABILITY_THRESHOLD_HIGH);
     recordSearch(trimmed, useable.length);
     if (!useable.length) {
@@ -5337,6 +5622,28 @@ function isValidChunk(text) {
   if (/^[^\w\u4e00-\u9fff]+$/.test(trimmed)) return false;
   return true;
 }
+var SKIP_PATTERNS = [
+  // Code patterns / file paths (derivable from reading code)
+  [/\b(function|class|const|let|var|import|export|interface|type)\s+\w+/g, "code_pattern"],
+  [/\b(file|path|directory|folder)\s+[:=]\s*['"`][\w./-]+['"`]/g, "file_path"],
+  [/`[^`]*\.(ts|js|py|go|rs|java|cpp|c|h|md|json|yaml|yml)`/g, "code_reference"],
+  // Git history / who-changed-what (use git log/blame instead)
+  [/\b(git|commit|branch|merge|PR|pull.request|checkout|rebase)\b/gi, "git_history"],
+  // Debug solutions / fix recipes (the fix is in the code, commit has context)
+  [/\b(fix|bug|issue|error|exception|crash|patch)\s+(was|is|to|:)/gi, "debug_solution"],
+  // Ephemeral task details
+  [/^(TODO|FIXME|HACK|XXX|NOTE|BUG|NB):/gm, "dev_note"],
+  // Already in CLAUDE.md files
+  [/\bCLAUDE\.(md|local\.md|rules)/gi, "already_documented"]
+];
+function shouldSkipChunk(text) {
+  for (const [pattern, label] of SKIP_PATTERNS) {
+    if (pattern.test(text)) {
+      return { skip: true, reason: label };
+    }
+  }
+  return { skip: false, reason: "" };
+}
 function truncate(text, maxLen = MAX_CHUNK_SIZE) {
   if (text.length <= maxLen) return text;
   return text.slice(0, maxLen).replace(/\s+\S*$/, "");
@@ -5498,6 +5805,11 @@ var captureHandler = async (event) => {
     for (const m of significant) {
       let text = m.text.trim();
       text = normalizeText(text);
+      const { skip, reason } = shouldSkipChunk(text);
+      if (skip) {
+        audit("skip", reason, text);
+        continue;
+      }
       if (!isValidChunk(text)) {
         audit("skip", "invalid_chunk", text);
         continue;
@@ -5644,6 +5956,10 @@ function generateId() {
 var handler_default2 = captureHandler;
 
 // src/index.ts
+async function rateMemory(memoryId, rating, sessionId) {
+  const store = await getMemoryStore();
+  await store.rateMemory(memoryId, rating, sessionId);
+}
 function register(api) {
   api.registerHook(["agent:bootstrap"], handler_default, {
     name: "hawk-recall",
@@ -5658,7 +5974,8 @@ var index_default = { register };
 export {
   index_default as default,
   handler_default2 as "hawk-capture",
-  handler_default as "hawk-recall"
+  handler_default as "hawk-recall",
+  rateMemory
 };
 /*! Bundled license information:
 

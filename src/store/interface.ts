@@ -30,4 +30,9 @@ export interface MemoryStore {
   // Maintenance
   decay(): Promise<{ updated: number; deleted: number }>;
   purgeForgotten(graceDays?: number): Promise<number>;
+
+  // Feedback loop
+  rateMemory(id: string, rating: 'helpful' | 'neutral' | 'harmful', sessionId?: string): Promise<void>;
+  demoteMemory(id: string): Promise<void>;
+  incrementImportance(id: string, delta: number): Promise<void>;
 }

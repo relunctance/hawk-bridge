@@ -114,7 +114,6 @@ export interface MemoryEntry {
   text: string;
   vector: number[];
   category: 'fact' | 'preference' | 'decision' | 'entity' | 'other';
-  scope: string;
   importance: number;
   timestamp: number;
   expiresAt: number;  // 0 = never expire
@@ -139,7 +138,7 @@ export interface MemoryEntry {
   /** 最后修改时间 */
   updatedAt: number;
   /** 记忆作用域：personal | team | project */
-  scope: 'personal' | 'team' | 'project';
+  scope: string;
   /** 用户手动指定的重要性倍数（覆盖 capture 时的 LLM 判断） */
   importanceOverride: number;
   /** 冷启动保护截止时间：此时间前 decay 免疫 */
@@ -153,11 +152,18 @@ export interface MemoryEntry {
   driftNote: string | null;
   /** When drift was last detected */
   driftDetectedAt: number | null;
+  /** Timestamp of last recall (feedback loop) */
+  last_used_at: number | null;
+  /** Usefulness score 0.0–1.0, set by user feedback */
+  usefulness_score: number | null;
+  /** How many times this memory was recalled */
+  recall_count: number;
 }
 
 export interface RetrievedMemory {
   id: string;
-  text: string;
+    text: string;
+  vector: number[];
   score: number;
   category: string;
   metadata: Record<string, unknown>;
@@ -182,13 +188,19 @@ export interface RetrievedMemory {
   /** 最后修改时间 */
   updatedAt: number;
   /** 记忆作用域 */
-  scope: 'personal' | 'team' | 'project';
+  scope: string;
   /** 用户指定的重要性倍数 */
   importanceOverride: number;
   /** 冷启动保护截止时间 */
   coldStartUntil: number | null;
   /** 命中原因（用于召回解释） */
   matchReason?: string;
+  /** Timestamp of last recall */
+  last_used_at: number | null;
+  /** Usefulness score 0.0–1.0 */
+  usefulness_score: number | null;
+  /** How many times this memory was recalled */
+  recall_count: number;
 }
 
 export interface ExtractionResult {

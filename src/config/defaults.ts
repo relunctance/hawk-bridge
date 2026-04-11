@@ -4,16 +4,20 @@ import type { HawkConfig } from '../types.js';
 
 export const DEFAULT_CONFIG: HawkConfig = {
   embedding: {
-    provider: 'jina',
+    // provider/apiKey/model are resolved by config.ts async getConfig()
+    // using OpenClaw zero-config discovery (minimax first, then legacy env vars)
+    provider: 'minimax',
     apiKey: '',
-    model: 'jina-embeddings-v5-small',
+    model: '',
     baseURL: '',
     dimensions: 1024,
   },
   llm: {
-    provider: 'groq',
+    // provider/apiKey/model are resolved by config.ts async getConfig()
+    // using OpenClaw zero-config discovery (minimax)
+    provider: 'minimax',
     apiKey: '',
-    model: 'llama-3.3-70b-versatile',
+    model: '',
     baseURL: '',
   },
   recall: {
