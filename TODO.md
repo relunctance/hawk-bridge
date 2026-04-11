@@ -243,3 +243,101 @@ hawk-bridge
     ↓ recall 时：success 高优，failure 低优
     ↓ dream 完成后 → 触发 auto-evolve inspect
 ```
+
+---
+
+## 更深层能力补全（v1.5+）
+
+### F. MCP Memory Protocol 接口
+
+**目标**：其他 AI 系统（如 Claude Code）通过 MCP 调用 hawk-bridge 记忆
+
+**实现**：
+- 实现 MCP tool：`memory.query(query) → memories`
+- 其他 AI 工具通过 MCP 协议查询 hawk-bridge
+
+```json
+// MCP tool schema
+{
+  "name": "memory_query",
+  "description": "Query hawk-bridge memory store",
+  "input": { "query": "string", "topK": 5 },
+  "output": [{ "text": "...", "importance": 0.9, "category": "fact" }]
+}
+```
+
+---
+
+### G. 记忆隐私层（fine-grained）
+
+**目标**：personal / team / project 之外，细粒度可见性控制
+
+**实现**：
+- 新增 `visibility` 字段：`private | team-visible | project-visible | public`
+- recall 时按可见性过滤
+- team 内哪些记忆对哪些人可见可配置
+
+**效果**：私人偏好不应该进入团队共享
+
+---
+
+### H. 记忆冲突自动解决
+
+**目标**：检测矛盾记忆对，自动触发 verify 确认
+
+**检测逻辑**：
+- 同一 category 下，两条记忆内容关键词重叠 > 70%
+- 但具体结论矛盾（如"A 是对的" vs "B 是对的"）
+- 例："用户喜欢 Arial" vs "用户喜欢 Helvetica"
+
+**处理流程**：
+1. 检测到矛盾对 → 写入 `conflict_pairs`
+2. 触发 verify → 确认哪个正确
+3. 错误的降 reliability 或删除
+
+---
+
+### I. 记忆溯源（why this memory）
+
+**目标**：recall 结果附带"为什么选这条"，可回答"你为什么记得这个"
+
+**实现**：recall 输出附带命中原因
+
+```json
+[
+  {
+    "text": "用户是产品经理",
+    "reason": "命中: 关键词'产品经理'重叠",
+    "source": "2026-03-15 对话"
+  }
+]
+```
+
+---
+
+### J. 记忆分析仪表盘
+
+**目标**：分析记忆覆盖盲区和过载
+
+**命令**：`hawk analyze`
+
+**输出**：
+- 记忆覆盖话题分布
+- 完全没有覆盖的话题
+- 过载话题（某类记忆太多）
+- 建议："你聊了很多关于 X，但没记住 Y"
+
+---
+
+### K. Per-memory 独立 TTL
+
+**目标**：不同类型记忆不同过期时间，不再一刀切
+
+**capture 时自动判断**：
+
+| 类型 | TTL | 例 |
+|------|-----|----|
+| 临时信息 | 7 天 | 会议改到3点 |
+| 事实类 | 90 天 | 用户是产品经理 |
+| 偏好类 | 180 天 | 用户喜欢 Arial |
+| 永久信息 | 永不过期 | 用户工作 10 年 |
