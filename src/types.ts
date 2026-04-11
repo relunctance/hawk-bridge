@@ -99,6 +99,10 @@ export interface HawkConfig {
     maxVideoDuration: number;             // 最大处理视频时长 (秒)
     thumbnailStorage: 'local' | 's3';     // 缩略图存储方式
   };
+  /** 国际化配置 */
+  i18n?: {
+    lang?: 'zh' | 'en';
+  };
 }
 
 export interface MemoryEntry {

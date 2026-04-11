@@ -545,6 +545,9 @@ capture:
 recall:
   topK: 5
   minScore: 0.3
+
+i18n:
+  lang: zh  # zh | en — 界面语言
 ```
 
 | Provider | 环境变量 | 说明 |

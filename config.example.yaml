@@ -38,3 +38,6 @@ capture:
 python:
   pythonPath: python3.12
   hawkDir: ~/.openclaw/hawk
+
+i18n:
+  lang: zh  # zh | en — 界面语言

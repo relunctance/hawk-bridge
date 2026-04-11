@@ -564,6 +564,9 @@ capture:
 recall:
   topK: 5
   minScore: 0.3
+
+i18n:
+  lang: zh  # zh | en — interface language
 ```
 
 | Provider | Field | Description |
