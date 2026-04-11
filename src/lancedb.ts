@@ -368,16 +368,18 @@ export class HawkDB {
     return retrieved;
   }
 
+  private async _getAccessCount(id: string): Promise<number> {
+    const rows = await this.table.query().where(`id = '${id.replace(/'/g, "''")}'`).limit(1).toArray();
+    return rows.length ? Number(rows[0].access_count || 0) : 0;
+  }
+
   private async incrementAccess(id: string): Promise<void> {
     try {
-      await this.table.update({
-        where: 'id = ?',
-        whereParams: [id],
-        updates: {
-          access_count: this.db.util().scalar('access_count + 1'),
-          last_accessed_at: BigInt(Date.now()),
-        }
-      });
+      const current = await this._getAccessCount(id);
+      await this.table.update(
+        { access_count: String(current + 1), last_accessed_at: String(Date.now()) },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
     } catch {
       // Non-critical if update fails
     }
@@ -419,11 +421,16 @@ export class HawkDB {
     }
   }
 
-  async getAllMemories(): Promise<MemoryEntry[]> {
+  async getAllMemories(agentId?: string | null): Promise<MemoryEntry[]> {
     if (!this.table) await this.init();
     const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
     return rows
       .filter((r: any) => r.deleted_at === null)
+      .filter((r: any) => {
+        if (!agentId) return true;  // no filter
+        const owner = (r.metadata?.owner_agent ?? r.metadata?.ownerAgent) ?? null;
+        return owner === null || owner === agentId;  // team memories (no owner) OR owner matches
+      })
       .map((r: any) => this._rowToMemory(r));
   }
 
@@ -482,10 +489,10 @@ export class HawkDB {
         console.log(`[hawk-bridge] Cannot forget locked memory: ${id}`);
         return false;
       }
-      await this.table.update({
-        where: `id = '${id.replace(/'/g, "''")}'`,
-        updates: { deleted_at: BigInt(Date.now()) },
-      });
+      await this.table.update(
+        { deleted_at: String(Date.now()) },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
       return true;
     } catch {
       return false;
@@ -520,16 +527,16 @@ export class HawkDB {
         });
       }
 
-      await this.table.update({
-        where: `id = '${id.replace(/'/g, "''")}'`,
-        updates: {
-          reliability: newReliability,
-          verification_count: memory.verificationCount + 1,
-          last_verified_at: BigInt(now),
+      await this.table.update(
+        {
+          reliability: String(newReliability),
+          verification_count: String(memory.verificationCount + 1),
+          last_verified_at: String(now),
           correction_history: JSON.stringify(correctionHistory),
-          ...(!confirmed && correctedText ? { text: correctedText } : {}),
+          ...(!confirmed && correctedText ? { text: String(correctedText) } : {}),
         },
-      });
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
       return true;
     } catch {
       return false;
@@ -605,15 +612,15 @@ export class HawkDB {
       // Boost reliability by boostAmount (capped at 1.0)
       const newReliability = Math.min(1.0, existing.reliability + boostAmount);
 
-      await this.table.update({
-        where: `id = '${id.replace(/'/g, "''")}'`,
-        updates: {
-          reliability: newReliability,
-          verification_count: existing.verificationCount + 1,
-          last_verified_at: BigInt(Date.now()),
+      await this.table.update(
+        {
+          reliability: String(newReliability),
+          verification_count: String(existing.verificationCount + 1),
+          last_verified_at: String(Date.now()),
           metadata: JSON.stringify(metadata),
         },
-      });
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
       return true;
     } catch {
       return false;
@@ -701,16 +708,30 @@ export class HawkDB {
   }
 
   /**
-   * 锁定/解锁记忆
-   * 锁定的记忆：忽略 decay，不会被自动删除
+   * 标记记忆为不可靠（效果反馈：recall 后用户否认）
+   * 仅降低 reliability，不记录纠正历史，不改文本
    */
+  async flagUnhelpful(id: string, penalty: number = 0.05): Promise<boolean> {
+    if (!this.table) await this.init();
+    try {
+      const mem = await this.getById(id);
+      if (!mem) return false;
+      const newRel = Math.max(0, mem.reliability - penalty);
+      const newVerifications = mem.verificationCount + 1;
+      await this.table.update(
+        { reliability: String(newRel), verification_count: String(newVerifications), last_verified_at: String(Date.now()) },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
+      return true;
+    } catch { return false; }
+  }
   async lock(id: string): Promise<boolean> {
     if (!this.table) await this.init();
     try {
-      await this.table.update({
-        where: `id = '${id.replace(/'/g, "''")}'`,
-        updates: { locked: 1 },
-      });
+      await this.table.update(
+        { locked: '1' },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
       return true;
     } catch { return false; }
   }
@@ -718,10 +739,10 @@ export class HawkDB {
   async unlock(id: string): Promise<boolean> {
     if (!this.table) await this.init();
     try {
-      await this.table.update({
-        where: `id = '${id.replace(/'/g, "''")}'`,
-        updates: { locked: 0 },
-      });
+      await this.table.update(
+        { locked: '0' },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
       return true;
     } catch { return false; }
   }
@@ -772,10 +793,10 @@ export class HawkDB {
           const newImportance = m.importance * Math.pow(COLD_START_DECAY_MULTIPLIER, 0.5);
           if (Math.abs(newImportance - m.importance) > 0.001) {
             try {
-              await this.table.update({
-                where: `id = '${m.id.replace(/'/g, "''")}'`,
-                updates: { importance: newImportance },
-              });
+              await this.table.update(
+                { importance: String(newImportance) },
+                { where: `id = '${m.id.replace(/'/g, "''")}'` }
+              );
               updated++;
             } catch { /* ignore */ }
           }
@@ -803,18 +824,18 @@ export class HawkDB {
 
         if (LAYERS.indexOf(newLayer) < LAYERS.indexOf(m.scope)) {
           try {
-            await this.table.update({
-              where: `id = '${m.id.replace(/'/g, "''")}'`,
-              updates: { importance: newImportance, scope: newLayer },
-            });
+            await this.table.update(
+              { importance: String(newImportance), scope: newLayer },
+              { where: `id = '${m.id.replace(/'/g, "''")}'` }
+            );
             updated++;
           } catch { /* ignore */ }
         } else if (newImportance !== m.importance) {
           try {
-            await this.table.update({
-              where: `id = '${m.id.replace(/'/g, "''")}'`,
-              updates: { importance: newImportance },
-            });
+            await this.table.update(
+              { importance: String(newImportance) },
+              { where: `id = '${m.id.replace(/'/g, "''")}'` }
+            );
             updated++;
           } catch { /* ignore */ }
         }
@@ -823,6 +844,11 @@ export class HawkDB {
 
     const purged = await this.purgeForgotten();
     deleted += purged;
+
+    // LanceDB garbage collection: clean up orphaned data files
+    try {
+      await this.table?.trygc();
+    } catch { /* non-critical */ }
 
     return { updated, deleted };
   }

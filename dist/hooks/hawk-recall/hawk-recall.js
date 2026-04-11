@@ -1,9 +1,246 @@
+var __defProp = Object.defineProperty;
+var __getOwnPropNames = Object.getOwnPropertyNames;
 var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
   get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
 }) : x)(function(x) {
   if (typeof require !== "undefined") return require.apply(this, arguments);
   throw Error('Dynamic require of "' + x + '" is not supported');
 });
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+
+// src/embeddings.ts
+var embeddings_exports = {};
+__export(embeddings_exports, {
+  Embedder: () => Embedder,
+  formatRecallForContext: () => formatRecallForContext
+});
+async function fetchWithTimeout(url, init) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, { ...init, signal: controller.signal });
+    return resp;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function formatRecallForContext(memories, emoji = "\u{1F985}") {
+  if (!memories.length) return "";
+  const lines = [`${emoji} ** hawk \u8BB0\u5FC6\u68C0\u7D22\u7ED3\u679C **`];
+  for (const m of memories) {
+    lines.push(`[${m.category}] (${(m.score * 100).toFixed(0)}%\u76F8\u5173): ${m.text}`);
+  }
+  return lines.join("\n");
+}
+var FETCH_TIMEOUT_MS, Embedder;
+var init_embeddings = __esm({
+  "src/embeddings.ts"() {
+    "use strict";
+    FETCH_TIMEOUT_MS = 15e3;
+    Embedder = class _Embedder {
+      config;
+      // TTL cache: normalized_text → { vector, timestamp }
+      cache = /* @__PURE__ */ new Map();
+      static CACHE_TTL_MS = 24 * 60 * 60 * 1e3;
+      // 24h
+      constructor(config) {
+        this.config = config;
+      }
+      normalizeForCache(text) {
+        return text.toLowerCase().replace(/\s+/g, " ").trim();
+      }
+      getCached(text) {
+        const key = this.normalizeForCache(text);
+        const entry = this.cache.get(key);
+        if (!entry) return null;
+        if (Date.now() - entry.ts > _Embedder.CACHE_TTL_MS) {
+          this.cache.delete(key);
+          return null;
+        }
+        return entry.vector;
+      }
+      setCached(text, vector) {
+        const key = this.normalizeForCache(text);
+        this.cache.set(key, { vector, ts: Date.now() });
+        if (this.cache.size > 1e4) {
+          const oldest = [...this.cache.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, Math.floor(this.cache.size * 0.3));
+          for (const [k] of oldest) this.cache.delete(k);
+        }
+      }
+      async embed(texts) {
+        const uncached = [];
+        const results = texts.map((t) => this.getCached(t));
+        for (let i = 0; i < texts.length; i++) {
+          if (results[i] === null) uncached.push(texts[i]);
+        }
+        if (uncached.length === 0) return results;
+        const { provider } = this.config;
+        const uncachedIdxMap = /* @__PURE__ */ new Map();
+        texts.forEach((t, i) => {
+          if (results[i] === null) uncachedIdxMap.set(t, i);
+        });
+        let freshVectors;
+        if (provider === "qianwen") {
+          freshVectors = await this.embedQianwen(uncached);
+        } else if (provider === "openai-compat") {
+          freshVectors = await this.embedOpenAICompat(uncached);
+        } else if (provider === "ollama") {
+          freshVectors = await this.embedOllama(uncached);
+        } else if (provider === "jina") {
+          freshVectors = await this.embedJina(uncached);
+        } else if (provider === "cohere") {
+          freshVectors = await this.embedCohere(uncached);
+        } else {
+          freshVectors = await this.embedOpenAI(uncached);
+        }
+        const finalResults = [...results];
+        for (let i = 0; i < uncached.length; i++) {
+          const originalIdx = uncachedIdxMap.get(uncached[i]);
+          finalResults[originalIdx] = freshVectors[i];
+          this.setCached(uncached[i], freshVectors[i]);
+        }
+        return finalResults;
+      }
+      async embedQuery(text) {
+        const vectors = await this.embed([text]);
+        return vectors[0];
+      }
+      // ---- Qianwen (阿里云 DashScope) — OpenAI-compatible, 国内首选 ----
+      async embedQianwen(texts) {
+        const apiKey = this.config.apiKey || process.env.QWEN_API_KEY || "";
+        const baseURL = this.config.baseURL || "https://dashscope.aliyuncs.com/api/v1";
+        const resp = await fetchWithTimeout(
+          `${baseURL}/services/embeddings/text-embedding/text-embedding`,
+          {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${apiKey}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              model: this.config.model || "text-embedding-v1",
+              input: { text: texts }
+            })
+          }
+        );
+        if (!resp.ok) {
+          const err = await resp.text();
+          throw new Error(`Qianwen embedding error: ${resp.status} ${err}`);
+        }
+        const data = await resp.json();
+        if (!data.output?.embeddings?.length) {
+          throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
+        }
+        return data.output.embeddings.map((e) => e.embedding);
+      }
+      // ---- OpenAI-Compatible (generic endpoint — user provides baseURL + apiKey) ----
+      async embedOpenAICompat(texts) {
+        const baseURL = this.config.baseURL;
+        const apiKey = this.config.apiKey;
+        if (!baseURL || !apiKey) {
+          throw new Error("openai-compat provider requires both baseURL and apiKey in config");
+        }
+        const resp = await fetchWithTimeout(`${baseURL}/embeddings`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model: this.config.model || "text-embedding-3-small",
+            input: texts
+          })
+        });
+        if (!resp.ok) {
+          const err = await resp.text();
+          throw new Error(`OpenAI-compatible embedding error: ${resp.status} ${err}`);
+        }
+        const data = await resp.json();
+        if (!data.data?.length) {
+          throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
+        }
+        return data.data.map((item) => item.embedding);
+      }
+      // ---- OpenAI ----
+      async embedOpenAI(texts) {
+        const { OpenAI } = await import("openai");
+        const client = new OpenAI({
+          apiKey: this.config.apiKey || process.env.OPENAI_API_KEY,
+          timeout: FETCH_TIMEOUT_MS
+        });
+        const model = this.config.model || "text-embedding-3-small";
+        const resp = await client.embeddings.create({ model, input: texts });
+        return resp.data.map((item) => item.embedding);
+      }
+      // ---- Jina AI (free tier) ----
+      async embedJina(texts) {
+        const apiKey = this.config.apiKey || process.env.JINA_API_KEY || "";
+        const model = this.config.model || "jina-embeddings-v5-small";
+        const resp = await fetchWithTimeout("https://api.jina.ai/v1/embeddings", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...apiKey ? { "Authorization": `Bearer ${apiKey}` } : {}
+          },
+          body: JSON.stringify({ model, input: texts })
+        });
+        if (!resp.ok) throw new Error(`Jina error: ${resp.status}`);
+        const data = await resp.json();
+        return data.data.map((item) => item.embedding);
+      }
+      // ---- Cohere (free tier) ----
+      async embedCohere(texts) {
+        const apiKey = this.config.apiKey || process.env.COHERE_API_KEY || "";
+        const resp = await fetchWithTimeout("https://api.cohere.ai/v1/embed", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model: "embed-english-v3.0",
+            texts,
+            input_type: "search_document"
+          })
+        });
+        if (!resp.ok) throw new Error(`Cohere error: ${resp.status}`);
+        const data = await resp.json();
+        return data.embeddings;
+      }
+      // ---- Ollama (local free) ----
+      async embedOllama(texts) {
+        const baseURL = (this.config.baseURL || process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
+        const model = this.config.model || process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
+        const resp = await fetchWithTimeout(`${baseURL}/api/embed`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model, input: texts })
+        });
+        if (!resp.ok) {
+          const err = await resp.text();
+          throw new Error(`Ollama embedding error: ${resp.status} ${err}`);
+        }
+        const data = await resp.json();
+        if (Array.isArray(data.embeddings) && Array.isArray(data.embeddings[0])) {
+          return data.embeddings;
+        } else if (Array.isArray(data.embeddings)) {
+          return [data.embeddings];
+        }
+        throw new Error(`Unexpected Ollama response: ${JSON.stringify(data)}`);
+      }
+    };
+  }
+});
+
+// src/hooks/hawk-recall/handler.ts
+import * as path3 from "path";
+import { homedir as homedir3 } from "os";
 
 // src/lancedb.ts
 import * as path from "path";
@@ -26,6 +263,25 @@ var MIN_CHUNK_SIZE = parseInt(process.env.HAWK_MIN_CHUNK_SIZE || "20", 10);
 var MAX_TEXT_LEN = parseInt(process.env.HAWK_MAX_TEXT_LEN || "5000", 10);
 var DEDUP_SIMILARITY = parseFloat(process.env.HAWK_DEDUP_SIMILARITY || "0.95");
 var MEMORY_TTL_MS = parseInt(process.env.HAWK_MEMORY_TTL_MS || String(30 * 24 * 60 * 60 * 1e3), 10);
+var INITIAL_RELIABILITY = parseFloat(process.env.HAWK_INITIAL_RELIABILITY || "0.5");
+var RELIABILITY_BOOST_CONFIRM = parseFloat(process.env.HAWK_RELIABILITY_BOOST_CONFIRM || "0.1");
+var RELIABILITY_PENALTY_CORRECT = parseFloat(process.env.HAWK_RELIABILITY_PENALTY_CORRECT || "0.3");
+var RELIABILITY_THRESHOLD_HIGH = parseFloat(process.env.HAWK_RELIABILITY_THRESHOLD_HIGH || "0.7");
+var RELIABILITY_THRESHOLD_MEDIUM = parseFloat(process.env.HAWK_RELIABILITY_THRESHOLD_MEDIUM || "0.4");
+var FORGET_GRACE_DAYS = parseInt(process.env.HAWK_FORGET_GRACE_DAYS || "30", 10);
+var RECENCY_GRACE_DAYS = parseInt(process.env.HAWK_RECENCY_GRACE_DAYS || "30", 10);
+var RECENCY_DECAY_RATE = parseFloat(process.env.HAWK_RECENCY_DECAY_RATE || "0.95");
+var RECENCY_FACTOR_FLOOR = parseFloat(process.env.HAWK_RECENCY_FACTOR_FLOOR || "0.3");
+var CONSISTENCY_MAX = parseFloat(process.env.HAWK_CONSISTENCY_MAX || "1.5");
+var CORRECTION_PENALTY_MULTIPLIER = parseFloat(process.env.HAWK_CORRECTION_PENALTY_MULTIPLIER || "0.7");
+var DECAY_RATE_HIGH_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_HIGH || "0.2");
+var DECAY_RATE_MEDIUM_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_MEDIUM || "0.8");
+var DECAY_RATE_LOW_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_LOW || "1.5");
+var COLD_START_GRACE_DAYS = parseInt(process.env.HAWK_COLD_START_GRACE_DAYS || "7", 10);
+var COLD_START_DECAY_MULTIPLIER = parseFloat(process.env.HAWK_COLD_START_DECAY_MULTIPLIER || "0.1");
+var CONFLICT_SIMILARITY_THRESHOLD = parseFloat(process.env.HAWK_CONFLICT_THRESHOLD || "0.6");
+var ENTITY_DEDUP_THRESHOLD = parseFloat(process.env.HAWK_ENTITY_DEDUP_THRESHOLD || "0.75");
+var ENTITY_DEDUP_SESSION_WINDOW = parseInt(process.env.HAWK_ENTITY_DEDUP_SESSION_WINDOW || "10", 10);
 
 // src/lancedb.ts
 var TABLE_NAME = "hawk_memories";
@@ -56,7 +312,8 @@ var HawkDB = class {
           created_at: Date.now(),
           access_count: 0,
           last_accessed_at: Date.now(),
-          metadata: "{}"
+          metadata: "{}",
+          source_type: "text"
         });
         const table = makeArrowTable([sampleRow]);
         this.table = await this.db.createTable(TABLE_NAME, table);
@@ -66,7 +323,19 @@ var HawkDB = class {
         try {
           await this.table.alterAddColumns([
             { name: "expires_at", type: { type: "int64" } },
-            { name: "created_at", type: { type: "int64" } }
+            { name: "created_at", type: { type: "int64" } },
+            { name: "source_type", type: { type: "utf8" } },
+            { name: "deleted_at", type: { type: "int64" } },
+            { name: "reliability", type: { type: "float" } },
+            { name: "verification_count", type: { type: "int32" } },
+            { name: "last_verified_at", type: { type: "int64" } },
+            { name: "locked", type: { type: "int8" } },
+            { name: "correction_history", type: { type: "utf8" } },
+            { name: "session_id", type: { type: "utf8" } },
+            { name: "updated_at", type: { type: "int64" } },
+            { name: "scope_mem", type: { type: "utf8" } },
+            { name: "importance_override", type: { type: "float" } },
+            { name: "cold_start_until", type: { type: "int64" } }
           ]);
         } catch (_) {
         }
@@ -90,33 +359,162 @@ var HawkDB = class {
       created_at: BigInt(data.created_at),
       access_count: data.access_count,
       last_accessed_at: BigInt(data.last_accessed_at),
-      metadata: data.metadata
+      deleted_at: data.deleted_at !== null ? BigInt(data.deleted_at) : null,
+      reliability: data.reliability,
+      verification_count: data.verification_count,
+      last_verified_at: data.last_verified_at !== null ? BigInt(data.last_verified_at) : null,
+      locked: data.locked ? 1 : 0,
+      correction_history: data.correction_history,
+      session_id: data.session_id ?? null,
+      updated_at: BigInt(data.updated_at),
+      scope_mem: data.scope_mem,
+      importance_override: data.importance_override,
+      cold_start_until: data.cold_start_until !== null ? BigInt(data.cold_start_until) : null,
+      metadata: data.metadata,
+      source_type: data.source_type
     };
   }
-  async store(entry) {
+  /**
+   * Internal: run a query and return all rows as plain objects
+   * (LanceDB 0.26.x uses toArray(), not toList())
+   */
+  async _queryAll(limit = BM25_QUERY_LIMIT) {
+    const rows = await this.table.query().limit(limit).toArray();
+    return rows;
+  }
+  /**
+   * 计算有效可靠性（考虑时间衰减 + 一致性因子）
+   * effective = base * recency_factor * consistency_factor
+   *
+   * recency_factor:
+   *   - 30天内验证 → 1.0
+   *   - 30天外 → RECENCY_DECAY_RATE^(days/30)
+   *   - 下限 RECENCY_FACTOR_FLOOR
+   *
+   * consistency_factor:
+   *   - 多次确认 → min(1 + count * 0.05, 1.5)
+   *   - 每次纠正 → ×0.7（CORRECTION_PENALTY_MULTIPLIER）
+   */
+  computeEffectiveReliability(base, verificationCount, lastVerifiedAt, correctionCount) {
+    let recencyFactor = 1;
+    if (lastVerifiedAt !== null) {
+      const daysSince = (Date.now() - lastVerifiedAt) / 864e5;
+      if (daysSince > RECENCY_GRACE_DAYS) {
+        const decayCycles = (daysSince - RECENCY_GRACE_DAYS) / RECENCY_GRACE_DAYS;
+        recencyFactor = Math.max(RECENCY_FACTOR_FLOOR, Math.pow(RECENCY_DECAY_RATE, decayCycles));
+      }
+    }
+    const confirmBoost = Math.min(1 + verificationCount * 0.05, CONSISTENCY_MAX);
+    const correctionPenalty = Math.pow(CORRECTION_PENALTY_MULTIPLIER, correctionCount);
+    const effective = base * recencyFactor * confirmBoost * correctionPenalty;
+    return Math.max(0, Math.min(1, effective));
+  }
+  _rowToMemory(r) {
+    const correctionHistory = typeof r.correction_history === "string" ? JSON.parse(r.correction_history || "[]") : r.correction_history || [];
+    return {
+      id: r.id,
+      text: r.text,
+      vector: r.vector || [],
+      category: r.category,
+      scope: r.scope_mem ?? "personal",
+      importance: r.importance,
+      timestamp: Number(r.timestamp),
+      expiresAt: Number(r.expires_at || 0),
+      accessCount: r.access_count,
+      lastAccessedAt: Number(r.last_accessed_at),
+      deletedAt: r.deleted_at !== null ? Number(r.deleted_at) : null,
+      reliability: r.reliability ?? INITIAL_RELIABILITY,
+      verificationCount: r.verification_count ?? 0,
+      lastVerifiedAt: r.last_verified_at !== null ? Number(r.last_verified_at) : null,
+      locked: r.locked === 1,
+      correctionHistory,
+      sessionId: r.session_id ?? null,
+      createdAt: Number(r.created_at ?? Date.now()),
+      updatedAt: Number(r.updated_at ?? Date.now()),
+      scope: r.scope_mem ?? "personal",
+      importanceOverride: r.importance_override ?? 1,
+      coldStartUntil: r.cold_start_until !== null ? Number(r.cold_start_until) : null,
+      metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata || "{}") : r.metadata || {},
+      source_type: r.source_type || "text"
+    };
+  }
+  _rowToRetrieved(r, score, matchReason) {
+    const base = r.reliability ?? INITIAL_RELIABILITY;
+    const correctionHistory = typeof r.correction_history === "string" ? JSON.parse(r.correction_history || "[]") : r.correction_history || [];
+    const correctionCount = correctionHistory.length;
+    const effective = this.computeEffectiveReliability(
+      base,
+      r.verification_count ?? 0,
+      r.last_verified_at !== null ? Number(r.last_verified_at) : null,
+      correctionCount
+    );
+    return {
+      id: r.id,
+      text: r.text,
+      score,
+      category: r.category,
+      metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata || "{}") : r.metadata || {},
+      source_type: r.source_type || "text",
+      reliability: effective,
+      reliabilityLabel: effective >= 0.7 ? "\u2705" : effective >= 0.4 ? "\u26A0\uFE0F" : "\u274C",
+      locked: r.locked === 1,
+      correctionCount,
+      baseReliability: base,
+      sessionId: r.session_id ?? null,
+      createdAt: Number(r.created_at ?? Date.now()),
+      updatedAt: Number(r.updated_at ?? Date.now()),
+      scope: r.scope_mem ?? "personal",
+      importanceOverride: r.importance_override ?? 1,
+      coldStartUntil: r.cold_start_until !== null ? Number(r.cold_start_until) : null,
+      matchReason
+    };
+  }
+  async store(entry, sessionId) {
     if (!this.table) await this.init();
     const now = Date.now();
+    const correctionHistory = entry.correctionHistory ?? [];
+    const scope2 = entry.scope ?? "personal";
+    const coldStartUntil = entry.coldStartUntil ?? now + COLD_START_GRACE_DAYS * 864e5;
     const row = this._makeRow({
       id: entry.id,
       text: entry.text,
       vector: entry.vector,
       category: entry.category,
-      scope: entry.scope,
+      scope: entry.scope ?? "global",
       importance: entry.importance,
       timestamp: entry.timestamp,
       expires_at: entry.expiresAt || 0,
       created_at: now,
       access_count: 0,
       last_accessed_at: now,
-      metadata: JSON.stringify(entry.metadata || {})
+      deleted_at: null,
+      reliability: entry.reliability ?? INITIAL_RELIABILITY,
+      verification_count: entry.verificationCount ?? 0,
+      last_verified_at: null,
+      locked: entry.locked ?? false,
+      correction_history: JSON.stringify(correctionHistory),
+      session_id: sessionId ?? null,
+      updated_at: now,
+      scope_mem: scope2,
+      importance_override: entry.importanceOverride ?? 1,
+      cold_start_until: coldStartUntil,
+      metadata: JSON.stringify(entry.metadata || {}),
+      source_type: entry.source_type || "text"
     });
     await this.table.add([row]);
   }
-  async search(queryVector, topK, minScore, scope) {
+  async search(queryVector, topK, minScore, scope, sourceTypes) {
     if (!this.table) await this.init();
-    let results = await this.table.search(queryVector).limit(topK * 4).toList();
+    let results = await this.table.search(queryVector).limit(topK * 4).toArray();
+    results = results.filter((r) => r.deleted_at === null);
     if (scope) {
       results = results.filter((r) => r.scope === scope);
+    }
+    if (sourceTypes && sourceTypes.length > 0) {
+      results = results.filter((r) => {
+        const type = r.source_type || "text";
+        return sourceTypes.includes(type);
+      });
     }
     const now = Date.now();
     results = results.filter((r) => {
@@ -127,13 +525,7 @@ var HawkDB = class {
     for (const row of results) {
       const score = 1 - (row._distance ?? 0);
       if (score < minScore) continue;
-      retrieved.push({
-        id: row.id,
-        text: row.text,
-        score,
-        category: row.category,
-        metadata: JSON.parse(row.metadata || "{}")
-      });
+      retrieved.push(this._rowToRetrieved(row, score));
       if (retrieved.length >= topK) break;
     }
     for (const r of retrieved) {
@@ -141,35 +533,24 @@ var HawkDB = class {
     }
     return retrieved;
   }
+  async _getAccessCount(id) {
+    const rows = await this.table.query().where(`id = '${id.replace(/'/g, "''")}'`).limit(1).toArray();
+    return rows.length ? Number(rows[0].access_count || 0) : 0;
+  }
   async incrementAccess(id) {
     try {
-      await this.table.update({
-        where: "id = ?",
-        whereParams: [id],
-        updates: {
-          access_count: this.db.util().scalar("access_count + 1"),
-          last_accessed_at: BigInt(Date.now())
-        }
-      });
+      const current = await this._getAccessCount(id);
+      await this.table.update(
+        { access_count: String(current + 1), last_accessed_at: String(Date.now()) },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
     } catch {
     }
   }
   async listRecent(limit = 10) {
     if (!this.table) await this.init();
-    const rows = await this.table.query().limit(limit).toList();
-    return rows.map((r) => ({
-      id: r.id,
-      text: r.text,
-      vector: r.vector || [],
-      category: r.category,
-      scope: r.scope,
-      importance: r.importance,
-      timestamp: Number(r.timestamp),
-      expiresAt: Number(r.expires_at || 0),
-      accessCount: r.access_count,
-      lastAccessedAt: Number(r.last_accessed_at),
-      metadata: JSON.parse(r.metadata || "{}")
-    }));
+    const rows = await this.table.query().limit(limit * 2).toArray();
+    return rows.filter((r) => r.deleted_at === null).slice(0, limit).map((r) => this._rowToMemory(r));
   }
   async count() {
     if (!this.table) await this.init();
@@ -177,29 +558,29 @@ var HawkDB = class {
   }
   async getAllTexts() {
     if (!this.table) await this.init();
-    const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toList();
-    return rows.map((r) => ({ id: r.id, text: r.text }));
+    const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
+    return rows.filter((r) => r.deleted_at === null).map((r) => ({ id: r.id, text: r.text }));
   }
   async getById(id) {
     if (!this.table) await this.init();
     try {
-      const rows = await this.table.query().where("id = ?", [id]).limit(1).toList();
+      const rows = await this.table.query().where(`id = '${id.replace(/'/g, "''")}'`).limit(1).toArray();
       if (!rows.length) return null;
       const r = rows[0];
-      return {
-        id: r.id,
-        text: r.text,
-        vector: r.vector || [],
-        category: r.category,
-        scope: r.scope,
-        importance: r.importance,
-        timestamp: Number(r.timestamp),
-        expiresAt: Number(r.expires_at || 0),
-        metadata: JSON.parse(r.metadata || "{}")
-      };
+      if (r.deleted_at !== null) return null;
+      return this._rowToMemory(r);
     } catch {
       return null;
     }
+  }
+  async getAllMemories(agentId) {
+    if (!this.table) await this.init();
+    const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
+    return rows.filter((r) => r.deleted_at === null).filter((r) => {
+      if (!agentId) return true;
+      const owner = r.metadata?.owner_agent ?? r.metadata?.ownerAgent ?? null;
+      return owner === null || owner === agentId;
+    }).map((r) => this._rowToMemory(r));
   }
   /** Batch fetch multiple memories by ID in a single query — avoids N+1 round-trips */
   async getByIds(ids) {
@@ -207,9 +588,10 @@ var HawkDB = class {
     const results = /* @__PURE__ */ new Map();
     if (!ids.length) return results;
     try {
-      const conditions = ids.map(() => "id = ?").join(" OR ");
-      const rows = await this.table.query().where(conditions, ids).limit(ids.length).toList();
+      const predicate = ids.map((id) => `id = '${id.replace(/'/g, "''")}'`).join(" OR ");
+      const rows = await this.table.query().where(predicate).limit(ids.length).toArray();
       for (const r of rows) {
+        if (r.deleted_at !== null) continue;
         results.set(r.id, {
           id: r.id,
           text: r.text,
@@ -219,184 +601,371 @@ var HawkDB = class {
           importance: r.importance,
           timestamp: Number(r.timestamp),
           expiresAt: Number(r.expires_at || 0),
-          metadata: JSON.parse(r.metadata || "{}")
+          deletedAt: r.deleted_at !== null ? Number(r.deleted_at) : null,
+          reliability: r.reliability ?? INITIAL_RELIABILITY,
+          verificationCount: r.verification_count ?? 0,
+          lastVerifiedAt: r.last_verified_at !== null ? Number(r.last_verified_at) : null,
+          locked: r.locked === 1,
+          correctionHistory: typeof r.correction_history === "string" ? JSON.parse(r.correction_history || "[]") : r.correction_history || [],
+          sessionId: r.session_id ?? null,
+          createdAt: Number(r.created_at ?? Date.now()),
+          updatedAt: Number(r.updated_at ?? Date.now()),
+          metadata: JSON.parse(r.metadata || "{}"),
+          source_type: r.source_type || "text"
         });
       }
     } catch {
     }
     return results;
   }
-};
-
-// src/embeddings.ts
-var FETCH_TIMEOUT_MS = 15e3;
-async function fetchWithTimeout(url, init) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const resp = await fetch(url, { ...init, signal: controller.signal });
-    return resp;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-var Embedder = class {
-  config;
-  constructor(config) {
-    this.config = config;
-  }
-  async embed(texts) {
-    const { provider } = this.config;
-    if (provider === "qianwen") {
-      return this.embedQianwen(texts);
-    } else if (provider === "openai-compat") {
-      return this.embedOpenAICompat(texts);
-    } else if (provider === "ollama") {
-      return this.embedOllama(texts);
-    } else if (provider === "jina") {
-      return this.embedJina(texts);
-    } else if (provider === "cohere") {
-      return this.embedCohere(texts);
-    } else {
-      return this.embedOpenAI(texts);
-    }
-  }
-  async embedQuery(text) {
-    const vectors = await this.embed([text]);
-    return vectors[0];
-  }
-  // ---- Qianwen (阿里云 DashScope) — OpenAI-compatible, 国内首选 ----
-  async embedQianwen(texts) {
-    const apiKey = this.config.apiKey || process.env.QWEN_API_KEY || "";
-    const baseURL = this.config.baseURL || "https://dashscope.aliyuncs.com/api/v1";
-    const resp = await fetchWithTimeout(
-      `${baseURL}/services/embeddings/text-embedding/text-embedding`,
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: this.config.model || "text-embedding-v1",
-          input: { text: texts }
-        })
+  /**
+   * 软删除：标记记忆为已遗忘（recall 时自动过滤）
+   * 30 天后 purgeForgotten 会彻底删除
+   * 注意：锁定的记忆无法被遗忘
+   */
+  async forget(id) {
+    if (!this.table) await this.init();
+    try {
+      const memory = await this.getById(id);
+      if (!memory) return false;
+      if (memory.locked) {
+        console.log(`[hawk-bridge] Cannot forget locked memory: ${id}`);
+        return false;
       }
-    );
-    if (!resp.ok) {
-      const err = await resp.text();
-      throw new Error(`Qianwen embedding error: ${resp.status} ${err}`);
+      await this.table.update(
+        { deleted_at: String(Date.now()) },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
+      return true;
+    } catch {
+      return false;
     }
-    const data = await resp.json();
-    if (!data.output?.embeddings?.length) {
-      throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
-    }
-    return data.output.embeddings.map((e) => e.embedding);
   }
-  // ---- OpenAI-Compatible (generic endpoint — user provides baseURL + apiKey) ----
-  async embedOpenAICompat(texts) {
-    const baseURL = this.config.baseURL;
-    const apiKey = this.config.apiKey;
-    if (!baseURL || !apiKey) {
-      throw new Error("openai-compat provider requires both baseURL and apiKey in config");
+  /**
+   * 验证记忆可信度
+   * - confirmed=true: 用户确认记忆正确 → reliability + boost（上限 1.0）
+   * - confirmed=false: 用户纠正 → reliability - penalty，记录纠正历史
+   * 注意：锁定的记忆也可以被验证，但不改变 reliability
+   */
+  async verify(id, confirmed, correctedText) {
+    if (!this.table) await this.init();
+    try {
+      const memory = await this.getById(id);
+      if (!memory) return false;
+      const now = Date.now();
+      const newReliability = memory.locked ? memory.reliability : confirmed ? Math.min(1, memory.reliability + RELIABILITY_BOOST_CONFIRM) : Math.max(0, memory.reliability - RELIABILITY_PENALTY_CORRECT);
+      const correctionHistory = [...memory.correctionHistory || []];
+      if (!confirmed && correctedText) {
+        correctionHistory.push({
+          ts: now,
+          oldText: memory.text,
+          newText: correctedText
+        });
+      }
+      await this.table.update(
+        {
+          reliability: String(newReliability),
+          verification_count: String(memory.verificationCount + 1),
+          last_verified_at: String(now),
+          correction_history: JSON.stringify(correctionHistory),
+          ...!confirmed && correctedText ? { text: String(correctedText) } : {}
+        },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
+      return true;
+    } catch {
+      return false;
     }
-    const resp = await fetchWithTimeout(`${baseURL}/embeddings`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: this.config.model || "text-embedding-3-small",
-        input: texts
-      })
-    });
-    if (!resp.ok) {
-      const err = await resp.text();
-      throw new Error(`OpenAI-compatible embedding error: ${resp.status} ${err}`);
-    }
-    const data = await resp.json();
-    if (!data.data?.length) {
-      throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
-    }
-    return data.data.map((item) => item.embedding);
   }
-  // ---- OpenAI ----
-  async embedOpenAI(texts) {
-    const { OpenAI } = await import("openai");
-    const client = new OpenAI({
-      apiKey: this.config.apiKey || process.env.OPENAI_API_KEY,
-      timeout: FETCH_TIMEOUT_MS
-    });
-    const model = this.config.model || "text-embedding-3-small";
-    const resp = await client.embeddings.create({ model, input: texts });
-    return resp.data.map((item) => item.embedding);
-  }
-  // ---- Jina AI (free tier) ----
-  async embedJina(texts) {
-    const apiKey = this.config.apiKey || process.env.JINA_API_KEY || "";
-    const model = this.config.model || "jina-embeddings-v5-small";
-    const resp = await fetchWithTimeout("https://api.jina.ai/v1/embeddings", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...apiKey ? { "Authorization": `Bearer ${apiKey}` } : {}
-      },
-      body: JSON.stringify({ model, input: texts })
-    });
-    if (!resp.ok) throw new Error(`Jina error: ${resp.status}`);
-    const data = await resp.json();
-    return data.data.map((item) => item.embedding);
-  }
-  // ---- Cohere (free tier) ----
-  async embedCohere(texts) {
-    const apiKey = this.config.apiKey || process.env.COHERE_API_KEY || "";
-    const resp = await fetchWithTimeout("https://api.cohere.ai/v1/embed", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: "embed-english-v3.0",
-        texts,
-        input_type: "search_document"
-      })
-    });
-    if (!resp.ok) throw new Error(`Cohere error: ${resp.status}`);
-    const data = await resp.json();
-    return data.embeddings;
-  }
-  // ---- Ollama (local free) ----
-  async embedOllama(texts) {
-    const baseURL = (this.config.baseURL || process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
-    const model = this.config.model || process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
-    const resp = await fetchWithTimeout(`${baseURL}/api/embed`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, input: texts })
-    });
-    if (!resp.ok) {
-      const err = await resp.text();
-      throw new Error(`Ollama embedding error: ${resp.status} ${err}`);
+  /**
+   * 更新记忆（用于 entity merge、用户编辑、标记重要）
+   * 更新 updatedAt
+   */
+  async update(id, updates) {
+    if (!this.table) await this.init();
+    try {
+      const existing = await this.getById(id);
+      if (!existing) return false;
+      await this.table.delete(`id = '${id.replace(/'/g, "''")}'`);
+      const updated = {
+        ...existing,
+        text: updates.text ?? existing.text,
+        category: updates.category ?? existing.category,
+        scope: updates.scope ?? existing.scope,
+        importance: updates.importance ?? existing.importance,
+        importanceOverride: updates.importanceOverride ?? existing.importanceOverride,
+        updatedAt: Date.now(),
+        vector: existing.vector
+      };
+      await this.store(updated, existing.sessionId ?? void 0);
+      return true;
+    } catch {
+      return false;
     }
-    const data = await resp.json();
-    if (Array.isArray(data.embeddings) && Array.isArray(data.embeddings[0])) {
-      return data.embeddings;
-    } else if (Array.isArray(data.embeddings)) {
-      return [data.embeddings];
+  }
+  /**
+   * 标记记忆为重要（调整 importanceOverride）
+   * multiplier: 1.0=不变，2.0=加倍重要，0.5=降低
+   */
+  async markImportant(id, multiplier = 2) {
+    return this.update(id, { importanceOverride: multiplier });
+  }
+  /**
+   * SoulForge 验证通过后的回写
+   * - 将 soul_verified 标记设为 true（持久化到 metadata）
+   * - 记录 soul_pattern_id 和 verified_text（通过 metadata）
+   * - 不改 reliability（hawk-verify CLI 自己算 boost）
+   */
+  async verifySoulPattern(id, patternId, patternText, boostAmount) {
+    if (!this.table) await this.init();
+    try {
+      const existing = await this.getById(id);
+      if (!existing) return false;
+      const metadata = { ...existing.metadata };
+      metadata.soulVerified = true;
+      metadata.soulPatternId = patternId;
+      metadata.soulVerifiedText = patternText.slice(0, 200);
+      metadata.soulVerifiedAt = Date.now();
+      const newReliability = Math.min(1, existing.reliability + boostAmount);
+      await this.table.update(
+        {
+          reliability: String(newReliability),
+          verification_count: String(existing.verificationCount + 1),
+          last_verified_at: String(Date.now()),
+          metadata: JSON.stringify(metadata)
+        },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
+      return true;
+    } catch {
+      return false;
     }
-    throw new Error(`Unexpected Ollama response: ${JSON.stringify(data)}`);
+  }
+  /**
+   * 检测与新内容可能冲突的记忆
+   * 策略：在同类记忆中找相似度高但内容不同的
+   */
+  async detectConflicts(newText, category) {
+    const all = await this.getAllMemories();
+    const sameCategory = all.filter((m) => m.category === category);
+    const newKeywords = this._extractKeywords(newText);
+    const conflicts = [];
+    for (const m of sameCategory) {
+      const memKeywords = this._extractKeywords(m.text);
+      const overlap = newKeywords.filter((k) => memKeywords.includes(k)).length;
+      const union = (/* @__PURE__ */ new Set([...newKeywords, ...memKeywords])).size;
+      const similarity = union > 0 ? overlap / union : 0;
+      if (similarity >= CONFLICT_SIMILARITY_THRESHOLD && similarity < 0.95) {
+        const newWords = new Set(newKeywords);
+        const oldWords = new Set(memKeywords);
+        const diff = [...newWords].filter((w) => !oldWords.has(w)).length + [...oldWords].filter((w) => !newWords.has(w)).length;
+        if (diff > 2) {
+          conflicts.push(m);
+        }
+      }
+    }
+    return conflicts;
+  }
+  /**
+   * 获取需要主动回顾的记忆（最低可靠性，未锁定的）
+   */
+  async getReviewCandidates(minReliability = 0.5, batchSize = 5) {
+    const all = await this.getAllMemories();
+    return all.filter((m) => !m.locked && m.reliability < minReliability).sort((a, b) => a.reliability - b.reliability).slice(0, batchSize);
+  }
+  /**
+   * 查找与给定文本相似的 entity 记忆（用于 dedup）
+   * 使用关键词 Jaccard 相似度，阈值 ENTITY_DEDUP_THRESHOLD
+   */
+  async findSimilarEntity(text, excludeId) {
+    const all = await this.getAllMemories();
+    const keywords = this._extractKeywords(text);
+    let best = null;
+    for (const m of all) {
+      if (m.category !== "entity") continue;
+      if (excludeId && m.id === excludeId) continue;
+      const memKeywords = this._extractKeywords(m.text);
+      const overlap = keywords.filter((k) => memKeywords.includes(k)).length;
+      const union = (/* @__PURE__ */ new Set([...keywords, ...memKeywords])).size;
+      const score = union > 0 ? overlap / union : 0;
+      if (!best || score > best.score) {
+        best = { m, score };
+      }
+    }
+    return best && best.score >= ENTITY_DEDUP_THRESHOLD ? best.m : null;
+  }
+  _extractKeywords(text) {
+    const stopWords = /* @__PURE__ */ new Set(["\u7684", "\u4E86", "\u662F", "\u5728", "\u548C", "\u4E5F", "\u6709", "\u5C31", "\u4E0D", "\u6211", "\u4F60", "\u4ED6", "\u5979", "\u5B83", "\u4EEC", "\u8FD9", "\u90A3", "\u4E2A", "\u4E0E", "\u6216", "\u88AB", "\u4E3A", "\u4E0A", "\u4E0B", "\u6765", "\u53BB"]);
+    const words = [];
+    for (let i = 0; i < text.length - 1; i++) {
+      const w2 = text.slice(i, i + 2);
+      if (!stopWords.has(w2)) words.push(w2);
+    }
+    for (let i = 0; i < text.length - 2; i++) {
+      const w3 = text.slice(i, i + 3);
+      if (!stopWords.has(w3)) words.push(w3);
+    }
+    return [...new Set(words)];
+  }
+  /**
+   * 标记记忆为不可靠（效果反馈：recall 后用户否认）
+   * 仅降低 reliability，不记录纠正历史，不改文本
+   */
+  async flagUnhelpful(id, penalty = 0.05) {
+    if (!this.table) await this.init();
+    try {
+      const mem = await this.getById(id);
+      if (!mem) return false;
+      const newRel = Math.max(0, mem.reliability - penalty);
+      const newVerifications = mem.verificationCount + 1;
+      await this.table.update(
+        { reliability: String(newRel), verification_count: String(newVerifications), last_verified_at: String(Date.now()) },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  async lock(id) {
+    if (!this.table) await this.init();
+    try {
+      await this.table.update(
+        { locked: "1" },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  async unlock(id) {
+    if (!this.table) await this.init();
+    try {
+      await this.table.update(
+        { locked: "0" },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  /**
+   * 记忆衰减：降低长期未访问记忆的 importance
+   * 差异化：✅ 记忆几乎不衰减，⚠️ 正常衰减，❌ 快速消亡
+   * 锁定的记忆完全跳过衰减
+   */
+  async decay() {
+    if (!this.table) await this.init();
+    const ARCHIVE_TTL_DAYS = 180;
+    const IMPORTANCE_THRESHOLD_LOW = 0.3;
+    const IMPORTANCE_THRESHOLD_HIGH = 0.8;
+    const LAYER_THRESHOLDS = { working: 0, short: 3, long: 10, archive: 100 };
+    const LAYERS = ["working", "short", "long", "archive"];
+    function computeLayer(importance, accessCount) {
+      if (accessCount >= LAYER_THRESHOLDS.long || importance >= IMPORTANCE_THRESHOLD_HIGH) return "long";
+      if (accessCount >= LAYER_THRESHOLDS.short || importance >= IMPORTANCE_THRESHOLD_HIGH * 0.75) return "short";
+      if (importance < IMPORTANCE_THRESHOLD_LOW) return "archive";
+      return "working";
+    }
+    function getDecayMultiplier(reliability) {
+      if (reliability >= 0.7) return DECAY_RATE_HIGH_RELIABILITY;
+      if (reliability >= 0.4) return DECAY_RATE_MEDIUM_RELIABILITY;
+      return DECAY_RATE_LOW_RELIABILITY;
+    }
+    const memories = await this.getAllMemories();
+    let updated = 0;
+    let deleted = 0;
+    const now = Date.now();
+    for (const m of memories) {
+      if (m.locked) continue;
+      if (m.coldStartUntil && now < m.coldStartUntil) {
+        const daysInGrace = Math.ceil((m.coldStartUntil - now) / 864e5);
+        if (daysInGrace > 1) {
+          const newImportance = m.importance * Math.pow(COLD_START_DECAY_MULTIPLIER, 0.5);
+          if (Math.abs(newImportance - m.importance) > 1e-3) {
+            try {
+              await this.table.update(
+                { importance: String(newImportance) },
+                { where: `id = '${m.id.replace(/'/g, "''")}'` }
+              );
+              updated++;
+            } catch {
+            }
+          }
+        }
+        continue;
+      }
+      const daysIdle = Math.max(0, Math.floor((now - m.lastAccessedAt) / 864e5));
+      if (m.scope === "archive") {
+        if (daysIdle > ARCHIVE_TTL_DAYS) {
+          try {
+            await this.table.delete(`id = '${m.id.replace(/'/g, "''")}'`);
+            deleted++;
+          } catch {
+          }
+        }
+        continue;
+      }
+      if (daysIdle > 0) {
+        const decayMultiplier = getDecayMultiplier(m.reliability);
+        const effectiveDays = Math.ceil(daysIdle * decayMultiplier);
+        const newImportance = m.importance * Math.pow(0.95, effectiveDays);
+        const newLayer = computeLayer(newImportance, m.accessCount);
+        if (LAYERS.indexOf(newLayer) < LAYERS.indexOf(m.scope)) {
+          try {
+            await this.table.update(
+              { importance: String(newImportance), scope: newLayer },
+              { where: `id = '${m.id.replace(/'/g, "''")}'` }
+            );
+            updated++;
+          } catch {
+          }
+        } else if (newImportance !== m.importance) {
+          try {
+            await this.table.update(
+              { importance: String(newImportance) },
+              { where: `id = '${m.id.replace(/'/g, "''")}'` }
+            );
+            updated++;
+          } catch {
+          }
+        }
+      }
+    }
+    const purged = await this.purgeForgotten();
+    deleted += purged;
+    try {
+      await this.table?.trygc();
+    } catch {
+    }
+    return { updated, deleted };
+  }
+  /**
+   * 彻底删除软删除超过 graceDays 天的记忆
+   */
+  async purgeForgotten(graceDays = FORGET_GRACE_DAYS) {
+    if (!this.table) await this.init();
+    const cutoff = Date.now() - graceDays * 864e5;
+    let deleted = 0;
+    try {
+      const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
+      const toDelete = rows.filter(
+        (r) => r.deleted_at !== null && Number(r.deleted_at) < cutoff
+      );
+      for (const r of toDelete) {
+        try {
+          await this.table.delete(`id = '${r.id.replace(/'/g, "''")}'`);
+          deleted++;
+        } catch {
+        }
+      }
+    } catch {
+    }
+    return deleted;
   }
 };
-function formatRecallForContext(memories, emoji = "\u{1F985}") {
-  if (!memories.length) return "";
-  const lines = [`${emoji} ** hawk \u8BB0\u5FC6\u68C0\u7D22\u7ED3\u679C **`];
-  for (const m of memories) {
-    lines.push(`[${m.category}] (${(m.score * 100).toFixed(0)}%\u76F8\u5173): ${m.text}`);
-  }
-  return lines.join("\n");
-}
 
 // src/config.ts
 import * as path2 from "path";
@@ -488,7 +1057,7 @@ function hasEmbeddingProvider() {
 }
 
 // src/retriever.ts
-var HybridRetriever = class {
+var HybridRetriever = class _HybridRetriever {
   db;
   embedder;
   bm25 = null;
@@ -500,19 +1069,38 @@ var HybridRetriever = class {
   // set true when new memories are stored
   bm25BuildPromise = null;
   // prevents concurrent rebuilds
+  lastIndexedMemoryCount = 0;
+  // for incremental tracking
+  pendingTexts = [];
+  // texts added since last full rebuild
+  pendingIds = [];
   constructor(db, embedder) {
     this.db = db;
     this.embedder = embedder;
   }
-  /** Call this after store() to invalidate the BM25 index — next search() will rebuild */
+  /** Call this after store() to invalidate the BM25 index — next search() will rebuild incrementally */
   markDirty() {
     this.bm25Dirty = true;
   }
   // ---------- BM25 Setup ----------
+  /** Rebuild threshold: only full-rebuild if more than 10 new memories since last build */
+  static BM25_REBUILD_THRESHOLD = 10;
   async _ensureBm25Index() {
     if (!this.bm25Dirty && this.bm25) return;
     if (this.bm25BuildPromise) return this.bm25BuildPromise;
     this.bm25BuildPromise = this._buildBm25Index();
+    await this.bm25BuildPromise;
+    this.bm25BuildPromise = null;
+    this.bm25Dirty = false;
+  }
+  /**
+   * Incremental BM25: only full-rebuild if new memories exceed threshold.
+   * Otherwise just add to pending corpus and merge at search time.
+   */
+  async _ensureBm25IndexIncremental() {
+    if (!this.bm25Dirty && this.bm25) return;
+    if (this.bm25BuildPromise) return this.bm25BuildPromise;
+    this.bm25BuildPromise = this._buildBm25IndexIncremental();
     await this.bm25BuildPromise;
     this.bm25BuildPromise = null;
     this.bm25Dirty = false;
@@ -524,7 +1112,48 @@ var HybridRetriever = class {
       if (!allMemories.length) return;
       this.corpusIds = allMemories.map((m) => m.id);
       this.corpus = allMemories.map((m) => m.text.toLowerCase());
+      this.lastIndexedMemoryCount = allMemories.length;
+      this.pendingTexts = [];
+      this.pendingIds = [];
       this.bm25 = new BM25Okapi(this.corpus);
+    } catch {
+      console.warn("[hawk-bridge] rank_bm25 not available, BM25 disabled");
+    }
+  }
+  /**
+   * Incremental BM25: check if new memories exceed threshold.
+   * If few: accumulate in pending, merge at search time.
+   * If many: full rebuild.
+   */
+  async _buildBm25IndexIncremental() {
+    try {
+      const { BM25Okapi } = await import("rank_bm25");
+      const allMemories = await this.db.getAllTexts();
+      if (!allMemories.length) return;
+      const total = allMemories.length;
+      const newCount = total - this.lastIndexedMemoryCount;
+      if (newCount <= 0 || newCount > _HybridRetriever.BM25_REBUILD_THRESHOLD) {
+        this.corpusIds = allMemories.map((m) => m.id);
+        this.corpus = allMemories.map((m) => m.text.toLowerCase());
+        this.lastIndexedMemoryCount = total;
+        this.pendingTexts = [];
+        this.pendingIds = [];
+        this.bm25 = new BM25Okapi(this.corpus);
+      } else {
+        const newMemories = allMemories.slice(-newCount);
+        for (const m of newMemories) {
+          this.pendingIds.push(m.id);
+          this.pendingTexts.push(m.text.toLowerCase());
+        }
+        this.lastIndexedMemoryCount = total;
+        const fullCorpus = [...this.corpus, ...this.pendingTexts];
+        const fullIds = [...this.corpusIds, ...this.pendingIds];
+        this.corpus = fullCorpus;
+        this.corpusIds = fullIds;
+        this.pendingTexts = [];
+        this.pendingIds = [];
+        this.bm25 = new BM25Okapi(fullCorpus);
+      }
     } catch {
       console.warn("[hawk-bridge] rank_bm25 not available, BM25 disabled");
     }
@@ -643,15 +1272,15 @@ var HybridRetriever = class {
     }
   }
   // ---------- Main Search Pipeline ----------
-  async search(query, topK = 5, scope) {
+  async search(query, topK = 5, scope, sourceTypes) {
     topK = Math.min(Math.max(1, topK), 100);
-    await this._ensureBm25Index();
+    await this._ensureBm25IndexIncremental();
     if (!this.noisePrototypes.length) await this.buildNoisePrototypes();
     const hasEmbedding = hasEmbeddingProvider();
     if (hasEmbedding) {
       try {
         const queryVector = await this.embedder.embedQuery(query);
-        const vectorResults = await this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, 0, scope);
+        const vectorResults = await this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, 0, scope, sourceTypes);
         const vectorRanked = vectorResults.map((r, i) => ({ id: r.id, score: 1 - i * 0.01, text: r.text })).sort((a, b) => b.score - a.score);
         const bm25Scores2 = this.bm25Score(query);
         const bm25Ranked2 = this.corpusIds.map((id, i) => ({ id, score: bm25Scores2[i], text: this.corpus[i] })).filter((item) => item.score > 0).sort((a, b) => b.score - a.score).slice(0, topK * BM25_SEARCH_MULTIPLIER);
@@ -727,6 +1356,15 @@ function cosineSimilarity(a, b) {
 }
 
 // src/hooks/hawk-recall/handler.ts
+var INJECTION_LIMIT = 5;
+var MAX_INJECTION_CHARS = 2e3;
+var COMPOSITE_WEIGHT_RELIABILITY = 0.4;
+var COMPOSITE_WEIGHT_SCORE = 0.6;
+var sharedDb = null;
+function getSharedDb() {
+  if (!sharedDb) sharedDb = new HawkDB();
+  return sharedDb;
+}
 var bm25DirtyGlobal = false;
 function markBm25Dirty() {
   bm25DirtyGlobal = true;
@@ -736,9 +1374,10 @@ async function getRetriever() {
   if (!retrieverPromise) {
     retrieverPromise = (async () => {
       const config = await getConfig();
-      const db = new HawkDB();
+      const db = getSharedDb();
       await db.init();
-      const embedder = new Embedder(config.embedding);
+      const { Embedder: Embedder2 } = await Promise.resolve().then(() => (init_embeddings(), embeddings_exports));
+      const embedder = new Embedder2(config.embedding);
       const r = new HybridRetriever(db, embedder);
       await r.buildNoisePrototypes();
       return r;
@@ -751,6 +1390,139 @@ async function getRetriever() {
   }
   return retriever;
 }
+var FORGET_PATTERNS = [/^忘掉\s*(.+)/, /^忘记\s*(.+)/, /^别记得\s*(.+)/, /^不用记\s*(.+)/, /^forget\s+(.+)/i, /^delete\s+(.+)/i];
+var CORRECT_PATTERN = /^(?:纠正|correct)\s*[:：]\s*(.+)/i;
+var LOCK_PATTERNS = [/^锁定\s*(.+)/, /^lock\s+(.+)/i];
+var UNLOCK_PATTERNS = [/^解锁\s*(.+)/, /^unlock\s+(.+)/i];
+var EDIT_PATTERN = /^hawk\s*编辑(?:\s*(\d+))?/i;
+var HISTORY_PATTERN = /^hawk\s*历史(?:\s*[:：]\s*(.+))?/i;
+var CHECK_PATTERN = /^hawk\s*检查(?:\s+(\d+))?/i;
+var MEMORY_LIST_PATTERN = /^hawk\s*记忆(?:\s+([a-z]+))?(?:\s+(\d+))?$/i;
+var IMPORTANT_PATTERN = /^hawk\s*重要\s*(\d+)(?:\s*×?([\d.]+))?$/i;
+var UNIMPORTANT_PATTERN = /^hawk\s*不重要\s*(\d+)$/i;
+var REVIEW_PATTERN = /^hawk\s*回顾(?:\s+(\d+))?$/i;
+var SCOPE_PATTERN = /^hawk\s*(?:scope|作用域)\s*(\d+)\s+(personal|team|project)$/i;
+var CONFLICT_PATTERN = /^hawk\s*冲突\s*(\d+)$/i;
+var EXPORT_PATTERN = /^hawk\s*导出(?:\s+(.+?))?$/i;
+var CLEAR_PATTERN = /^hawk\s*清空$/i;
+var BATCHLOCK_PATTERN = /^hawk\s*锁定\s*all(?:\s+(.+))?$/i;
+var BATCHUNLOCK_PATTERN = /^hawk\s*解锁\s*all$/i;
+var COMPARE_PATTERN = /^hawk\s*对比\s*(\d+)\s+(\d+)$/i;
+var PURGE_PATTERN = /^hawk\s*清理$/i;
+var STATS_PATTERN = /^hawk\s*统计$/i;
+var DENY_PATTERN = /^hawk\s*否认\s*(\d+)$/i;
+function matchFirst(text, patterns) {
+  for (const p of patterns) {
+    const m = text.trim().match(p);
+    if (m) return (m[1] ?? "").trim();
+  }
+  return null;
+}
+function relLabel(r) {
+  return r >= 0.7 ? "\u2705" : r >= 0.4 ? "\u26A0\uFE0F" : "\u274C";
+}
+function fmtRel(m) {
+  const r = m.reliability, b = m.baseReliability ?? r;
+  return Math.abs(r - b) < 0.01 ? `${Math.round(r * 100)}%` : `${Math.round(r * 100)}%(\u57FA\u7840${Math.round(b * 100)}%)`;
+}
+function formatTime(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+function formatMemoryRow(m, idx) {
+  const rel = relLabel(m.reliability);
+  const tag = m.locked ? " \u{1F512}" : "";
+  const imp = m.importanceOverride > 1.5 ? " \u2B50" : m.importanceOverride < 0.7 ? " \u2193" : "";
+  const cold = m.coldStartUntil && Date.now() < m.coldStartUntil ? " \u{1F6E1}" : "";
+  const corr = m.correctionCount > 0 ? ` [\u7EA0\u6B63\xD7${m.correctionCount}]` : "";
+  const scope = m.scope !== "personal" ? ` [${m.scope}]` : "";
+  return `${rel} ${fmtRel(m)}${tag}${imp}${cold}${corr}${scope} [${idx}] [${m.category}] ${m.text.slice(0, 75)}${m.text.length > 75 ? "..." : ""}`;
+}
+function formatRecallResults(memories, emoji) {
+  if (!memories.length) return "";
+  const lines = [`${emoji} ** hawk \u8BB0\u5FC6\u68C0\u7D22 **`];
+  for (const m of memories) {
+    const lock = m.locked ? " \u{1F512}" : "";
+    const imp = m.importanceOverride > 1.5 ? " \u2B50" : "";
+    const corr = m.correctionCount > 0 ? ` (\u7EA0\u6B63\xD7${m.correctionCount})` : "";
+    const score = `(${(m.score * 100).toFixed(0)}%\u76F8\u5173)`;
+    const reason = m.matchReason ? `
+   \u2192 ${m.matchReason}` : "";
+    lines.push(`${m.reliabilityLabel} ${score}${lock}${imp}${corr} [${m.category}] ${m.text}${reason}`);
+  }
+  return lines.join("\n");
+}
+function compressText(text, limit = 400) {
+  if (text.length <= limit) return text;
+  const first = text.slice(0, limit * 0.6);
+  const breakIdx = Math.max(
+    first.lastIndexOf("\u3002"),
+    first.lastIndexOf("\n"),
+    first.lastIndexOf("\uFF1A"),
+    first.lastIndexOf(".")
+  );
+  const head = breakIdx > limit * 0.3 ? text.slice(0, breakIdx + 1) : first;
+  const kw = extractKeywords(text).slice(0, 5);
+  return `${head.slice(0, limit - kw.join("\u3001").length - 5)}... [\u5173\u952E\u8BCD: ${kw.join("\u3001")}]`;
+}
+function compositeScore(m) {
+  return m.score * COMPOSITE_WEIGHT_SCORE + m.reliability * COMPOSITE_WEIGHT_RELIABILITY;
+}
+function extractKeywords(text) {
+  const stop = /* @__PURE__ */ new Set(["\u7684", "\u4E86", "\u662F", "\u5728", "\u548C", "\u4E5F", "\u6709", "\u5C31", "\u4E0D", "\u6211", "\u4F60", "\u4ED6", "\u5979", "\u5B83", "\u4EEC", "\u8FD9", "\u90A3", "\u4E2A", "\u4E0E", "\u6216", "\u88AB", "\u4E3A", "\u4E0A", "\u4E0B", "\u6765", "\u53BB"]);
+  const words = [];
+  for (let i = 0; i < text.length - 1; i++) {
+    const w = text.slice(i, i + 2);
+    if (!stop.has(w)) words.push(w);
+  }
+  for (let i = 0; i < text.length - 2; i++) {
+    const w = text.slice(i, i + 3);
+    if (!stop.has(w)) words.push(w);
+  }
+  return [...new Set(words)];
+}
+function textSimilarity(a, b) {
+  const kwA = extractKeywords(a);
+  const kwB = extractKeywords(b);
+  if (!kwA.length || !kwB.length) return 0;
+  const overlap = kwA.filter((k) => kwB.includes(k)).length;
+  const union = (/* @__PURE__ */ new Set([...kwA, ...kwB])).size;
+  return union > 0 ? overlap / union : 0;
+}
+function computeMatchReason(query, memory) {
+  const qKw = extractKeywords(query);
+  const mKw = extractKeywords(memory.text);
+  const overlap = qKw.filter((k) => mKw.includes(k));
+  if (overlap.length === 0) return "";
+  return `\u547D\u4E2D: "${overlap.slice(0, 3).join('", "')}"`;
+}
+async function findMemoryBySemanticMatch(db, newContent) {
+  const all = await db.getAllMemories();
+  if (!all.length) return null;
+  const keywords = extractKeywords(newContent);
+  let best = null;
+  for (const m of all) {
+    const memKw = extractKeywords(m.text);
+    const overlap = keywords.filter((k) => memKw.includes(k)).length;
+    const union = (/* @__PURE__ */ new Set([...keywords, ...memKw])).size;
+    const jaccard = union > 0 ? overlap / union : 0;
+    const lenPenalty = Math.min(m.text.length / Math.max(newContent.length, 1), newContent.length / Math.max(m.text.length, 1));
+    const score = jaccard * 0.7 + lenPenalty * 0.3;
+    if (!best || score > best.score) best = { id: m.id, score };
+  }
+  return best && best.score > 0.1 ? best : null;
+}
+var SANITIZE = [
+  [/(?:api[_-]?key|secret|token|password)\s*[:=]\s*["']?[\w-]{8,}["']?/gi, "$1: [REDACTED]"],
+  [/\b1[3-9]\d{9}\b/g, "[PHONE_REDACTED]"],
+  [/\b[\w.-]+@[\w.-]+\.\w{2,}\b/g, "[EMAIL_REDACTED]"],
+  [/\b[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b/g, "[ID_REDACTED]"]
+];
+function sanitize(text) {
+  let r = text;
+  for (const [p, repl] of SANITIZE) r = r.replace(p, repl);
+  return r;
+}
 var recallHandler = async (event) => {
   if (event.type !== "agent" || event.action !== "bootstrap") return;
   try {
@@ -758,73 +1530,664 @@ var recallHandler = async (event) => {
     const { topK, injectEmoji, minScore } = config.recall;
     const sessionEntry = event.context?.sessionEntry;
     if (!sessionEntry) return;
-    const queryText = extractQueryFromSession(sessionEntry);
-    if (!queryText || queryText.trim().length < 2) return;
-    const retrieverInstance = await getRetriever();
-    const memories = await retrieverInstance.search(queryText, topK);
-    const relevant = memories.filter((m) => m.score >= minScore);
-    const sanitized = relevant.map((m) => ({
-      ...m,
-      text: sanitizeForRecall(m.text)
-    }));
-    if (!sanitized.length) return;
-    const injectionText = formatRecallForContext(
-      sanitized.map((m) => ({
-        text: m.text,
-        score: m.score,
-        category: m.category
-      })),
-      injectEmoji
-    );
-    event.messages.push(`
-${injectionText}
+    const messages = sessionEntry.messages || [];
+    let latestUserMessage = "";
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role === "user" && msg.content) {
+        latestUserMessage = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+        break;
+      }
+    }
+    if (!latestUserMessage?.trim()) return;
+    const db = getSharedDb();
+    await db.init();
+    const trimmed = latestUserMessage.trim();
+    const sessionId = sessionEntry.sessionId ?? void 0;
+    const ctx = event.context;
+    if (m = trimmed.match(MEMORY_LIST_PATTERN)) {
+      const category = m[1] || "";
+      const page = Math.max(1, parseInt(m[2] || "1", 10));
+      const PAGE_SIZE = 20;
+      let all = await db.getAllMemories();
+      if (!all.length) {
+        event.messages.push(`
+${injectEmoji} \u8FD8\u6CA1\u6709\u4EFB\u4F55\u8BB0\u5FC6\u3002
 `);
+        return;
+      }
+      if (category && ["fact", "preference", "decision", "entity", "other"].includes(category)) {
+        all = all.filter((x) => x.category === category);
+      }
+      const sorted2 = [...all].sort((a, b) => {
+        if (a.locked !== b.locked) return a.locked ? -1 : 1;
+        return b.reliability - a.reliability;
+      });
+      const totalPages = Math.ceil(sorted2.length / PAGE_SIZE);
+      const pageItems = sorted2.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+      const lines = [`${injectEmoji} ** hawk \u8BB0\u5FC6 ${page}/${totalPages}\u9875 \u5171${sorted2.length}\u6761 **${category ? ` [${category}]` : ""}**`];
+      for (let i = 0; i < pageItems.length; i++) {
+        lines.push(formatMemoryRow(pageItems[i], (page - 1) * PAGE_SIZE + i + 1));
+      }
+      if (totalPages > 1) lines.push(`
+\u2192 hawk\u8BB0\u5FC6 ${category} ${page + 1}`);
+      lines.push(`
+\u2192 hawk\u91CD\u8981 N \xD72  \u6807\u8BB0\u4E3A\u91CD\u8981`);
+      lines.push(`\u2192 hawk\u4E0D\u91CD\u8981 N     \u964D\u4F4E\u91CD\u8981\u6027`);
+      event.messages.push(`
+${lines.join("\n")}
+`);
+      return;
+    }
+    var m = trimmed.match(IMPORTANT_PATTERN);
+    if (m) {
+      const idx = parseInt(m[1], 10);
+      const mult = parseFloat(m[2] || "2");
+      const all = await getSortedMemories(db, getAgentId(ctx));
+      if (idx < 1 || idx > all.length) {
+        event.messages.push(`
+${injectEmoji} \u65E0\u6548\u7F16\u53F7 (1-${all.length})
+`);
+        return;
+      }
+      const mem = all[idx - 1];
+      await db.markImportant(mem.id, mult);
+      const lines = [`${injectEmoji} ** \u5DF2\u6807\u8BB0\u4E3A\u91CD\u8981 **`];
+      lines.push(formatMemoryRow(mem, idx));
+      lines.push(`
+\u2192 importanceOverride: ${mem.importanceOverride} \u2192 ${mult}`);
+      event.messages.push(`
+${lines.join("\n")}
+`);
+      return;
+    }
+    var m = trimmed.match(UNIMPORTANT_PATTERN);
+    if (m) {
+      const idx = parseInt(m[1], 10);
+      const all = await getSortedMemories(db, getAgentId(ctx));
+      if (idx < 1 || idx > all.length) {
+        event.messages.push(`
+${injectEmoji} \u65E0\u6548\u7F16\u53F7 (1-${all.length})
+`);
+        return;
+      }
+      const mem = all[idx - 1];
+      await db.update(mem.id, { importanceOverride: 0.5 });
+      event.messages.push(`
+${injectEmoji} \u5DF2\u964D\u4F4E\u4F18\u5148\u7EA7\u3002
+`);
+      return;
+    }
+    var m = trimmed.match(SCOPE_PATTERN);
+    if (m) {
+      const idx = parseInt(m[1], 10);
+      const scopeVal = m[2];
+      const all = await getSortedMemories(db, getAgentId(ctx));
+      if (idx < 1 || idx > all.length) {
+        event.messages.push(`
+${injectEmoji} \u65E0\u6548\u7F16\u53F7 (1-${all.length})
+`);
+        return;
+      }
+      await db.update(all[idx - 1].id, { scope: scopeVal });
+      event.messages.push(`
+${injectEmoji} \u5DF2\u8BBE\u7F6E\u4F5C\u7528\u57DF\u4E3A [${scopeVal}]
+`);
+      return;
+    }
+    var m = trimmed.match(EDIT_PATTERN);
+    if (m) {
+      const all = await getSortedMemories(db, getAgentId(ctx));
+      if (!all.length) {
+        event.messages.push(`
+${injectEmoji} \u8FD8\u6CA1\u6709\u4EFB\u4F55\u8BB0\u5FC6\u3002
+`);
+        return;
+      }
+      if (!m[1]) {
+        const lines = [`${injectEmoji} ** \u9009\u62E9\u8981\u7F16\u8F91\u7684\u8BB0\u5FC6 **`];
+        for (let i = 0; i < Math.min(5, all.length); i++) lines.push(`[${i + 1}] ${formatMemoryRow(all[i], i + 1)}`);
+        lines.push(`
+\u2192 hawk\u7F16\u8F91 <\u7F16\u53F7>`);
+        event.messages.push(`
+${lines.join("\n")}
+`);
+        return;
+      }
+      const idx = parseInt(m[1], 10) - 1;
+      if (idx < 0 || idx >= all.length) {
+        event.messages.push(`
+${injectEmoji} \u65E0\u6548\u7F16\u53F7 (1-${all.length})
+`);
+        return;
+      }
+      const mem = all[idx];
+      ctx._hawkEditTarget = mem.id;
+      const scopeMap = { personal: "\u4E2A\u4EBA", team: "\u56E2\u961F", project: "\u9879\u76EE" };
+      event.messages.push(
+        `
+${injectEmoji} ** \u7F16\u8F91\u8BB0\u5FC6 [#${idx + 1}] **
+\u5206\u7C7B: ${mem.category} | \u53EF\u9760\u6027: ${fmtRel(mem)} | \u4F5C\u7528\u57DF: ${scopeMap[mem.scope] ?? mem.scope}
+\u521B\u5EFA: ${formatTime(mem.createdAt)} | \u4FEE\u6539: ${formatTime(mem.updatedAt)}` + (mem.sessionId ? `
+session: ${mem.sessionId}` : "") + `
+\u5185\u5BB9: ${mem.text}` + (mem.correctionCount > 0 ? `
+\u7EA0\u6B63\u5386\u53F2: ${mem.correctionCount}\u6B21` : "") + `
+
+\u2192 hawk\u65B0\u5185\u5BB9 <\u6587\u672C>
+\u2192 hawk\u6539\u5206\u7C7B <fact|preference|decision|entity|other>
+\u2192 hawk\u91CD\u8981 \xD72    \u2192 hawk\u4E0D\u91CD\u8981    \u2192 hawk\u4F5C\u7528\u57DF personal|team|project
+\u2192 hawk\u51B2\u7A81 ${idx + 1}  \u68C0\u67E5\u662F\u5426\u4E0E\u65B0\u5185\u5BB9\u51B2\u7A81
+`
+      );
+      return;
+    }
+    if (trimmed.startsWith("hawk\u65B0\u5185\u5BB9 ")) {
+      const newText = trimmed.slice("hawk\u65B0\u5185\u5BB9 ".length).trim();
+      const targetId = ctx._hawkEditTarget;
+      if (!targetId || !newText) {
+        event.messages.push(`
+${injectEmoji} \u65E0\u6548\u7F16\u8F91\u8BF7\u6C42\u3002
+`);
+        return;
+      }
+      const ok = await db.update(targetId, { text: newText });
+      delete ctx._hawkEditTarget;
+      event.messages.push(`
+${injectEmoji} ${ok ? "\u2705 \u5DF2\u66F4\u65B0" : "\u274C \u5931\u8D25"} \u2192 ${newText.slice(0, 60)}
+`);
+      return;
+    }
+    if (trimmed.startsWith("hawk\u6539\u5206\u7C7B ")) {
+      const cat = trimmed.slice("hawk\u6539\u5206\u7C7B ".length).trim();
+      const valid = ["fact", "preference", "decision", "entity", "other"];
+      if (!valid.includes(cat)) {
+        event.messages.push(`
+${injectEmoji} \u65E0\u6548\u5206\u7C7B: ${valid.join(", ")}
+`);
+        return;
+      }
+      const targetId = ctx._hawkEditTarget;
+      if (!targetId) {
+        event.messages.push(`
+${injectEmoji} \u8BF7\u5148\u6267\u884C hawk\u7F16\u8F91 \u9009\u62E9\u8BB0\u5FC6\u3002
+`);
+        return;
+      }
+      const ok = await db.update(targetId, { category: cat });
+      delete ctx._hawkEditTarget;
+      event.messages.push(`
+${injectEmoji} ${ok ? `\u2705 \u5DF2\u66F4\u65B0\u4E3A [${cat}]` : "\u274C \u5931\u8D25"}
+`);
+      return;
+    }
+    var m = trimmed.match(HISTORY_PATTERN);
+    if (m) {
+      const kw = m[1]?.trim() || "";
+      const all = await db.getAllMemories();
+      const withHistory = all.filter((x) => x.correctionHistory.length > 0);
+      const relevant = kw ? withHistory.filter((x) => x.text.toLowerCase().includes(kw.toLowerCase())) : withHistory;
+      if (!relevant.length) {
+        event.messages.push(`
+${injectEmoji} \u6CA1\u6709\u627E\u5230${kw ? `"${kw}"\u76F8\u5173` : ""}\u7684\u7EA0\u6B63\u5386\u53F2\u3002
+`);
+        return;
+      }
+      const lines = [`${injectEmoji} ** \u7EA0\u6B63\u5386\u53F2 ${kw ? `(\u5173\u952E\u8BCD: ${kw}) ` : ""}\u5171${relevant.length}\u6761 **`];
+      for (const mem of relevant) {
+        lines.push(`
+\u{1F4CC} [${mem.category}] ${mem.text.slice(0, 60)}`);
+        for (let i = 0; i < mem.correctionHistory.length; i++) {
+          const c = mem.correctionHistory[i];
+          lines.push(`   ${i + 1}. ${formatTime(c.ts)}: "${c.oldText.slice(0, 40)}" \u2192 "${c.newText.slice(0, 40)}"`);
+        }
+      }
+      event.messages.push(`
+${lines.join("\n")}
+`);
+      return;
+    }
+    var m = trimmed.match(CONFLICT_PATTERN);
+    if (m) {
+      const idx = parseInt(m[1], 10);
+      const all = await getSortedMemories(db, getAgentId(ctx));
+      if (idx < 1 || idx > all.length) {
+        event.messages.push(`
+${injectEmoji} \u65E0\u6548\u7F16\u53F7
+`);
+        return;
+      }
+      const mem = all[idx - 1];
+      const conflicts = await db.detectConflicts(mem.text, mem.category);
+      if (!conflicts.length) {
+        event.messages.push(`
+${injectEmoji} \u672A\u68C0\u6D4B\u5230\u4E0E[#${idx}]\u51B2\u7A81\u7684\u8BB0\u5FC6\u3002
+`);
+        return;
+      }
+      const lines = [`${injectEmoji} \u26A0\uFE0F ** \u68C0\u6D4B\u5230 ${conflicts.length} \u6761\u53EF\u80FD\u51B2\u7A81 **`];
+      for (const c of conflicts) {
+        lines.push(`
+\u{1F534} [${c.category}] "${c.text.slice(0, 60)}"`);
+        lines.push(`   \u53EF\u9760\u6027: ${fmtRel(c)} | \u521B\u5EFA: ${formatTime(c.createdAt)}`);
+      }
+      event.messages.push(`
+${lines.join("\n")}
+`);
+      return;
+    }
+    var m = trimmed.match(COMPARE_PATTERN);
+    if (m) {
+      const idxA = parseInt(m[1], 10) - 1;
+      const idxB = parseInt(m[2], 10) - 1;
+      const all = await getSortedMemories(db, getAgentId(ctx));
+      if (idxA < 0 || idxA >= all.length || idxB < 0 || idxB >= all.length) {
+        event.messages.push(`
+${injectEmoji} \u65E0\u6548\u7F16\u53F7 (1-${all.length})
+`);
+        return;
+      }
+      const memA = all[idxA];
+      const memB = all[idxB];
+      const sim = textSimilarity(memA.text, memB.text);
+      const kwA = extractKeywords(memA.text);
+      const kwB = extractKeywords(memB.text);
+      const overlap = kwA.filter((k) => kwB.includes(k));
+      const lines = [
+        `${injectEmoji} ** \u8BB0\u5FC6\u5BF9\u6BD4 [#${idxA + 1} vs #${idxB + 1}] **`,
+        ``,
+        `[#${idxA + 1}] ${relLabel(memA.reliability)} ${fmtRel(memA)} [${memA.category}]`,
+        `\u5185\u5BB9: ${memA.text.slice(0, 80)}`,
+        `\u521B\u5EFA: ${formatTime(memA.createdAt)} | \u9A8C\u8BC1: ${memA.verificationCount}\u6B21`,
+        ``,
+        `[#${idxB + 1}] ${relLabel(memB.reliability)} ${fmtRel(memB)} [${memB.category}]`,
+        `\u5185\u5BB9: ${memB.text.slice(0, 80)}`,
+        `\u521B\u5EFA: ${formatTime(memB.createdAt)} | \u9A8C\u8BC1: ${memB.verificationCount}\u6B21`,
+        ``,
+        `\u76F8\u4F3C\u5EA6: ${(sim * 100).toFixed(0)}%`,
+        `\u5171\u540C\u5173\u952E\u8BCD: ${overlap.length > 0 ? overlap.slice(0, 5).join(", ") : "\u65E0"}`,
+        sim >= 0.6 ? `\u26A0\uFE0F \u53EF\u80FD\u77DB\u76FE\uFF08\u76F8\u4F3C\u4F46\u4E0D\u540C\uFF09` : sim < 0.3 ? `\u2705 \u5B8C\u5168\u4E0D\u540C` : `\u26A1 \u90E8\u5206\u91CD\u53E0`
+      ];
+      event.messages.push(`
+${lines.join("\n")}
+`);
+      return;
+    }
+    var m = trimmed.match(EXPORT_PATTERN);
+    if (m) {
+      const filepath = m[1]?.trim() || path3.join(homedir3(), ".hawk", `export-${Date.now()}.json`);
+      const all = await db.getAllMemories();
+      const exported = all.map((m2) => ({
+        id: m2.id,
+        text: m2.text,
+        category: m2.category,
+        reliability: m2.reliability,
+        scope: m2.scope,
+        locked: m2.locked,
+        verificationCount: m2.verificationCount,
+        createdAt: formatTime(m2.createdAt),
+        updatedAt: formatTime(m2.updatedAt),
+        correctionHistory: m2.correctionHistory
+      }));
+      try {
+        const { writeFileSync, mkdirSync, existsSync } = __require("fs");
+        const dir = path3.dirname(filepath);
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+        writeFileSync(filepath, JSON.stringify({ exported_at: (/* @__PURE__ */ new Date()).toISOString(), count: exported.length, memories: exported }, null, 2));
+        event.messages.push(`
+${injectEmoji} \u2705 \u5DF2\u5BFC\u51FA ${exported.length} \u6761\u8BB0\u5FC6\u5230
+${filepath}
+`);
+      } catch (err) {
+        event.messages.push(`
+${injectEmoji} \u274C \u5BFC\u51FA\u5931\u8D25: ${err.message}
+`);
+      }
+      return;
+    }
+    if (CLEAR_PATTERN.test(trimmed)) {
+      const all = await db.getAllMemories();
+      const unlocked = all.filter((m2) => !m2.locked);
+      if (!unlocked.length) {
+        event.messages.push(`
+${injectEmoji} \u6CA1\u6709\u53EF\u6E05\u7A7A\u7684\u8BB0\u5FC6\uFF08\u5168\u90E8\u5DF2\u9501\u5B9A\uFF09
+`);
+        return;
+      }
+      let cleared = 0;
+      for (const m2 of unlocked) {
+        if (await db.forget(m2.id)) cleared++;
+      }
+      event.messages.push(`
+${injectEmoji} \u2705 \u5DF2\u6E05\u7A7A ${cleared} \u6761\u672A\u9501\u5B9A\u8BB0\u5FC6\u3002
+`);
+      return;
+    }
+    var m = trimmed.match(BATCHLOCK_PATTERN);
+    if (m) {
+      const cat = m[1]?.trim();
+      const all = await db.getAllMemories();
+      const targets = cat ? all.filter((x) => x.category === cat && !x.locked) : all.filter((x) => !x.locked);
+      if (!targets.length) {
+        event.messages.push(`
+${injectEmoji} \u6CA1\u6709\u627E\u5230${cat ? `[${cat}]` : ""}\u672A\u9501\u5B9A\u7684\u8BB0\u5FC6\u3002
+`);
+        return;
+      }
+      let locked = 0;
+      for (const t of targets) {
+        if (await db.lock(t.id)) locked++;
+      }
+      event.messages.push(`
+${injectEmoji} \u{1F512} \u5DF2\u9501\u5B9A ${locked} \u6761${cat ? `[${cat}]` : ""}\u8BB0\u5FC6\u3002
+`);
+      return;
+    }
+    if (BATCHUNLOCK_PATTERN.test(trimmed)) {
+      const all = await db.getAllMemories();
+      const locked = all.filter((x) => x.locked);
+      if (!locked.length) {
+        event.messages.push(`
+${injectEmoji} \u6CA1\u6709\u5DF2\u9501\u5B9A\u7684\u8BB0\u5FC6\u3002
+`);
+        return;
+      }
+      let unlocked = 0;
+      for (const t of locked) {
+        if (await db.unlock(t.id)) unlocked++;
+      }
+      event.messages.push(`
+${injectEmoji} \u{1F513} \u5DF2\u89E3\u9501 ${unlocked} \u6761\u8BB0\u5FC6\u3002
+`);
+      return;
+    }
+    if (PURGE_PATTERN.test(trimmed)) {
+      const { exec } = __require("child_process");
+      const { promisify } = __require("util");
+      const execAsync = promisify(exec);
+      const distDecay = path3.join(process.cwd(), "dist/cli/decay.js");
+      try {
+        const { stdout } = await execAsync(`node "${distDecay}"`, { timeout: 3e4 });
+        event.messages.push(`
+${injectEmoji} ${stdout.trim()}
+`);
+      } catch (err) {
+        event.messages.push(`
+${injectEmoji} \u274C \u6E05\u7406\u5931\u8D25: ${err.message}
+`);
+      }
+      return;
+    }
+    if (STATS_PATTERN.test(trimmed)) {
+      const all = await db.getAllMemories(getAgentId(ctx));
+      if (!all.length) {
+        event.messages.push(`
+${injectEmoji} \u6682\u65E0\u8BB0\u5FC6\u3002
+`);
+        return;
+      }
+      const total = all.length;
+      const locked = all.filter((m2) => m2.locked).length;
+      const byCat = {};
+      const byScope = {};
+      const byRel = {};
+      const now = Date.now();
+      for (const m2 of all) {
+        byCat[m2.category] = (byCat[m2.category] || 0) + 1;
+        byScope[m2.scope] = (byScope[m2.scope] || 0) + 1;
+        const relBand = m2.reliability >= 0.8 ? "high" : m2.reliability >= 0.5 ? "mid" : "low";
+        byRel[relBand] = (byRel[relBand] || 0) + 1;
+      }
+      const avgImp = (all.reduce((s, m2) => s + m2.importance, 0) / total).toFixed(2);
+      const expired = all.filter((m2) => m2.expiresAt > 0 && m2.expiresAt < now).length;
+      const lines = [
+        `
+${injectEmoji} ** hawk \u8BB0\u5FC6\u7EDF\u8BA1 **
+`,
+        `\u603B\u8BB0\u5FC6: ${total} | \u9501\u5B9A: ${locked} | \u5DF2\u8FC7\u671F: ${expired}`,
+        `\u5E73\u5747\u91CD\u8981\u6027: ${avgImp}`,
+        ``,
+        `**\u6309\u7C7B\u522B**:`,
+        ...Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${k}: ${v}`),
+        ``,
+        `**\u6309\u4F5C\u7528\u57DF**:`,
+        ...Object.entries(byScope).sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${k}: ${v}`),
+        ``,
+        `**\u6309\u53EF\u9760\u6027**: high\u226580%:${byRel.high || 0} | mid50-80%:${byRel.mid || 0} | low<50%:${byRel.low || 0}`
+      ];
+      event.messages.push(lines.join("\n") + "\n");
+      return;
+    }
+    var m = trimmed.match(REVIEW_PATTERN);
+    if (m) {
+      const count = Math.min(10, Math.max(1, parseInt(m[1] || "3", 10)));
+      const reviewConfig = config.review;
+      const minRel = reviewConfig?.minReliability ?? 0.5;
+      const batch = reviewConfig?.batchSize ?? 5;
+      const candidates = await db.getReviewCandidates(minRel, batch);
+      if (!candidates.length) {
+        event.messages.push(`
+${injectEmoji} \u6CA1\u6709\u9700\u8981\u56DE\u987E\u7684\u8BB0\u5FC6\uFF08\u53EF\u9760\u6027\u5747\u2265${Math.round(minRel * 100)}%\uFF09\u3002
+`);
+        return;
+      }
+      const lines = [`${injectEmoji} ** \u4E3B\u52A8\u56DE\u987E (${candidates.length}\u6761\u6700\u4F4E\u53EF\u9760\u6027) **`];
+      for (let i = 0; i < candidates.length; i++) {
+        const mem = candidates[i];
+        lines.push(`
+${i + 1}. ${relLabel(mem.reliability)} ${fmtRel(mem)} [${mem.category}] ${mem.text.slice(0, 70)}`);
+        lines.push(`   \u2192 \u56DE\u590D"${i + 1} \u5BF9"\u786E\u8BA4 \u6216 "${i + 1} \u7EA0\u6B63: \u6B63\u786E\u5185\u5BB9"`);
+      }
+      event.messages.push(`
+${lines.join("\n")}
+`);
+      ctx._hawkCheckIndex = candidates.map((m2) => m2.id);
+      return;
+    }
+    var m = trimmed.match(CHECK_PATTERN);
+    if (m) {
+      const count = Math.min(10, Math.max(1, parseInt(m[1] || "3", 10)));
+      const candidates = await db.getReviewCandidates(0.5, count);
+      if (!candidates.length) {
+        event.messages.push(`
+${injectEmoji} \u6CA1\u6709\u9700\u8981\u68C0\u67E5\u7684\u8BB0\u5FC6\u3002
+`);
+        return;
+      }
+      const lines = [`${injectEmoji} ** \u4E3B\u52A8\u68C0\u67E5 (${candidates.length}\u6761) **`];
+      for (let i = 0; i < candidates.length; i++) {
+        const mem = candidates[i];
+        lines.push(`
+${i + 1}. ${relLabel(mem.reliability)} ${fmtRel(mem)} [${mem.category}] ${mem.text.slice(0, 70)}`);
+        lines.push(`   \u2192 "${i + 1} \u5BF9" \u6216 "${i + 1} \u7EA0\u6B63: \u6B63\u786E\u5185\u5BB9"`);
+      }
+      event.messages.push(`
+${lines.join("\n")}
+`);
+      ctx._hawkCheckIndex = candidates.map((m2) => m2.id);
+      return;
+    }
+    const confirmMatch = trimmed.match(/^hawk确认\s+(\d+)\s+(.+)/i);
+    if (confirmMatch) {
+      const idx = parseInt(confirmMatch[1], 10) - 1;
+      const action = confirmMatch[2].trim();
+      const targetIds = ctx._hawkCheckIndex || [];
+      if (idx < 0 || idx >= targetIds.length) {
+        event.messages.push(`
+${injectEmoji} \u65E0\u6548\u7F16\u53F7
+`);
+        return;
+      }
+      const id = targetIds[idx];
+      if (action === "\u5BF9" || action === "\u6B63\u786E") {
+        await db.verify(id, true);
+        event.messages.push(`
+${injectEmoji} \u2705 \u5DF2\u786E\u8BA4\uFF0C\u53EF\u9760\u6027\u63D0\u5347\u3002
+`);
+      } else if (/^纠正/.test(action)) {
+        const correct = action.replace(/^纠正[:：]?\s*/, "").trim();
+        await db.verify(id, false, correct);
+        event.messages.push(`
+${injectEmoji} \u2705 \u5DF2\u7EA0\u6B63 \u2192 ${correct}
+`);
+      } else {
+        event.messages.push(`
+${injectEmoji} \u65E0\u6548\u64CD\u4F5C\u3002\u7528"${idx + 1} \u5BF9"\u6216"${idx + 1} \u7EA0\u6B63: \u6B63\u786E\u5185\u5BB9"
+`);
+      }
+      return;
+    }
+    var m = trimmed.match(DENY_PATTERN);
+    if (m) {
+      const idx = parseInt(m[1], 10) - 1;
+      const targetIds = ctx._hawkCheckIndex || [];
+      if (idx < 0 || idx >= targetIds.length) {
+        event.messages.push(`
+${injectEmoji} \u65E0\u6548\u7F16\u53F7
+`);
+        return;
+      }
+      const id = targetIds[idx];
+      await db.flagUnhelpful(id, 0.05);
+      event.messages.push(`
+${injectEmoji} \u5DF2\u6807\u8BB0\u8BE5\u8BB0\u5FC6\u4E3A\u4E0D\u53EF\u9760\uFF08reliability -5%\uFF09
+`);
+      return;
+    }
+    {
+      const keyword = matchFirst(trimmed, LOCK_PATTERNS);
+      if (keyword !== null) {
+        const all = await db.getAllMemories();
+        const match = all.find((x) => x.text.toLowerCase().includes(keyword.toLowerCase()));
+        if (match) {
+          await db.lock(match.id);
+          event.messages.push(`
+${injectEmoji} \u{1F512} \u5DF2\u9501\u5B9A\u3002
+`);
+        } else event.messages.push(`
+${injectEmoji} \u6CA1\u6709\u627E\u5230\u4E0E"${keyword}"\u76F8\u5173\u7684\u8BB0\u5FC6\u3002
+`);
+        return;
+      }
+    }
+    {
+      const keyword = matchFirst(trimmed, UNLOCK_PATTERNS);
+      if (keyword !== null) {
+        const all = await db.getAllMemories();
+        const match = all.find((x) => x.text.toLowerCase().includes(keyword.toLowerCase()));
+        if (match) {
+          await db.unlock(match.id);
+          event.messages.push(`
+${injectEmoji} \u{1F513} \u5DF2\u89E3\u9501\u3002
+`);
+        } else event.messages.push(`
+${injectEmoji} \u6CA1\u6709\u627E\u5230\u4E0E"${keyword}"\u76F8\u5173\u7684\u8BB0\u5FC6\u3002
+`);
+        return;
+      }
+    }
+    {
+      const keyword = matchFirst(trimmed, FORGET_PATTERNS);
+      if (keyword !== null) {
+        const all = await db.getAllMemories();
+        const match = all.find((x) => x.text.toLowerCase().includes(keyword.toLowerCase()));
+        if (match) {
+          const ok = await db.forget(match.id);
+          event.messages.push(`
+${injectEmoji} ${ok ? "\u2705 \u5DF2\u9057\u5FD8\u3002" : "\u274C \u5DF2\u9501\u5B9A\uFF0C\u65E0\u6CD5\u9057\u5FD8\u3002"}
+`);
+        } else {
+          event.messages.push(`
+${injectEmoji} \u6CA1\u6709\u627E\u5230\u4E0E"${keyword}"\u76F8\u5173\u7684\u8BB0\u5FC6\u3002
+`);
+        }
+        return;
+      }
+    }
+    {
+      const correct = matchFirst(trimmed, [CORRECT_PATTERN]);
+      if (correct !== null) {
+        const result2 = await findMemoryBySemanticMatch(db, correct);
+        if (result2) {
+          await db.verify(result2.id, false, correct);
+          event.messages.push(`
+${injectEmoji} \u2705 \u5DF2\u7EA0\u6B63 \u2192 ${correct}
+`);
+        } else {
+          event.messages.push(`
+${injectEmoji} \u6CA1\u6709\u627E\u5230\u9700\u8981\u7EA0\u6B63\u7684\u8BB0\u5FC6\u3002
+`);
+        }
+        return;
+      }
+    }
+    const retriever = await getRetriever();
+    const memories = await retriever.search(trimmed, topK);
+    const useable = memories.filter((m2) => m2.score >= minScore || m2.reliability >= RELIABILITY_THRESHOLD_HIGH);
+    if (!useable.length) {
+      const all = await db.getAllMemories(getAgentId(ctx));
+      if (all.length > 0) {
+        const queryWords = trimmed.toLowerCase().split(/\s+/);
+        const suggestions = all.map((m2) => {
+          const textWords = m2.text.toLowerCase().split(/\s+/);
+          const overlap = queryWords.filter((w) => textWords.some((tw) => tw.includes(w) || w.includes(tw))).length;
+          return { id: m2.id, text: m2.text, overlap };
+        }).filter((s) => s.overlap > 0).sort((a, b) => b.overlap - a.overlap).slice(0, 3);
+        if (suggestions.length > 0) {
+          const tips = suggestions.map((s) => `  \xB7 "${s.text.slice(0, 50)}"`).join("\n");
+          event.messages.push(`
+${injectEmoji} \u6CA1\u627E\u5230\u76F4\u63A5\u5339\u914D\u7684\u3002\u662F\u4E0D\u662F\u6307\uFF1A
+${tips}
+`);
+        }
+      }
+      return;
+    }
+    const sorted = [...useable].sort((a, b) => compositeScore(b) - compositeScore(a));
+    const result = [];
+    let totalChars = 0;
+    for (const m2 of sorted) {
+      if (result.length >= INJECTION_LIMIT) break;
+      const compressed = compressText(m2.text);
+      if (totalChars + compressed.length > MAX_INJECTION_CHARS) continue;
+      result.push(m2);
+      totalChars += compressed.length;
+    }
+    if (!result.length) return;
+    const withReasons = result.map((m2) => ({
+      ...m2,
+      matchReason: computeMatchReason(trimmed, m2),
+      text: sanitize(compressText(m2.text))
+    }));
+    event.messages.push(`
+${formatRecallResults(withReasons, injectEmoji)}
+`);
+    for (const m2 of useable) {
+      if (m2.score >= minScore) await db.verify(m2.id, true);
+    }
     if (config.audit?.enabled) {
-      auditRecall(sanitized.length, queryText.slice(0, 100));
+      try {
+        const { appendFileSync, join: join4 } = __require("fs");
+        const { homedir: homedir4 } = __require("os");
+        appendFileSync(
+          join4(homedir4(), ".hawk", "audit.log"),
+          JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), action: "recall", count: sanitized.length, query: trimmed.slice(0, 100) }) + "\n"
+        );
+      } catch {
+      }
     }
   } catch (err) {
     console.error("[hawk-recall] Error:", err);
   }
 };
-var RECALL_SANITIZE_PATTERNS = [
-  [/(?:api[_-]?key|secret|token|password)\s*[:=]\s*["']?[\w-]{8,}["']?/gi, "$1: [RECALLED_REDACTED]"],
-  [/\b1[3-9]\d{9}\b/g, "[PHONE_REDACTED]"],
-  [/\b[\w.-]+@[\w.-]+\.\w{2,}\b/g, "[EMAIL_REDACTED]"],
-  [/\b[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b/g, "[ID_REDACTED]"]
-];
-function sanitizeForRecall(text) {
-  let result = text;
-  for (const [pattern, replacement] of RECALL_SANITIZE_PATTERNS) {
-    result = result.replace(pattern, replacement);
-  }
-  return result;
+function getAgentId(ctx) {
+  return ctx?.agentId ?? null;
 }
-function auditRecall(count, query) {
-  try {
-    const { appendFileSync } = __require("fs");
-    const { homedir: homedir3 } = __require("os");
-    const { join: join3 } = __require("path");
-    const logPath = join3(homedir3(), ".hawk", "audit.log");
-    const entry = JSON.stringify({
-      ts: (/* @__PURE__ */ new Date()).toISOString(),
-      action: "recall",
-      count,
-      query
-    }) + "\n";
-    appendFileSync(logPath, entry);
-  } catch {
-  }
-}
-function extractQueryFromSession(sessionEntry) {
-  if (!sessionEntry) return "";
-  const messages = sessionEntry.messages || [];
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.role === "user" && msg.content) {
-      return typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
-    }
-  }
-  return "";
+async function getSortedMemories(db, agentId) {
+  const all = await db.getAllMemories(agentId);
+  return [...all].sort((a, b) => {
+    if (a.locked !== b.locked) return a.locked ? -1 : 1;
+    return b.reliability - a.reliability;
+  });
 }
 var handler_default = recallHandler;
 export {

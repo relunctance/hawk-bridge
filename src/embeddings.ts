@@ -19,27 +19,82 @@ async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Respon
 
 export class Embedder {
   private config: HawkConfig['embedding'];
+  // TTL cache: normalized_text → { vector, timestamp }
+  private cache: Map<string, { vector: number[]; ts: number }> = new Map();
+  private static readonly CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
   constructor(config: HawkConfig['embedding']) {
     this.config = config;
   }
 
+  private normalizeForCache(text: string): string {
+    // Normalize: lowercase, trim, collapse whitespace — for cache key
+    return text.toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  private getCached(text: string): number[] | null {
+    const key = this.normalizeForCache(text);
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+    if (Date.now() - entry.ts > Embedder.CACHE_TTL_MS) {
+      this.cache.delete(key);
+      return null;
+    }
+    return entry.vector;
+  }
+
+  private setCached(text: string, vector: number[]): void {
+    const key = this.normalizeForCache(text);
+    this.cache.set(key, { vector, ts: Date.now() });
+    // Evict old entries if cache grows too large
+    if (this.cache.size > 10000) {
+      const oldest = [...this.cache.entries()]
+        .sort((a, b) => a[1].ts - b[1].ts)
+        .slice(0, Math.floor(this.cache.size * 0.3));
+      for (const [k] of oldest) this.cache.delete(k);
+    }
+  }
+
   async embed(texts: string[]): Promise<number[][]> {
+    // Check cache first
+    const uncached: string[] = [];
+    const results: (number[][] | null)[] = texts.map(t => this.getCached(t));
+
+    for (let i = 0; i < texts.length; i++) {
+      if (results[i] === null) uncached.push(texts[i]);
+    }
+
+    if (uncached.length === 0) return results as number[][];
+
     const { provider } = this.config;
 
+    // Build index map: uncached text → result index in the full API response
+    const uncachedIdxMap = new Map<string, number>();
+    texts.forEach((t, i) => { if (results[i] === null) uncachedIdxMap.set(t, i); });
+
+    let freshVectors: number[][];
     if (provider === 'qianwen') {
-      return this.embedQianwen(texts);
+      freshVectors = await this.embedQianwen(uncached);
     } else if (provider === 'openai-compat') {
-      return this.embedOpenAICompat(texts);
+      freshVectors = await this.embedOpenAICompat(uncached);
     } else if (provider === 'ollama') {
-      return this.embedOllama(texts);
+      freshVectors = await this.embedOllama(uncached);
     } else if (provider === 'jina') {
-      return this.embedJina(texts);
+      freshVectors = await this.embedJina(uncached);
     } else if (provider === 'cohere') {
-      return this.embedCohere(texts);
+      freshVectors = await this.embedCohere(uncached);
     } else {
-      return this.embedOpenAI(texts);
+      freshVectors = await this.embedOpenAI(uncached);
     }
+
+    // Merge fresh results back and cache them
+    const finalResults: number[][] = [...results] as number[][];
+    for (let i = 0; i < uncached.length; i++) {
+      const originalIdx = uncachedIdxMap.get(uncached[i])!;
+      finalResults[originalIdx] = freshVectors[i];
+      this.setCached(uncached[i], freshVectors[i]);
+    }
+    return finalResults;
   }
 
   async embedQuery(text: string): Promise<number[]> {

@@ -25,26 +25,69 @@ var init_embeddings = __esm({
   "src/embeddings.ts"() {
     "use strict";
     FETCH_TIMEOUT_MS = 15e3;
-    Embedder = class {
+    Embedder = class _Embedder {
       config;
+      // TTL cache: normalized_text → { vector, timestamp }
+      cache = /* @__PURE__ */ new Map();
+      static CACHE_TTL_MS = 24 * 60 * 60 * 1e3;
+      // 24h
       constructor(config) {
         this.config = config;
       }
-      async embed(texts) {
-        const { provider } = this.config;
-        if (provider === "qianwen") {
-          return this.embedQianwen(texts);
-        } else if (provider === "openai-compat") {
-          return this.embedOpenAICompat(texts);
-        } else if (provider === "ollama") {
-          return this.embedOllama(texts);
-        } else if (provider === "jina") {
-          return this.embedJina(texts);
-        } else if (provider === "cohere") {
-          return this.embedCohere(texts);
-        } else {
-          return this.embedOpenAI(texts);
+      normalizeForCache(text) {
+        return text.toLowerCase().replace(/\s+/g, " ").trim();
+      }
+      getCached(text) {
+        const key = this.normalizeForCache(text);
+        const entry = this.cache.get(key);
+        if (!entry) return null;
+        if (Date.now() - entry.ts > _Embedder.CACHE_TTL_MS) {
+          this.cache.delete(key);
+          return null;
         }
+        return entry.vector;
+      }
+      setCached(text, vector) {
+        const key = this.normalizeForCache(text);
+        this.cache.set(key, { vector, ts: Date.now() });
+        if (this.cache.size > 1e4) {
+          const oldest = [...this.cache.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, Math.floor(this.cache.size * 0.3));
+          for (const [k] of oldest) this.cache.delete(k);
+        }
+      }
+      async embed(texts) {
+        const uncached = [];
+        const results = texts.map((t) => this.getCached(t));
+        for (let i = 0; i < texts.length; i++) {
+          if (results[i] === null) uncached.push(texts[i]);
+        }
+        if (uncached.length === 0) return results;
+        const { provider } = this.config;
+        const uncachedIdxMap = /* @__PURE__ */ new Map();
+        texts.forEach((t, i) => {
+          if (results[i] === null) uncachedIdxMap.set(t, i);
+        });
+        let freshVectors;
+        if (provider === "qianwen") {
+          freshVectors = await this.embedQianwen(uncached);
+        } else if (provider === "openai-compat") {
+          freshVectors = await this.embedOpenAICompat(uncached);
+        } else if (provider === "ollama") {
+          freshVectors = await this.embedOllama(uncached);
+        } else if (provider === "jina") {
+          freshVectors = await this.embedJina(uncached);
+        } else if (provider === "cohere") {
+          freshVectors = await this.embedCohere(uncached);
+        } else {
+          freshVectors = await this.embedOpenAI(uncached);
+        }
+        const finalResults = [...results];
+        for (let i = 0; i < uncached.length; i++) {
+          const originalIdx = uncachedIdxMap.get(uncached[i]);
+          finalResults[originalIdx] = freshVectors[i];
+          this.setCached(uncached[i], freshVectors[i]);
+        }
+        return finalResults;
       }
       async embedQuery(text) {
         const vectors = await this.embed([text]);
@@ -475,16 +518,17 @@ var HawkDB = class {
     }
     return retrieved;
   }
+  async _getAccessCount(id) {
+    const rows = await this.table.query().where(`id = '${id.replace(/'/g, "''")}'`).limit(1).toArray();
+    return rows.length ? Number(rows[0].access_count || 0) : 0;
+  }
   async incrementAccess(id) {
     try {
-      await this.table.update({
-        where: "id = ?",
-        whereParams: [id],
-        updates: {
-          access_count: this.db.util().scalar("access_count + 1"),
-          last_accessed_at: BigInt(Date.now())
-        }
-      });
+      const current = await this._getAccessCount(id);
+      await this.table.update(
+        { access_count: String(current + 1), last_accessed_at: String(Date.now()) },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
     } catch {
     }
   }
@@ -514,10 +558,14 @@ var HawkDB = class {
       return null;
     }
   }
-  async getAllMemories() {
+  async getAllMemories(agentId) {
     if (!this.table) await this.init();
     const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
-    return rows.filter((r) => r.deleted_at === null).map((r) => this._rowToMemory(r));
+    return rows.filter((r) => r.deleted_at === null).filter((r) => {
+      if (!agentId) return true;
+      const owner = r.metadata?.owner_agent ?? r.metadata?.ownerAgent ?? null;
+      return owner === null || owner === agentId;
+    }).map((r) => this._rowToMemory(r));
   }
   /** Batch fetch multiple memories by ID in a single query — avoids N+1 round-trips */
   async getByIds(ids) {
@@ -569,10 +617,10 @@ var HawkDB = class {
         console.log(`[hawk-bridge] Cannot forget locked memory: ${id}`);
         return false;
       }
-      await this.table.update({
-        where: `id = '${id.replace(/'/g, "''")}'`,
-        updates: { deleted_at: BigInt(Date.now()) }
-      });
+      await this.table.update(
+        { deleted_at: String(Date.now()) },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
       return true;
     } catch {
       return false;
@@ -599,16 +647,16 @@ var HawkDB = class {
           newText: correctedText
         });
       }
-      await this.table.update({
-        where: `id = '${id.replace(/'/g, "''")}'`,
-        updates: {
-          reliability: newReliability,
-          verification_count: memory.verificationCount + 1,
-          last_verified_at: BigInt(now),
+      await this.table.update(
+        {
+          reliability: String(newReliability),
+          verification_count: String(memory.verificationCount + 1),
+          last_verified_at: String(now),
           correction_history: JSON.stringify(correctionHistory),
-          ...!confirmed && correctedText ? { text: correctedText } : {}
-        }
-      });
+          ...!confirmed && correctedText ? { text: String(correctedText) } : {}
+        },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
       return true;
     } catch {
       return false;
@@ -664,15 +712,15 @@ var HawkDB = class {
       metadata.soulVerifiedText = patternText.slice(0, 200);
       metadata.soulVerifiedAt = Date.now();
       const newReliability = Math.min(1, existing.reliability + boostAmount);
-      await this.table.update({
-        where: `id = '${id.replace(/'/g, "''")}'`,
-        updates: {
-          reliability: newReliability,
-          verification_count: existing.verificationCount + 1,
-          last_verified_at: BigInt(Date.now()),
+      await this.table.update(
+        {
+          reliability: String(newReliability),
+          verification_count: String(existing.verificationCount + 1),
+          last_verified_at: String(Date.now()),
           metadata: JSON.stringify(metadata)
-        }
-      });
+        },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
       return true;
     } catch {
       return false;
@@ -745,16 +793,32 @@ var HawkDB = class {
     return [...new Set(words)];
   }
   /**
-   * 锁定/解锁记忆
-   * 锁定的记忆：忽略 decay，不会被自动删除
+   * 标记记忆为不可靠（效果反馈：recall 后用户否认）
+   * 仅降低 reliability，不记录纠正历史，不改文本
    */
+  async flagUnhelpful(id, penalty = 0.05) {
+    if (!this.table) await this.init();
+    try {
+      const mem = await this.getById(id);
+      if (!mem) return false;
+      const newRel = Math.max(0, mem.reliability - penalty);
+      const newVerifications = mem.verificationCount + 1;
+      await this.table.update(
+        { reliability: String(newRel), verification_count: String(newVerifications), last_verified_at: String(Date.now()) },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
   async lock(id) {
     if (!this.table) await this.init();
     try {
-      await this.table.update({
-        where: `id = '${id.replace(/'/g, "''")}'`,
-        updates: { locked: 1 }
-      });
+      await this.table.update(
+        { locked: "1" },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
       return true;
     } catch {
       return false;
@@ -763,10 +827,10 @@ var HawkDB = class {
   async unlock(id) {
     if (!this.table) await this.init();
     try {
-      await this.table.update({
-        where: `id = '${id.replace(/'/g, "''")}'`,
-        updates: { locked: 0 }
-      });
+      await this.table.update(
+        { locked: "0" },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
       return true;
     } catch {
       return false;
@@ -807,10 +871,10 @@ var HawkDB = class {
           const newImportance = m.importance * Math.pow(COLD_START_DECAY_MULTIPLIER, 0.5);
           if (Math.abs(newImportance - m.importance) > 1e-3) {
             try {
-              await this.table.update({
-                where: `id = '${m.id.replace(/'/g, "''")}'`,
-                updates: { importance: newImportance }
-              });
+              await this.table.update(
+                { importance: String(newImportance) },
+                { where: `id = '${m.id.replace(/'/g, "''")}'` }
+              );
               updated++;
             } catch {
             }
@@ -836,19 +900,19 @@ var HawkDB = class {
         const newLayer = computeLayer(newImportance, m.accessCount);
         if (LAYERS.indexOf(newLayer) < LAYERS.indexOf(m.scope)) {
           try {
-            await this.table.update({
-              where: `id = '${m.id.replace(/'/g, "''")}'`,
-              updates: { importance: newImportance, scope: newLayer }
-            });
+            await this.table.update(
+              { importance: String(newImportance), scope: newLayer },
+              { where: `id = '${m.id.replace(/'/g, "''")}'` }
+            );
             updated++;
           } catch {
           }
         } else if (newImportance !== m.importance) {
           try {
-            await this.table.update({
-              where: `id = '${m.id.replace(/'/g, "''")}'`,
-              updates: { importance: newImportance }
-            });
+            await this.table.update(
+              { importance: String(newImportance) },
+              { where: `id = '${m.id.replace(/'/g, "''")}'` }
+            );
             updated++;
           } catch {
           }
@@ -857,6 +921,10 @@ var HawkDB = class {
     }
     const purged = await this.purgeForgotten();
     deleted += purged;
+    try {
+      await this.table?.trygc();
+    } catch {
+    }
     return { updated, deleted };
   }
   /**
@@ -1171,9 +1239,73 @@ var captureHandler = async (event) => {
     const { maxChunks, importanceThreshold, ttlMs } = config.capture;
     const content = event.context?.content;
     if (typeof content !== "string" || content.length < 50) return;
-    const memories = await callExtractor(content, config);
+    const trimmedContent = content.trim();
+    if (/^[\d\s.,]+$/.test(trimmedContent)) return;
+    if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]{1,3}$/u.test(trimmedContent)) return;
+    if (trimmedContent.length < 30) return;
+    const CODE_BLOCK_RE = /```(?:\w+)?\n([\s\S]{20,500}?)```/g;
+    const codeBlockMemories = [];
+    let codeMatch;
+    while ((codeMatch = CODE_BLOCK_RE.exec(content)) !== null) {
+      const code = codeMatch[1].trim();
+      if (code.length < 20) continue;
+      const fenceWithLang = content.slice(Math.max(0, codeMatch.index - 10), codeMatch.index);
+      const langMatch = fenceWithLang.match(/```(\w+)/);
+      const lang = langMatch ? langMatch[1] : "code";
+      codeBlockMemories.push({
+        text: `[${lang.toUpperCase()}] ${code.slice(0, 200)}${code.length > 200 ? "..." : ""}`,
+        category: "fact",
+        importance: 0.8,
+        abstract: `\u4EE3\u7801\u7247\u6BB5 (${lang})\uFF0C${code.split("\n").length} \u884C`,
+        overview: `\u7528\u6237\u5206\u4EAB\u7684 ${lang} \u4EE3\u7801\uFF1A${code.slice(0, 100)}`
+      });
+    }
+    const URL_RE = /(?:https?:\/\/[^\s\n，,。!?）\]]+)/g;
+    const urlMemories = [];
+    let urlMatch;
+    const seenUrls = /* @__PURE__ */ new Set();
+    while ((urlMatch = URL_RE.exec(content)) !== null) {
+      const url = urlMatch[0];
+      if (seenUrls.has(url)) continue;
+      seenUrls.add(url);
+      const ctxStart = Math.max(0, urlMatch.index - 80);
+      const ctx = content.slice(ctxStart, urlMatch.index).replace(/\n/g, " ").trim();
+      urlMemories.push({
+        text: `\u5206\u4EAB\u94FE\u63A5: ${url}`,
+        category: "fact",
+        importance: 0.7,
+        abstract: `\u94FE\u63A5\u5206\u4EAB: ${url}`,
+        overview: ctx || `\u5206\u4EAB\u7684\u94FE\u63A5: ${url}`
+      });
+    }
+    let enrichedContent = content;
+    const USER_MSG_RE = /^user:\s*(.+)/gim;
+    const userMessages = [];
+    let um;
+    while ((um = USER_MSG_RE.exec(content)) !== null) {
+      userMessages.push({ text: um[1], idx: um.index });
+    }
+    if (userMessages.length >= 2) {
+      const merged = [];
+      for (const msg of userMessages) {
+        const prev = merged[merged.length - 1];
+        if (prev && msg.idx - prev.end < 200) {
+          prev.text += "\n" + msg.text;
+          prev.end = msg.idx + msg.text.length + 5;
+        } else {
+          merged.push({ text: msg.text, start: msg.idx, end: msg.idx + msg.text.length + 5 });
+        }
+      }
+      enrichedContent = merged.map((m) => `user: ${m.text}`).join("\n\n");
+    }
+    const memories = await callExtractor(enrichedContent, config);
     if (!memories || !memories.length) return;
-    const significant = memories.filter(
+    const allMemories = [
+      ...codeBlockMemories,
+      ...urlMemories,
+      ...memories
+    ];
+    const significant = allMemories.filter(
       (m) => m.importance >= importanceThreshold
     ).slice(0, maxChunks);
     if (!significant.length) return;

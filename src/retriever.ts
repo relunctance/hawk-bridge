@@ -24,24 +24,44 @@ export class HybridRetriever {
   private noisePrototypes: number[][] = [];
   private bm25Dirty: boolean = false;   // set true when new memories are stored
   private bm25BuildPromise: Promise<void> | null = null;  // prevents concurrent rebuilds
+  private lastIndexedMemoryCount: number = 0;  // for incremental tracking
+  private pendingTexts: string[] = [];  // texts added since last full rebuild
+  private pendingIds: string[] = [];
 
   constructor(db: HawkDB, embedder: Embedder) {
     this.db = db;
     this.embedder = embedder;
   }
 
-  /** Call this after store() to invalidate the BM25 index — next search() will rebuild */
+  /** Call this after store() to invalidate the BM25 index — next search() will rebuild incrementally */
   markDirty(): void {
     this.bm25Dirty = true;
   }
 
   // ---------- BM25 Setup ----------
 
+  /** Rebuild threshold: only full-rebuild if more than 10 new memories since last build */
+  private static readonly BM25_REBUILD_THRESHOLD = 10;
+
   private async _ensureBm25Index(): Promise<void> {
     if (!this.bm25Dirty && this.bm25) return;
     if (this.bm25BuildPromise) return this.bm25BuildPromise;
 
     this.bm25BuildPromise = this._buildBm25Index();
+    await this.bm25BuildPromise;
+    this.bm25BuildPromise = null;
+    this.bm25Dirty = false;
+  }
+
+  /**
+   * Incremental BM25: only full-rebuild if new memories exceed threshold.
+   * Otherwise just add to pending corpus and merge at search time.
+   */
+  private async _ensureBm25IndexIncremental(): Promise<void> {
+    if (!this.bm25Dirty && this.bm25) return;
+    if (this.bm25BuildPromise) return this.bm25BuildPromise;
+
+    this.bm25BuildPromise = this._buildBm25IndexIncremental();
     await this.bm25BuildPromise;
     this.bm25BuildPromise = null;
     this.bm25Dirty = false;
@@ -56,9 +76,56 @@ export class HybridRetriever {
 
       this.corpusIds = allMemories.map(m => m.id);
       this.corpus = allMemories.map(m => m.text.toLowerCase());
+      this.lastIndexedMemoryCount = allMemories.length;
+      this.pendingTexts = [];
+      this.pendingIds = [];
       this.bm25 = new BM25Okapi(this.corpus);
     } catch {
-      // rank_bm25 not installed, skip BM25 silently (BM25 fallback still works)
+      console.warn('[hawk-bridge] rank_bm25 not available, BM25 disabled');
+    }
+  }
+
+  /**
+   * Incremental BM25: check if new memories exceed threshold.
+   * If few: accumulate in pending, merge at search time.
+   * If many: full rebuild.
+   */
+  private async _buildBm25IndexIncremental(): Promise<void> {
+    try {
+      const { BM25Okapi } = await import('rank_bm25');
+      const allMemories = await this.db.getAllTexts();
+      if (!allMemories.length) return;
+
+      const total = allMemories.length;
+      const newCount = total - this.lastIndexedMemoryCount;
+
+      if (newCount <= 0 || newCount > HybridRetriever.BM25_REBUILD_THRESHOLD) {
+        // Many new docs or count reset → full rebuild
+        this.corpusIds = allMemories.map(m => m.id);
+        this.corpus = allMemories.map(m => m.text.toLowerCase());
+        this.lastIndexedMemoryCount = total;
+        this.pendingTexts = [];
+        this.pendingIds = [];
+        this.bm25 = new BM25Okapi(this.corpus);
+      } else {
+        // Few new docs → accumulate in pending
+        const newMemories = allMemories.slice(-newCount);
+        for (const m of newMemories) {
+          this.pendingIds.push(m.id);
+          this.pendingTexts.push(m.text.toLowerCase());
+        }
+        this.lastIndexedMemoryCount = total;
+        // Re-initialize BM25 with full corpus including pending
+        // This is the "lazy rebuild" - rebuild with existing + pending combined
+        const fullCorpus = [...this.corpus, ...this.pendingTexts];
+        const fullIds = [...this.corpusIds, ...this.pendingIds];
+        this.corpus = fullCorpus;
+        this.corpusIds = fullIds;
+        this.pendingTexts = [];
+        this.pendingIds = [];
+        this.bm25 = new BM25Okapi(fullCorpus);
+      }
+    } catch {
       console.warn('[hawk-bridge] rank_bm25 not available, BM25 disabled');
     }
   }
@@ -219,7 +286,7 @@ export class HybridRetriever {
     topK = Math.min(Math.max(1, topK), 100);
 
     // Ensure indexes are built (with dirty-flag rebuild)
-    await this._ensureBm25Index();
+    await this._ensureBm25IndexIncremental();
     if (!this.noisePrototypes.length) await this.buildNoisePrototypes();
 
     const hasEmbedding = hasEmbeddingProvider();

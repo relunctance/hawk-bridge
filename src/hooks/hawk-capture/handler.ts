@@ -324,6 +324,15 @@ const captureHandler = async (event: HookEvent) => {
     const content = event.context?.content;
     if (typeof content !== 'string' || content.length < 50) return;
 
+    // Pre-filter: skip obviously low-value content
+    const trimmedContent = content.trim();
+    // Pure numbers / timestamps / single-word responses
+    if (/^[\d\s.,]+$/.test(trimmedContent)) return;
+    // Single emoji or reaction
+    if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]{1,3}$/u.test(trimmedContent)) return;
+    // Too short to contain meaningful info (before enrichment)
+    if (trimmedContent.length < 30) return;
+
     // ─── Pre-extraction: Code blocks ─────────────────────────────────────
     // Extract fenced code blocks as high-importance fact memories
     const CODE_BLOCK_RE = /```(?:\w+)?\n([\s\S]{20,500}?)```/g;

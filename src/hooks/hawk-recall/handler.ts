@@ -66,6 +66,8 @@ const BATCHLOCK_PATTERN = /^hawk\s*锁定\s*all(?:\s+(.+))?$/i;  // hawk锁定al
 const BATCHUNLOCK_PATTERN = /^hawk\s*解锁\s*all$/i;
 const COMPARE_PATTERN   = /^hawk\s*对比\s*(\d+)\s+(\d+)$/i;  // hawk对比 3 4
 const PURGE_PATTERN     = /^hawk\s*清理$/i;  // hawk清理 强制执行decay+purge
+const STATS_PATTERN     = /^hawk\s*统计$/i;  // hawk统计 显示记忆分布
+const DENY_PATTERN      = /^hawk\s*否认\s*(\d+)$/i;  // hawk否认 3
 
 function matchFirst(text: string, patterns: RegExp[]): string | null {
   for (const p of patterns) { const m = text.trim().match(p); if (m) return (m[1] ?? '').trim(); }
@@ -256,7 +258,7 @@ const recallHandler = async (event: HookEvent) => {
     if (m) {
       const idx = parseInt(m[1], 10);
       const mult = parseFloat(m[2] || '2');
-      const all = await getSortedMemories(db);
+      const all = await getSortedMemories(db, getAgentId(ctx));
       if (idx < 1 || idx > all.length) { event.messages.push(`\n${injectEmoji} 无效编号 (1-${all.length})\n`); return; }
       const mem = all[idx-1];
       await db.markImportant(mem.id, mult);
@@ -271,7 +273,7 @@ const recallHandler = async (event: HookEvent) => {
     var m = trimmed.match(UNIMPORTANT_PATTERN);
     if (m) {
       const idx = parseInt(m[1], 10);
-      const all = await getSortedMemories(db);
+      const all = await getSortedMemories(db, getAgentId(ctx));
       if (idx < 1 || idx > all.length) { event.messages.push(`\n${injectEmoji} 无效编号 (1-${all.length})\n`); return; }
       const mem = all[idx-1];
       await db.update(mem.id, { importanceOverride: 0.5 });
@@ -284,7 +286,7 @@ const recallHandler = async (event: HookEvent) => {
     if (m) {
       const idx = parseInt(m[1], 10);
       const scopeVal = m[2] as 'personal' | 'team' | 'project';
-      const all = await getSortedMemories(db);
+      const all = await getSortedMemories(db, getAgentId(ctx));
       if (idx < 1 || idx > all.length) { event.messages.push(`\n${injectEmoji} 无效编号 (1-${all.length})\n`); return; }
       await db.update(all[idx-1].id, { scope: scopeVal });
       event.messages.push(`\n${injectEmoji} 已设置作用域为 [${scopeVal}]\n`);
@@ -294,7 +296,7 @@ const recallHandler = async (event: HookEvent) => {
     // ─── hawk编辑 [n] ─────────────────────────────────────────────────────
     var m = trimmed.match(EDIT_PATTERN);
     if (m) {
-      const all = await getSortedMemories(db);
+      const all = await getSortedMemories(db, getAgentId(ctx));
       if (!all.length) { event.messages.push(`\n${injectEmoji} 还没有任何记忆。\n`); return; }
       if (!m[1]) {
         const lines = [`${injectEmoji} ** 选择要编辑的记忆 **`];
@@ -371,7 +373,7 @@ const recallHandler = async (event: HookEvent) => {
     var m = trimmed.match(CONFLICT_PATTERN);
     if (m) {
       const idx = parseInt(m[1], 10);
-      const all = await getSortedMemories(db);
+      const all = await getSortedMemories(db, getAgentId(ctx));
       if (idx < 1 || idx > all.length) { event.messages.push(`\n${injectEmoji} 无效编号\n`); return; }
       const mem = all[idx-1];
       const conflicts = await db.detectConflicts(mem.text, mem.category);
@@ -390,7 +392,7 @@ const recallHandler = async (event: HookEvent) => {
     if (m) {
       const idxA = parseInt(m[1], 10) - 1;
       const idxB = parseInt(m[2], 10) - 1;
-      const all = await getSortedMemories(db);
+      const all = await getSortedMemories(db, getAgentId(ctx));
       if (idxA < 0 || idxA >= all.length || idxB < 0 || idxB >= all.length) {
         event.messages.push(`\n${injectEmoji} 无效编号 (1-${all.length})\n`); return;
       }
@@ -493,6 +495,45 @@ const recallHandler = async (event: HookEvent) => {
       return;
     }
 
+    // ─── hawk统计 ───────────────────────────────────────────────────
+    if (STATS_PATTERN.test(trimmed)) {
+      const all = await db.getAllMemories(getAgentId(ctx));
+      if (!all.length) { event.messages.push(`\n${injectEmoji} 暂无记忆。\n`); return; }
+
+      const total = all.length;
+      const locked = all.filter(m => m.locked).length;
+      const byCat: Record<string, number> = {};
+      const byScope: Record<string, number> = {};
+      const byRel: Record<string, number> = {};
+      const now = Date.now();
+
+      for (const m of all) {
+        byCat[m.category] = (byCat[m.category] || 0) + 1;
+        byScope[m.scope] = (byScope[m.scope] || 0) + 1;
+        const relBand = m.reliability >= 0.8 ? 'high' : m.reliability >= 0.5 ? 'mid' : 'low';
+        byRel[relBand] = (byRel[relBand] || 0) + 1;
+      }
+
+      const avgImp = (all.reduce((s, m) => s + m.importance, 0) / total).toFixed(2);
+      const expired = all.filter(m => m.expiresAt > 0 && m.expiresAt < now).length;
+
+      const lines = [
+        `\n${injectEmoji} ** hawk 记忆统计 **\n`,
+        `总记忆: ${total} | 锁定: ${locked} | 已过期: ${expired}`,
+        `平均重要性: ${avgImp}`,
+        ``,
+        `**按类别**:`,
+        ...Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${k}: ${v}`),
+        ``,
+        `**按作用域**:`,
+        ...Object.entries(byScope).sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${k}: ${v}`),
+        ``,
+        `**按可靠性**: high≥80%:${byRel.high||0} | mid50-80%:${byRel.mid||0} | low<50%:${byRel.low||0}`,
+      ];
+      event.messages.push(lines.join('\n') + '\n');
+      return;
+    }
+
     // ─── hawk回顾 [N] ───────────────────────────────────────────────────
     var m = trimmed.match(REVIEW_PATTERN);
     if (m) {
@@ -548,6 +589,18 @@ const recallHandler = async (event: HookEvent) => {
       } else {
         event.messages.push(`\n${injectEmoji} 无效操作。用"${idx+1} 对"或"${idx+1} 纠正: 正确内容"\n`);
       }
+      return;
+    }
+
+    // ─── hawk否认 N ─────────────────────────────────────────────────
+    var m = trimmed.match(DENY_PATTERN);
+    if (m) {
+      const idx = parseInt(m[1], 10) - 1;
+      const targetIds: string[] = ctx._hawkCheckIndex || [];
+      if (idx < 0 || idx >= targetIds.length) { event.messages.push(`\n${injectEmoji} 无效编号\n`); return; }
+      const id = targetIds[idx];
+      await db.flagUnhelpful(id, 0.05);
+      event.messages.push(`\n${injectEmoji} 已标记该记忆为不可靠（reliability -5%）\n`);
       return;
     }
 
@@ -610,7 +663,27 @@ const recallHandler = async (event: HookEvent) => {
     const retriever = await getRetriever();
     const memories  = await retriever.search(trimmed, topK);
     const useable   = memories.filter(m => m.score >= minScore || m.reliability >= RELIABILITY_THRESHOLD_HIGH);
-    if (!useable.length) return;
+    if (!useable.length) {
+      // Did-you-mean: search for similar terms in memory texts
+      const all = await db.getAllMemories(getAgentId(ctx));
+      if (all.length > 0) {
+        const queryWords = trimmed.toLowerCase().split(/\s+/);
+        const suggestions = all
+          .map(m => {
+            const textWords = m.text.toLowerCase().split(/\s+/);
+            const overlap = queryWords.filter(w => textWords.some(tw => tw.includes(w) || w.includes(tw))).length;
+            return { id: m.id, text: m.text, overlap };
+          })
+          .filter(s => s.overlap > 0)
+          .sort((a, b) => b.overlap - a.overlap)
+          .slice(0, 3);
+        if (suggestions.length > 0) {
+          const tips = suggestions.map(s => `  · "${s.text.slice(0, 50)}"`).join('\n');
+          event.messages.push(`\n${injectEmoji} 没找到直接匹配的。是不是指：\n${tips}\n`);
+        }
+      }
+      return;
+    }
 
     // Sort by composite score (reliability × 0.4 + score × 0.6)
     const sorted = [...useable].sort((a, b) => compositeScore(b) - compositeScore(a));
@@ -655,9 +728,14 @@ const recallHandler = async (event: HookEvent) => {
   }
 };
 
-// Helper
-async function getSortedMemories(db: HawkDB) {
-  const all = await db.getAllMemories();
+// Helper - gets agent ID from event context if available
+function getAgentId(ctx: any): string | null {
+  return ctx?.agentId ?? null;
+}
+
+// Get memories for current agent (personal + team memories)
+async function getSortedMemories(db: HawkDB, agentId?: string | null) {
+  const all = await db.getAllMemories(agentId);
   return [...all].sort((a, b) => {
     if (a.locked !== b.locked) return a.locked ? -1 : 1;
     return b.reliability - a.reliability;

@@ -43,26 +43,69 @@ var init_embeddings = __esm({
   "src/embeddings.ts"() {
     "use strict";
     FETCH_TIMEOUT_MS = 15e3;
-    Embedder = class {
+    Embedder = class _Embedder {
       config;
+      // TTL cache: normalized_text → { vector, timestamp }
+      cache = /* @__PURE__ */ new Map();
+      static CACHE_TTL_MS = 24 * 60 * 60 * 1e3;
+      // 24h
       constructor(config) {
         this.config = config;
       }
-      async embed(texts) {
-        const { provider } = this.config;
-        if (provider === "qianwen") {
-          return this.embedQianwen(texts);
-        } else if (provider === "openai-compat") {
-          return this.embedOpenAICompat(texts);
-        } else if (provider === "ollama") {
-          return this.embedOllama(texts);
-        } else if (provider === "jina") {
-          return this.embedJina(texts);
-        } else if (provider === "cohere") {
-          return this.embedCohere(texts);
-        } else {
-          return this.embedOpenAI(texts);
+      normalizeForCache(text) {
+        return text.toLowerCase().replace(/\s+/g, " ").trim();
+      }
+      getCached(text) {
+        const key = this.normalizeForCache(text);
+        const entry = this.cache.get(key);
+        if (!entry) return null;
+        if (Date.now() - entry.ts > _Embedder.CACHE_TTL_MS) {
+          this.cache.delete(key);
+          return null;
         }
+        return entry.vector;
+      }
+      setCached(text, vector) {
+        const key = this.normalizeForCache(text);
+        this.cache.set(key, { vector, ts: Date.now() });
+        if (this.cache.size > 1e4) {
+          const oldest = [...this.cache.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, Math.floor(this.cache.size * 0.3));
+          for (const [k] of oldest) this.cache.delete(k);
+        }
+      }
+      async embed(texts) {
+        const uncached = [];
+        const results = texts.map((t) => this.getCached(t));
+        for (let i = 0; i < texts.length; i++) {
+          if (results[i] === null) uncached.push(texts[i]);
+        }
+        if (uncached.length === 0) return results;
+        const { provider } = this.config;
+        const uncachedIdxMap = /* @__PURE__ */ new Map();
+        texts.forEach((t, i) => {
+          if (results[i] === null) uncachedIdxMap.set(t, i);
+        });
+        let freshVectors;
+        if (provider === "qianwen") {
+          freshVectors = await this.embedQianwen(uncached);
+        } else if (provider === "openai-compat") {
+          freshVectors = await this.embedOpenAICompat(uncached);
+        } else if (provider === "ollama") {
+          freshVectors = await this.embedOllama(uncached);
+        } else if (provider === "jina") {
+          freshVectors = await this.embedJina(uncached);
+        } else if (provider === "cohere") {
+          freshVectors = await this.embedCohere(uncached);
+        } else {
+          freshVectors = await this.embedOpenAI(uncached);
+        }
+        const finalResults = [...results];
+        for (let i = 0; i < uncached.length; i++) {
+          const originalIdx = uncachedIdxMap.get(uncached[i]);
+          finalResults[originalIdx] = freshVectors[i];
+          this.setCached(uncached[i], freshVectors[i]);
+        }
+        return finalResults;
       }
       async embedQuery(text) {
         const vectors = await this.embed([text]);
@@ -194,6 +237,10 @@ var init_embeddings = __esm({
     };
   }
 });
+
+// src/hooks/hawk-recall/handler.ts
+import * as path3 from "path";
+import { homedir as homedir3 } from "os";
 
 // src/lancedb.ts
 import * as path from "path";
@@ -486,16 +533,17 @@ var HawkDB = class {
     }
     return retrieved;
   }
+  async _getAccessCount(id) {
+    const rows = await this.table.query().where(`id = '${id.replace(/'/g, "''")}'`).limit(1).toArray();
+    return rows.length ? Number(rows[0].access_count || 0) : 0;
+  }
   async incrementAccess(id) {
     try {
-      await this.table.update({
-        where: "id = ?",
-        whereParams: [id],
-        updates: {
-          access_count: this.db.util().scalar("access_count + 1"),
-          last_accessed_at: BigInt(Date.now())
-        }
-      });
+      const current = await this._getAccessCount(id);
+      await this.table.update(
+        { access_count: String(current + 1), last_accessed_at: String(Date.now()) },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
     } catch {
     }
   }
@@ -525,10 +573,14 @@ var HawkDB = class {
       return null;
     }
   }
-  async getAllMemories() {
+  async getAllMemories(agentId) {
     if (!this.table) await this.init();
     const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
-    return rows.filter((r) => r.deleted_at === null).map((r) => this._rowToMemory(r));
+    return rows.filter((r) => r.deleted_at === null).filter((r) => {
+      if (!agentId) return true;
+      const owner = r.metadata?.owner_agent ?? r.metadata?.ownerAgent ?? null;
+      return owner === null || owner === agentId;
+    }).map((r) => this._rowToMemory(r));
   }
   /** Batch fetch multiple memories by ID in a single query — avoids N+1 round-trips */
   async getByIds(ids) {
@@ -580,10 +632,10 @@ var HawkDB = class {
         console.log(`[hawk-bridge] Cannot forget locked memory: ${id}`);
         return false;
       }
-      await this.table.update({
-        where: `id = '${id.replace(/'/g, "''")}'`,
-        updates: { deleted_at: BigInt(Date.now()) }
-      });
+      await this.table.update(
+        { deleted_at: String(Date.now()) },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
       return true;
     } catch {
       return false;
@@ -610,16 +662,16 @@ var HawkDB = class {
           newText: correctedText
         });
       }
-      await this.table.update({
-        where: `id = '${id.replace(/'/g, "''")}'`,
-        updates: {
-          reliability: newReliability,
-          verification_count: memory.verificationCount + 1,
-          last_verified_at: BigInt(now),
+      await this.table.update(
+        {
+          reliability: String(newReliability),
+          verification_count: String(memory.verificationCount + 1),
+          last_verified_at: String(now),
           correction_history: JSON.stringify(correctionHistory),
-          ...!confirmed && correctedText ? { text: correctedText } : {}
-        }
-      });
+          ...!confirmed && correctedText ? { text: String(correctedText) } : {}
+        },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
       return true;
     } catch {
       return false;
@@ -675,15 +727,15 @@ var HawkDB = class {
       metadata.soulVerifiedText = patternText.slice(0, 200);
       metadata.soulVerifiedAt = Date.now();
       const newReliability = Math.min(1, existing.reliability + boostAmount);
-      await this.table.update({
-        where: `id = '${id.replace(/'/g, "''")}'`,
-        updates: {
-          reliability: newReliability,
-          verification_count: existing.verificationCount + 1,
-          last_verified_at: BigInt(Date.now()),
+      await this.table.update(
+        {
+          reliability: String(newReliability),
+          verification_count: String(existing.verificationCount + 1),
+          last_verified_at: String(Date.now()),
           metadata: JSON.stringify(metadata)
-        }
-      });
+        },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
       return true;
     } catch {
       return false;
@@ -756,16 +808,32 @@ var HawkDB = class {
     return [...new Set(words)];
   }
   /**
-   * 锁定/解锁记忆
-   * 锁定的记忆：忽略 decay，不会被自动删除
+   * 标记记忆为不可靠（效果反馈：recall 后用户否认）
+   * 仅降低 reliability，不记录纠正历史，不改文本
    */
+  async flagUnhelpful(id, penalty = 0.05) {
+    if (!this.table) await this.init();
+    try {
+      const mem = await this.getById(id);
+      if (!mem) return false;
+      const newRel = Math.max(0, mem.reliability - penalty);
+      const newVerifications = mem.verificationCount + 1;
+      await this.table.update(
+        { reliability: String(newRel), verification_count: String(newVerifications), last_verified_at: String(Date.now()) },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
   async lock(id) {
     if (!this.table) await this.init();
     try {
-      await this.table.update({
-        where: `id = '${id.replace(/'/g, "''")}'`,
-        updates: { locked: 1 }
-      });
+      await this.table.update(
+        { locked: "1" },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
       return true;
     } catch {
       return false;
@@ -774,10 +842,10 @@ var HawkDB = class {
   async unlock(id) {
     if (!this.table) await this.init();
     try {
-      await this.table.update({
-        where: `id = '${id.replace(/'/g, "''")}'`,
-        updates: { locked: 0 }
-      });
+      await this.table.update(
+        { locked: "0" },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
       return true;
     } catch {
       return false;
@@ -818,10 +886,10 @@ var HawkDB = class {
           const newImportance = m.importance * Math.pow(COLD_START_DECAY_MULTIPLIER, 0.5);
           if (Math.abs(newImportance - m.importance) > 1e-3) {
             try {
-              await this.table.update({
-                where: `id = '${m.id.replace(/'/g, "''")}'`,
-                updates: { importance: newImportance }
-              });
+              await this.table.update(
+                { importance: String(newImportance) },
+                { where: `id = '${m.id.replace(/'/g, "''")}'` }
+              );
               updated++;
             } catch {
             }
@@ -847,19 +915,19 @@ var HawkDB = class {
         const newLayer = computeLayer(newImportance, m.accessCount);
         if (LAYERS.indexOf(newLayer) < LAYERS.indexOf(m.scope)) {
           try {
-            await this.table.update({
-              where: `id = '${m.id.replace(/'/g, "''")}'`,
-              updates: { importance: newImportance, scope: newLayer }
-            });
+            await this.table.update(
+              { importance: String(newImportance), scope: newLayer },
+              { where: `id = '${m.id.replace(/'/g, "''")}'` }
+            );
             updated++;
           } catch {
           }
         } else if (newImportance !== m.importance) {
           try {
-            await this.table.update({
-              where: `id = '${m.id.replace(/'/g, "''")}'`,
-              updates: { importance: newImportance }
-            });
+            await this.table.update(
+              { importance: String(newImportance) },
+              { where: `id = '${m.id.replace(/'/g, "''")}'` }
+            );
             updated++;
           } catch {
           }
@@ -868,6 +936,10 @@ var HawkDB = class {
     }
     const purged = await this.purgeForgotten();
     deleted += purged;
+    try {
+      await this.table?.trygc();
+    } catch {
+    }
     return { updated, deleted };
   }
   /**
@@ -985,7 +1057,7 @@ function hasEmbeddingProvider() {
 }
 
 // src/retriever.ts
-var HybridRetriever = class {
+var HybridRetriever = class _HybridRetriever {
   db;
   embedder;
   bm25 = null;
@@ -997,19 +1069,38 @@ var HybridRetriever = class {
   // set true when new memories are stored
   bm25BuildPromise = null;
   // prevents concurrent rebuilds
+  lastIndexedMemoryCount = 0;
+  // for incremental tracking
+  pendingTexts = [];
+  // texts added since last full rebuild
+  pendingIds = [];
   constructor(db2, embedder2) {
     this.db = db2;
     this.embedder = embedder2;
   }
-  /** Call this after store() to invalidate the BM25 index — next search() will rebuild */
+  /** Call this after store() to invalidate the BM25 index — next search() will rebuild incrementally */
   markDirty() {
     this.bm25Dirty = true;
   }
   // ---------- BM25 Setup ----------
+  /** Rebuild threshold: only full-rebuild if more than 10 new memories since last build */
+  static BM25_REBUILD_THRESHOLD = 10;
   async _ensureBm25Index() {
     if (!this.bm25Dirty && this.bm25) return;
     if (this.bm25BuildPromise) return this.bm25BuildPromise;
     this.bm25BuildPromise = this._buildBm25Index();
+    await this.bm25BuildPromise;
+    this.bm25BuildPromise = null;
+    this.bm25Dirty = false;
+  }
+  /**
+   * Incremental BM25: only full-rebuild if new memories exceed threshold.
+   * Otherwise just add to pending corpus and merge at search time.
+   */
+  async _ensureBm25IndexIncremental() {
+    if (!this.bm25Dirty && this.bm25) return;
+    if (this.bm25BuildPromise) return this.bm25BuildPromise;
+    this.bm25BuildPromise = this._buildBm25IndexIncremental();
     await this.bm25BuildPromise;
     this.bm25BuildPromise = null;
     this.bm25Dirty = false;
@@ -1021,7 +1112,48 @@ var HybridRetriever = class {
       if (!allMemories.length) return;
       this.corpusIds = allMemories.map((m) => m.id);
       this.corpus = allMemories.map((m) => m.text.toLowerCase());
+      this.lastIndexedMemoryCount = allMemories.length;
+      this.pendingTexts = [];
+      this.pendingIds = [];
       this.bm25 = new BM25Okapi(this.corpus);
+    } catch {
+      console.warn("[hawk-bridge] rank_bm25 not available, BM25 disabled");
+    }
+  }
+  /**
+   * Incremental BM25: check if new memories exceed threshold.
+   * If few: accumulate in pending, merge at search time.
+   * If many: full rebuild.
+   */
+  async _buildBm25IndexIncremental() {
+    try {
+      const { BM25Okapi } = await import("rank_bm25");
+      const allMemories = await this.db.getAllTexts();
+      if (!allMemories.length) return;
+      const total = allMemories.length;
+      const newCount = total - this.lastIndexedMemoryCount;
+      if (newCount <= 0 || newCount > _HybridRetriever.BM25_REBUILD_THRESHOLD) {
+        this.corpusIds = allMemories.map((m) => m.id);
+        this.corpus = allMemories.map((m) => m.text.toLowerCase());
+        this.lastIndexedMemoryCount = total;
+        this.pendingTexts = [];
+        this.pendingIds = [];
+        this.bm25 = new BM25Okapi(this.corpus);
+      } else {
+        const newMemories = allMemories.slice(-newCount);
+        for (const m of newMemories) {
+          this.pendingIds.push(m.id);
+          this.pendingTexts.push(m.text.toLowerCase());
+        }
+        this.lastIndexedMemoryCount = total;
+        const fullCorpus = [...this.corpus, ...this.pendingTexts];
+        const fullIds = [...this.corpusIds, ...this.pendingIds];
+        this.corpus = fullCorpus;
+        this.corpusIds = fullIds;
+        this.pendingTexts = [];
+        this.pendingIds = [];
+        this.bm25 = new BM25Okapi(fullCorpus);
+      }
     } catch {
       console.warn("[hawk-bridge] rank_bm25 not available, BM25 disabled");
     }
@@ -1142,7 +1274,7 @@ var HybridRetriever = class {
   // ---------- Main Search Pipeline ----------
   async search(query, topK = 5, scope, sourceTypes) {
     topK = Math.min(Math.max(1, topK), 100);
-    await this._ensureBm25Index();
+    await this._ensureBm25IndexIncremental();
     if (!this.noisePrototypes.length) await this.buildNoisePrototypes();
     const hasEmbedding = hasEmbeddingProvider();
     if (hasEmbedding) {
@@ -1224,6 +1356,10 @@ function cosineSimilarity(a, b) {
 }
 
 // src/hooks/hawk-recall/handler.ts
+var INJECTION_LIMIT = 5;
+var MAX_INJECTION_CHARS = 2e3;
+var COMPOSITE_WEIGHT_RELIABILITY = 0.4;
+var COMPOSITE_WEIGHT_SCORE = 0.6;
 var sharedDb = null;
 function getSharedDb() {
   if (!sharedDb) sharedDb = new HawkDB();
@@ -1267,6 +1403,14 @@ var UNIMPORTANT_PATTERN = /^hawk\s*不重要\s*(\d+)$/i;
 var REVIEW_PATTERN = /^hawk\s*回顾(?:\s+(\d+))?$/i;
 var SCOPE_PATTERN = /^hawk\s*(?:scope|作用域)\s*(\d+)\s+(personal|team|project)$/i;
 var CONFLICT_PATTERN = /^hawk\s*冲突\s*(\d+)$/i;
+var EXPORT_PATTERN = /^hawk\s*导出(?:\s+(.+?))?$/i;
+var CLEAR_PATTERN = /^hawk\s*清空$/i;
+var BATCHLOCK_PATTERN = /^hawk\s*锁定\s*all(?:\s+(.+))?$/i;
+var BATCHUNLOCK_PATTERN = /^hawk\s*解锁\s*all$/i;
+var COMPARE_PATTERN = /^hawk\s*对比\s*(\d+)\s+(\d+)$/i;
+var PURGE_PATTERN = /^hawk\s*清理$/i;
+var STATS_PATTERN = /^hawk\s*统计$/i;
+var DENY_PATTERN = /^hawk\s*否认\s*(\d+)$/i;
 function matchFirst(text, patterns) {
   for (const p of patterns) {
     const m = text.trim().match(p);
@@ -1308,6 +1452,22 @@ function formatRecallResults(memories, emoji) {
   }
   return lines.join("\n");
 }
+function compressText(text, limit = 400) {
+  if (text.length <= limit) return text;
+  const first = text.slice(0, limit * 0.6);
+  const breakIdx = Math.max(
+    first.lastIndexOf("\u3002"),
+    first.lastIndexOf("\n"),
+    first.lastIndexOf("\uFF1A"),
+    first.lastIndexOf(".")
+  );
+  const head = breakIdx > limit * 0.3 ? text.slice(0, breakIdx + 1) : first;
+  const kw = extractKeywords(text).slice(0, 5);
+  return `${head.slice(0, limit - kw.join("\u3001").length - 5)}... [\u5173\u952E\u8BCD: ${kw.join("\u3001")}]`;
+}
+function compositeScore(m) {
+  return m.score * COMPOSITE_WEIGHT_SCORE + m.reliability * COMPOSITE_WEIGHT_RELIABILITY;
+}
 function extractKeywords(text) {
   const stop = /* @__PURE__ */ new Set(["\u7684", "\u4E86", "\u662F", "\u5728", "\u548C", "\u4E5F", "\u6709", "\u5C31", "\u4E0D", "\u6211", "\u4F60", "\u4ED6", "\u5979", "\u5B83", "\u4EEC", "\u8FD9", "\u90A3", "\u4E2A", "\u4E0E", "\u6216", "\u88AB", "\u4E3A", "\u4E0A", "\u4E0B", "\u6765", "\u53BB"]);
   const words = [];
@@ -1320,6 +1480,14 @@ function extractKeywords(text) {
     if (!stop.has(w)) words.push(w);
   }
   return [...new Set(words)];
+}
+function textSimilarity(a, b) {
+  const kwA = extractKeywords(a);
+  const kwB = extractKeywords(b);
+  if (!kwA.length || !kwB.length) return 0;
+  const overlap = kwA.filter((k) => kwB.includes(k)).length;
+  const union = (/* @__PURE__ */ new Set([...kwA, ...kwB])).size;
+  return union > 0 ? overlap / union : 0;
 }
 function computeMatchReason(query, memory) {
   const qKw = extractKeywords(query);
@@ -1391,13 +1559,13 @@ ${injectEmoji} \u8FD8\u6CA1\u6709\u4EFB\u4F55\u8BB0\u5FC6\u3002
       if (category && ["fact", "preference", "decision", "entity", "other"].includes(category)) {
         all = all.filter((x) => x.category === category);
       }
-      const sorted = [...all].sort((a, b) => {
+      const sorted2 = [...all].sort((a, b) => {
         if (a.locked !== b.locked) return a.locked ? -1 : 1;
         return b.reliability - a.reliability;
       });
-      const totalPages = Math.ceil(sorted.length / PAGE_SIZE);
-      const pageItems = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-      const lines = [`${injectEmoji} ** hawk \u8BB0\u5FC6 ${page}/${totalPages}\u9875 \u5171${sorted.length}\u6761 **${category ? ` [${category}]` : ""}**`];
+      const totalPages = Math.ceil(sorted2.length / PAGE_SIZE);
+      const pageItems = sorted2.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+      const lines = [`${injectEmoji} ** hawk \u8BB0\u5FC6 ${page}/${totalPages}\u9875 \u5171${sorted2.length}\u6761 **${category ? ` [${category}]` : ""}**`];
       for (let i = 0; i < pageItems.length; i++) {
         lines.push(formatMemoryRow(pageItems[i], (page - 1) * PAGE_SIZE + i + 1));
       }
@@ -1415,7 +1583,7 @@ ${lines.join("\n")}
     if (m) {
       const idx = parseInt(m[1], 10);
       const mult = parseFloat(m[2] || "2");
-      const all = await getSortedMemories(db2);
+      const all = await getSortedMemories(db2, getAgentId(ctx));
       if (idx < 1 || idx > all.length) {
         event.messages.push(`
 ${injectEmoji} \u65E0\u6548\u7F16\u53F7 (1-${all.length})
@@ -1436,7 +1604,7 @@ ${lines.join("\n")}
     var m = trimmed.match(UNIMPORTANT_PATTERN);
     if (m) {
       const idx = parseInt(m[1], 10);
-      const all = await getSortedMemories(db2);
+      const all = await getSortedMemories(db2, getAgentId(ctx));
       if (idx < 1 || idx > all.length) {
         event.messages.push(`
 ${injectEmoji} \u65E0\u6548\u7F16\u53F7 (1-${all.length})
@@ -1454,7 +1622,7 @@ ${injectEmoji} \u5DF2\u964D\u4F4E\u4F18\u5148\u7EA7\u3002
     if (m) {
       const idx = parseInt(m[1], 10);
       const scopeVal = m[2];
-      const all = await getSortedMemories(db2);
+      const all = await getSortedMemories(db2, getAgentId(ctx));
       if (idx < 1 || idx > all.length) {
         event.messages.push(`
 ${injectEmoji} \u65E0\u6548\u7F16\u53F7 (1-${all.length})
@@ -1469,7 +1637,7 @@ ${injectEmoji} \u5DF2\u8BBE\u7F6E\u4F5C\u7528\u57DF\u4E3A [${scopeVal}]
     }
     var m = trimmed.match(EDIT_PATTERN);
     if (m) {
-      const all = await getSortedMemories(db2);
+      const all = await getSortedMemories(db2, getAgentId(ctx));
       if (!all.length) {
         event.messages.push(`
 ${injectEmoji} \u8FD8\u6CA1\u6709\u4EFB\u4F55\u8BB0\u5FC6\u3002
@@ -1581,7 +1749,7 @@ ${lines.join("\n")}
     var m = trimmed.match(CONFLICT_PATTERN);
     if (m) {
       const idx = parseInt(m[1], 10);
-      const all = await getSortedMemories(db2);
+      const all = await getSortedMemories(db2, getAgentId(ctx));
       if (idx < 1 || idx > all.length) {
         event.messages.push(`
 ${injectEmoji} \u65E0\u6548\u7F16\u53F7
@@ -1605,6 +1773,188 @@ ${injectEmoji} \u672A\u68C0\u6D4B\u5230\u4E0E[#${idx}]\u51B2\u7A81\u7684\u8BB0\u
       event.messages.push(`
 ${lines.join("\n")}
 `);
+      return;
+    }
+    var m = trimmed.match(COMPARE_PATTERN);
+    if (m) {
+      const idxA = parseInt(m[1], 10) - 1;
+      const idxB = parseInt(m[2], 10) - 1;
+      const all = await getSortedMemories(db2, getAgentId(ctx));
+      if (idxA < 0 || idxA >= all.length || idxB < 0 || idxB >= all.length) {
+        event.messages.push(`
+${injectEmoji} \u65E0\u6548\u7F16\u53F7 (1-${all.length})
+`);
+        return;
+      }
+      const memA = all[idxA];
+      const memB = all[idxB];
+      const sim = textSimilarity(memA.text, memB.text);
+      const kwA = extractKeywords(memA.text);
+      const kwB = extractKeywords(memB.text);
+      const overlap = kwA.filter((k) => kwB.includes(k));
+      const lines = [
+        `${injectEmoji} ** \u8BB0\u5FC6\u5BF9\u6BD4 [#${idxA + 1} vs #${idxB + 1}] **`,
+        ``,
+        `[#${idxA + 1}] ${relLabel(memA.reliability)} ${fmtRel(memA)} [${memA.category}]`,
+        `\u5185\u5BB9: ${memA.text.slice(0, 80)}`,
+        `\u521B\u5EFA: ${formatTime(memA.createdAt)} | \u9A8C\u8BC1: ${memA.verificationCount}\u6B21`,
+        ``,
+        `[#${idxB + 1}] ${relLabel(memB.reliability)} ${fmtRel(memB)} [${memB.category}]`,
+        `\u5185\u5BB9: ${memB.text.slice(0, 80)}`,
+        `\u521B\u5EFA: ${formatTime(memB.createdAt)} | \u9A8C\u8BC1: ${memB.verificationCount}\u6B21`,
+        ``,
+        `\u76F8\u4F3C\u5EA6: ${(sim * 100).toFixed(0)}%`,
+        `\u5171\u540C\u5173\u952E\u8BCD: ${overlap.length > 0 ? overlap.slice(0, 5).join(", ") : "\u65E0"}`,
+        sim >= 0.6 ? `\u26A0\uFE0F \u53EF\u80FD\u77DB\u76FE\uFF08\u76F8\u4F3C\u4F46\u4E0D\u540C\uFF09` : sim < 0.3 ? `\u2705 \u5B8C\u5168\u4E0D\u540C` : `\u26A1 \u90E8\u5206\u91CD\u53E0`
+      ];
+      event.messages.push(`
+${lines.join("\n")}
+`);
+      return;
+    }
+    var m = trimmed.match(EXPORT_PATTERN);
+    if (m) {
+      const filepath = m[1]?.trim() || path3.join(homedir3(), ".hawk", `export-${Date.now()}.json`);
+      const all = await db2.getAllMemories();
+      const exported = all.map((m2) => ({
+        id: m2.id,
+        text: m2.text,
+        category: m2.category,
+        reliability: m2.reliability,
+        scope: m2.scope,
+        locked: m2.locked,
+        verificationCount: m2.verificationCount,
+        createdAt: formatTime(m2.createdAt),
+        updatedAt: formatTime(m2.updatedAt),
+        correctionHistory: m2.correctionHistory
+      }));
+      try {
+        const { writeFileSync, mkdirSync, existsSync } = __require("fs");
+        const dir = path3.dirname(filepath);
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+        writeFileSync(filepath, JSON.stringify({ exported_at: (/* @__PURE__ */ new Date()).toISOString(), count: exported.length, memories: exported }, null, 2));
+        event.messages.push(`
+${injectEmoji} \u2705 \u5DF2\u5BFC\u51FA ${exported.length} \u6761\u8BB0\u5FC6\u5230
+${filepath}
+`);
+      } catch (err) {
+        event.messages.push(`
+${injectEmoji} \u274C \u5BFC\u51FA\u5931\u8D25: ${err.message}
+`);
+      }
+      return;
+    }
+    if (CLEAR_PATTERN.test(trimmed)) {
+      const all = await db2.getAllMemories();
+      const unlocked = all.filter((m2) => !m2.locked);
+      if (!unlocked.length) {
+        event.messages.push(`
+${injectEmoji} \u6CA1\u6709\u53EF\u6E05\u7A7A\u7684\u8BB0\u5FC6\uFF08\u5168\u90E8\u5DF2\u9501\u5B9A\uFF09
+`);
+        return;
+      }
+      let cleared = 0;
+      for (const m2 of unlocked) {
+        if (await db2.forget(m2.id)) cleared++;
+      }
+      event.messages.push(`
+${injectEmoji} \u2705 \u5DF2\u6E05\u7A7A ${cleared} \u6761\u672A\u9501\u5B9A\u8BB0\u5FC6\u3002
+`);
+      return;
+    }
+    var m = trimmed.match(BATCHLOCK_PATTERN);
+    if (m) {
+      const cat = m[1]?.trim();
+      const all = await db2.getAllMemories();
+      const targets = cat ? all.filter((x) => x.category === cat && !x.locked) : all.filter((x) => !x.locked);
+      if (!targets.length) {
+        event.messages.push(`
+${injectEmoji} \u6CA1\u6709\u627E\u5230${cat ? `[${cat}]` : ""}\u672A\u9501\u5B9A\u7684\u8BB0\u5FC6\u3002
+`);
+        return;
+      }
+      let locked = 0;
+      for (const t of targets) {
+        if (await db2.lock(t.id)) locked++;
+      }
+      event.messages.push(`
+${injectEmoji} \u{1F512} \u5DF2\u9501\u5B9A ${locked} \u6761${cat ? `[${cat}]` : ""}\u8BB0\u5FC6\u3002
+`);
+      return;
+    }
+    if (BATCHUNLOCK_PATTERN.test(trimmed)) {
+      const all = await db2.getAllMemories();
+      const locked = all.filter((x) => x.locked);
+      if (!locked.length) {
+        event.messages.push(`
+${injectEmoji} \u6CA1\u6709\u5DF2\u9501\u5B9A\u7684\u8BB0\u5FC6\u3002
+`);
+        return;
+      }
+      let unlocked = 0;
+      for (const t of locked) {
+        if (await db2.unlock(t.id)) unlocked++;
+      }
+      event.messages.push(`
+${injectEmoji} \u{1F513} \u5DF2\u89E3\u9501 ${unlocked} \u6761\u8BB0\u5FC6\u3002
+`);
+      return;
+    }
+    if (PURGE_PATTERN.test(trimmed)) {
+      const { exec: exec2 } = __require("child_process");
+      const { promisify: promisify2 } = __require("util");
+      const execAsync = promisify2(exec2);
+      const distDecay = path3.join(process.cwd(), "dist/cli/decay.js");
+      try {
+        const { stdout } = await execAsync(`node "${distDecay}"`, { timeout: 3e4 });
+        event.messages.push(`
+${injectEmoji} ${stdout.trim()}
+`);
+      } catch (err) {
+        event.messages.push(`
+${injectEmoji} \u274C \u6E05\u7406\u5931\u8D25: ${err.message}
+`);
+      }
+      return;
+    }
+    if (STATS_PATTERN.test(trimmed)) {
+      const all = await db2.getAllMemories(getAgentId(ctx));
+      if (!all.length) {
+        event.messages.push(`
+${injectEmoji} \u6682\u65E0\u8BB0\u5FC6\u3002
+`);
+        return;
+      }
+      const total = all.length;
+      const locked = all.filter((m2) => m2.locked).length;
+      const byCat = {};
+      const byScope = {};
+      const byRel = {};
+      const now = Date.now();
+      for (const m2 of all) {
+        byCat[m2.category] = (byCat[m2.category] || 0) + 1;
+        byScope[m2.scope] = (byScope[m2.scope] || 0) + 1;
+        const relBand = m2.reliability >= 0.8 ? "high" : m2.reliability >= 0.5 ? "mid" : "low";
+        byRel[relBand] = (byRel[relBand] || 0) + 1;
+      }
+      const avgImp = (all.reduce((s, m2) => s + m2.importance, 0) / total).toFixed(2);
+      const expired = all.filter((m2) => m2.expiresAt > 0 && m2.expiresAt < now).length;
+      const lines = [
+        `
+${injectEmoji} ** hawk \u8BB0\u5FC6\u7EDF\u8BA1 **
+`,
+        `\u603B\u8BB0\u5FC6: ${total} | \u9501\u5B9A: ${locked} | \u5DF2\u8FC7\u671F: ${expired}`,
+        `\u5E73\u5747\u91CD\u8981\u6027: ${avgImp}`,
+        ``,
+        `**\u6309\u7C7B\u522B**:`,
+        ...Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${k}: ${v}`),
+        ``,
+        `**\u6309\u4F5C\u7528\u57DF**:`,
+        ...Object.entries(byScope).sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${k}: ${v}`),
+        ``,
+        `**\u6309\u53EF\u9760\u6027**: high\u226580%:${byRel.high || 0} | mid50-80%:${byRel.mid || 0} | low<50%:${byRel.low || 0}`
+      ];
+      event.messages.push(lines.join("\n") + "\n");
       return;
     }
     var m = trimmed.match(REVIEW_PATTERN);
@@ -1686,6 +2036,23 @@ ${injectEmoji} \u65E0\u6548\u64CD\u4F5C\u3002\u7528"${idx + 1} \u5BF9"\u6216"${i
       }
       return;
     }
+    var m = trimmed.match(DENY_PATTERN);
+    if (m) {
+      const idx = parseInt(m[1], 10) - 1;
+      const targetIds = ctx._hawkCheckIndex || [];
+      if (idx < 0 || idx >= targetIds.length) {
+        event.messages.push(`
+${injectEmoji} \u65E0\u6548\u7F16\u53F7
+`);
+        return;
+      }
+      const id = targetIds[idx];
+      await db2.flagUnhelpful(id, 0.05);
+      event.messages.push(`
+${injectEmoji} \u5DF2\u6807\u8BB0\u8BE5\u8BB0\u5FC6\u4E3A\u4E0D\u53EF\u9760\uFF08reliability -5%\uFF09
+`);
+      return;
+    }
     {
       const keyword = matchFirst(trimmed, LOCK_PATTERNS);
       if (keyword !== null) {
@@ -1739,9 +2106,9 @@ ${injectEmoji} \u6CA1\u6709\u627E\u5230\u4E0E"${keyword}"\u76F8\u5173\u7684\u8BB
     {
       const correct = matchFirst(trimmed, [CORRECT_PATTERN]);
       if (correct !== null) {
-        const result = await findMemoryBySemanticMatch(db2, correct);
-        if (result) {
-          await db2.verify(result.id, false, correct);
+        const result2 = await findMemoryBySemanticMatch(db2, correct);
+        if (result2) {
+          await db2.verify(result2.id, false, correct);
           event.messages.push(`
 ${injectEmoji} \u2705 \u5DF2\u7EA0\u6B63 \u2192 ${correct}
 `);
@@ -1756,24 +2123,53 @@ ${injectEmoji} \u6CA1\u6709\u627E\u5230\u9700\u8981\u7EA0\u6B63\u7684\u8BB0\u5FC
     const retriever = await getRetriever();
     const memories = await retriever.search(trimmed, topK);
     const useable = memories.filter((m2) => m2.score >= minScore || m2.reliability >= RELIABILITY_THRESHOLD_HIGH);
-    if (!useable.length) return;
-    const withReasons = useable.map((m2) => ({
+    if (!useable.length) {
+      const all = await db2.getAllMemories(getAgentId(ctx));
+      if (all.length > 0) {
+        const queryWords = trimmed.toLowerCase().split(/\s+/);
+        const suggestions = all.map((m2) => {
+          const textWords = m2.text.toLowerCase().split(/\s+/);
+          const overlap = queryWords.filter((w) => textWords.some((tw) => tw.includes(w) || w.includes(tw))).length;
+          return { id: m2.id, text: m2.text, overlap };
+        }).filter((s) => s.overlap > 0).sort((a, b) => b.overlap - a.overlap).slice(0, 3);
+        if (suggestions.length > 0) {
+          const tips = suggestions.map((s) => `  \xB7 "${s.text.slice(0, 50)}"`).join("\n");
+          event.messages.push(`
+${injectEmoji} \u6CA1\u627E\u5230\u76F4\u63A5\u5339\u914D\u7684\u3002\u662F\u4E0D\u662F\u6307\uFF1A
+${tips}
+`);
+        }
+      }
+      return;
+    }
+    const sorted = [...useable].sort((a, b) => compositeScore(b) - compositeScore(a));
+    const result = [];
+    let totalChars = 0;
+    for (const m2 of sorted) {
+      if (result.length >= INJECTION_LIMIT) break;
+      const compressed = compressText(m2.text);
+      if (totalChars + compressed.length > MAX_INJECTION_CHARS) continue;
+      result.push(m2);
+      totalChars += compressed.length;
+    }
+    if (!result.length) return;
+    const withReasons = result.map((m2) => ({
       ...m2,
-      matchReason: computeMatchReason(trimmed, m2)
+      matchReason: computeMatchReason(trimmed, m2),
+      text: sanitize(compressText(m2.text))
     }));
-    const sanitized = withReasons.map((m2) => ({ ...m2, text: sanitize(m2.text) }));
     event.messages.push(`
-${formatRecallResults(sanitized, injectEmoji)}
+${formatRecallResults(withReasons, injectEmoji)}
 `);
     for (const m2 of useable) {
       if (m2.score >= minScore) await db2.verify(m2.id, true);
     }
     if (config.audit?.enabled) {
       try {
-        const { appendFileSync: appendFileSync2, join: join4 } = __require("fs");
-        const { homedir: homedir4 } = __require("os");
+        const { appendFileSync: appendFileSync2, join: join5 } = __require("fs");
+        const { homedir: homedir5 } = __require("os");
         appendFileSync2(
-          join4(homedir4(), ".hawk", "audit.log"),
+          join5(homedir5(), ".hawk", "audit.log"),
           JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), action: "recall", count: sanitized.length, query: trimmed.slice(0, 100) }) + "\n"
         );
       } catch {
@@ -1783,8 +2179,11 @@ ${formatRecallResults(sanitized, injectEmoji)}
     console.error("[hawk-recall] Error:", err);
   }
 };
-async function getSortedMemories(db2) {
-  const all = await db2.getAllMemories();
+function getAgentId(ctx) {
+  return ctx?.agentId ?? null;
+}
+async function getSortedMemories(db2, agentId) {
+  const all = await db2.getAllMemories(agentId);
   return [...all].sort((a, b) => {
     if (a.locked !== b.locked) return a.locked ? -1 : 1;
     return b.reliability - a.reliability;
@@ -1796,7 +2195,7 @@ var handler_default = recallHandler;
 import { spawn } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs";
-import * as path3 from "path";
+import * as path4 from "path";
 import * as os3 from "os";
 init_embeddings();
 var exec = promisify(__require("child_process").exec);
@@ -1816,7 +2215,7 @@ async function getEmbedder() {
   }
   return embedder;
 }
-var AUDIT_LOG_PATH = path3.join(os3.homedir(), ".hawk", "audit.log");
+var AUDIT_LOG_PATH = path4.join(os3.homedir(), ".hawk", "audit.log");
 function audit(action, reason, text) {
   const config = getConfig();
   if (!config.audit?.enabled) return;
@@ -1857,8 +2256,8 @@ function normalizeText(text) {
   t = t.replace(/(https?:\/\/[^\s\n,，]+)[\n-]([^\s,，]+)/g, "$1$2");
   t = t.replace(
     /(https?:\/\/[^\s　'"<>】】]+)\/([^\s　'"<>】】]{0,60}[^\s　'"<>】】]*)/g,
-    (_, domain, path4) => {
-      const fullPath = path4.length > 60 ? path4.slice(0, 60) + "..." : path4;
+    (_, domain, path5) => {
+      const fullPath = path5.length > 60 ? path5.slice(0, 60) + "..." : path5;
       return domain + "/" + fullPath;
     }
   );
@@ -1960,7 +2359,7 @@ function sanitize2(text) {
   }
   return result;
 }
-function textSimilarity(a, b) {
+function textSimilarity2(a, b) {
   if (a === b) return 1;
   if (!a.length || !b.length) return 0;
   if (Math.abs(a.length - b.length) / Math.max(a.length, b.length) > 0.3) return 0;
@@ -1975,7 +2374,7 @@ async function isDuplicate(text, threshold = DEDUP_SIMILARITY) {
     const dbInstance = await getDB();
     const recent = await dbInstance.listRecent(20);
     for (const m of recent) {
-      if (textSimilarity(text, m.text) >= threshold) return true;
+      if (textSimilarity2(text, m.text) >= threshold) return true;
     }
   } catch {
   }
@@ -1990,9 +2389,73 @@ var captureHandler = async (event) => {
     const { maxChunks, importanceThreshold, ttlMs } = config.capture;
     const content = event.context?.content;
     if (typeof content !== "string" || content.length < 50) return;
-    const memories = await callExtractor(content, config);
+    const trimmedContent = content.trim();
+    if (/^[\d\s.,]+$/.test(trimmedContent)) return;
+    if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]{1,3}$/u.test(trimmedContent)) return;
+    if (trimmedContent.length < 30) return;
+    const CODE_BLOCK_RE = /```(?:\w+)?\n([\s\S]{20,500}?)```/g;
+    const codeBlockMemories = [];
+    let codeMatch;
+    while ((codeMatch = CODE_BLOCK_RE.exec(content)) !== null) {
+      const code = codeMatch[1].trim();
+      if (code.length < 20) continue;
+      const fenceWithLang = content.slice(Math.max(0, codeMatch.index - 10), codeMatch.index);
+      const langMatch = fenceWithLang.match(/```(\w+)/);
+      const lang = langMatch ? langMatch[1] : "code";
+      codeBlockMemories.push({
+        text: `[${lang.toUpperCase()}] ${code.slice(0, 200)}${code.length > 200 ? "..." : ""}`,
+        category: "fact",
+        importance: 0.8,
+        abstract: `\u4EE3\u7801\u7247\u6BB5 (${lang})\uFF0C${code.split("\n").length} \u884C`,
+        overview: `\u7528\u6237\u5206\u4EAB\u7684 ${lang} \u4EE3\u7801\uFF1A${code.slice(0, 100)}`
+      });
+    }
+    const URL_RE = /(?:https?:\/\/[^\s\n，,。!?）\]]+)/g;
+    const urlMemories = [];
+    let urlMatch;
+    const seenUrls = /* @__PURE__ */ new Set();
+    while ((urlMatch = URL_RE.exec(content)) !== null) {
+      const url = urlMatch[0];
+      if (seenUrls.has(url)) continue;
+      seenUrls.add(url);
+      const ctxStart = Math.max(0, urlMatch.index - 80);
+      const ctx = content.slice(ctxStart, urlMatch.index).replace(/\n/g, " ").trim();
+      urlMemories.push({
+        text: `\u5206\u4EAB\u94FE\u63A5: ${url}`,
+        category: "fact",
+        importance: 0.7,
+        abstract: `\u94FE\u63A5\u5206\u4EAB: ${url}`,
+        overview: ctx || `\u5206\u4EAB\u7684\u94FE\u63A5: ${url}`
+      });
+    }
+    let enrichedContent = content;
+    const USER_MSG_RE = /^user:\s*(.+)/gim;
+    const userMessages = [];
+    let um;
+    while ((um = USER_MSG_RE.exec(content)) !== null) {
+      userMessages.push({ text: um[1], idx: um.index });
+    }
+    if (userMessages.length >= 2) {
+      const merged = [];
+      for (const msg of userMessages) {
+        const prev = merged[merged.length - 1];
+        if (prev && msg.idx - prev.end < 200) {
+          prev.text += "\n" + msg.text;
+          prev.end = msg.idx + msg.text.length + 5;
+        } else {
+          merged.push({ text: msg.text, start: msg.idx, end: msg.idx + msg.text.length + 5 });
+        }
+      }
+      enrichedContent = merged.map((m) => `user: ${m.text}`).join("\n\n");
+    }
+    const memories = await callExtractor(enrichedContent, config);
     if (!memories || !memories.length) return;
-    const significant = memories.filter(
+    const allMemories = [
+      ...codeBlockMemories,
+      ...urlMemories,
+      ...memories
+    ];
+    const significant = allMemories.filter(
       (m) => m.importance >= importanceThreshold
     ).slice(0, maxChunks);
     if (!significant.length) return;
