@@ -306,6 +306,39 @@ export class LanceDBAdapter implements MemoryStore {
     } catch { return null; }
   }
 
+  /** Returns DB stats: memory count, total size in MB, directory path */
+  async getDBStats(): Promise<{ count: number; sizeMB: number; path: string }> {
+    if (!this.table) await this.init();
+    const all = await this.table.query().limit(100000).toArray();
+    const count = all.filter((r: any) => r.deleted_at === null).length;
+
+    let sizeMB = 0;
+    try {
+      const sizeBytes = await this._dirSize(this.dbPath);
+      sizeMB = sizeBytes / (1024 * 1024);
+    } catch { /* non-critical */ }
+
+    return { count, sizeMB, path: this.dbPath };
+  }
+
+  private async _dirSize(dirPath: string): Promise<number> {
+    const fs2 = await import('fs/promises');
+    let total = 0;
+    try {
+      const entries = await fs2.readdir(dirPath, { withFileTypes: true });
+      for (const entry of entries) {
+        const full = path.join(dirPath, entry.name);
+        if (entry.isDirectory()) {
+          total += await this._dirSize(full);
+        } else {
+          const stat = await fs2.stat(full);
+          total += stat.size;
+        }
+      }
+    } catch { /* ignore */ }
+    return total;
+  }
+
   async getAllMemories(agentId?: string | null): Promise<MemoryEntry[]> {
     if (!this.table) await this.init();
     const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();

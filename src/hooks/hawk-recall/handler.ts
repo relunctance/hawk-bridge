@@ -694,6 +694,13 @@ const recallHandler = async (event: HookEvent) => {
         bm25Size = (retriever as any).corpus?.length ?? 0;
       } catch { /* non-critical */ }
 
+      // DB size
+      let dbSizeMB = 0;
+      try {
+        const stats = await (db as any).getDBStats?.();
+        if (stats) dbSizeMB = stats.sizeMB;
+      } catch { /* non-critical */ }
+
       // Last decay time (from last successful decay run)
       const lastDecay = (global as any).__hawk_last_decay__;
       const decayAgo = lastDecay ? Math.round((now - lastDecay) / 60000) + ' 分钟前' : '从未';
@@ -701,6 +708,7 @@ const recallHandler = async (event: HookEvent) => {
       event.messages.push(
         `\n${injectEmoji} ** hawk 系统状态 **\n` +
         `记忆总数: ${total} | 已过期: ${expired} | 锁定: ${locked}\n` +
+        `数据库: ${dbSizeMB > 0 ? dbSizeMB.toFixed(2) + ' MB' : '(计算中...)'}\n` +
         `BM25索引: ${bm25Size} 条\n` +
         `Embed缓存: ${cacheSize} 条\n` +
         `最后Decay: ${decayAgo}\n` +

@@ -96,7 +96,7 @@ const DEFAULT_CONFIG: HawkConfig = {
     dedupSimilarity: 0.95,
   },
   python: {
-    pythonPath: 'python3.12',
+    pythonPath: 'python3',
     hawkDir: '~/.openclaw/hawk',
   },
 };

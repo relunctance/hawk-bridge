@@ -2950,7 +2950,7 @@ var DEFAULT_CONFIG = {
     dedupSimilarity: 0.95
   },
   python: {
-    pythonPath: "python3.12",
+    pythonPath: "python3",
     hawkDir: "~/.openclaw/hawk"
   }
 };
@@ -3272,6 +3272,37 @@ var LanceDBAdapter = class {
     } catch {
       return null;
     }
+  }
+  /** Returns DB stats: memory count, total size in MB, directory path */
+  async getDBStats() {
+    if (!this.table) await this.init();
+    const all = await this.table.query().limit(1e5).toArray();
+    const count = all.filter((r) => r.deleted_at === null).length;
+    let sizeMB = 0;
+    try {
+      const sizeBytes = await this._dirSize(this.dbPath);
+      sizeMB = sizeBytes / (1024 * 1024);
+    } catch {
+    }
+    return { count, sizeMB, path: this.dbPath };
+  }
+  async _dirSize(dirPath) {
+    const fs2 = await import("fs/promises");
+    let total = 0;
+    try {
+      const entries = await fs2.readdir(dirPath, { withFileTypes: true });
+      for (const entry of entries) {
+        const full = path2.join(dirPath, entry.name);
+        if (entry.isDirectory()) {
+          total += await this._dirSize(full);
+        } else {
+          const stat = await fs2.stat(full);
+          total += stat.size;
+        }
+      }
+    } catch {
+    }
+    return total;
   }
   async getAllMemories(agentId) {
     if (!this.table) await this.init();
@@ -3952,6 +3983,7 @@ function cosineSimilarity(a, b) {
 
 // src/hooks/hawk-recall/handler.ts
 init_embeddings();
+var LANG = process.env.HAWK_LANG || "zh";
 var INJECTION_LIMIT = 5;
 var MAX_INJECTION_CHARS = 2e3;
 var COMPOSITE_WEIGHT_RELIABILITY = 0.4;
@@ -4702,12 +4734,19 @@ ${injectEmoji} ** hawk \u8BB0\u5FC6\u5065\u5EB7\u8BC4\u5206 **
         bm25Size = retriever2.corpus?.length ?? 0;
       } catch {
       }
+      let dbSizeMB = 0;
+      try {
+        const stats = await db.getDBStats?.();
+        if (stats) dbSizeMB = stats.sizeMB;
+      } catch {
+      }
       const lastDecay = global.__hawk_last_decay__;
       const decayAgo = lastDecay ? Math.round((now - lastDecay) / 6e4) + " \u5206\u949F\u524D" : "\u4ECE\u672A";
       event.messages.push(
         `
 ${injectEmoji} ** hawk \u7CFB\u7EDF\u72B6\u6001 **
 \u8BB0\u5FC6\u603B\u6570: ${total} | \u5DF2\u8FC7\u671F: ${expired} | \u9501\u5B9A: ${locked}
+\u6570\u636E\u5E93: ${dbSizeMB > 0 ? dbSizeMB.toFixed(2) + " MB" : "(\u8BA1\u7B97\u4E2D...)"}
 BM25\u7D22\u5F15: ${bm25Size} \u6761
 Embed\u7F13\u5B58: ${cacheSize} \u6761
 \u6700\u540EDecay: ${decayAgo}

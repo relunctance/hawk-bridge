@@ -2935,7 +2935,7 @@ var DEFAULT_CONFIG = {
     dedupSimilarity: 0.95
   },
   python: {
-    pythonPath: "python3.12",
+    pythonPath: "python3",
     hawkDir: "~/.openclaw/hawk"
   }
 };
@@ -3254,6 +3254,37 @@ var LanceDBAdapter = class {
     } catch {
       return null;
     }
+  }
+  /** Returns DB stats: memory count, total size in MB, directory path */
+  async getDBStats() {
+    if (!this.table) await this.init();
+    const all = await this.table.query().limit(1e5).toArray();
+    const count = all.filter((r) => r.deleted_at === null).length;
+    let sizeMB = 0;
+    try {
+      const sizeBytes = await this._dirSize(this.dbPath);
+      sizeMB = sizeBytes / (1024 * 1024);
+    } catch {
+    }
+    return { count, sizeMB, path: this.dbPath };
+  }
+  async _dirSize(dirPath) {
+    const fs22 = await import("fs/promises");
+    let total = 0;
+    try {
+      const entries = await fs22.readdir(dirPath, { withFileTypes: true });
+      for (const entry of entries) {
+        const full = path2.join(dirPath, entry.name);
+        if (entry.isDirectory()) {
+          total += await this._dirSize(full);
+        } else {
+          const stat = await fs22.stat(full);
+          total += stat.size;
+        }
+      }
+    } catch {
+    }
+    return total;
   }
   async getAllMemories(agentId) {
     if (!this.table) await this.init();
@@ -3638,6 +3669,7 @@ init_embeddings();
 
 // src/hooks/hawk-recall/handler.ts
 init_embeddings();
+var LANG = process.env.HAWK_LANG || "zh";
 var bm25DirtyGlobal = false;
 function markBm25Dirty() {
   bm25DirtyGlobal = true;
@@ -3669,7 +3701,10 @@ async function withRetry(fn, maxAttempts = 3, delayMs = 1e3) {
     } catch (err) {
       lastErr = err;
       if (attempt < maxAttempts) {
+        console.warn(`[hawk-capture] Attempt ${attempt} failed, retrying in ${delayMs * attempt}ms...`);
         await new Promise((res) => setTimeout(res, delayMs * attempt));
+      } else {
+        console.error(`[hawk-capture] All ${maxAttempts} attempts failed: ${err.message}`);
       }
     }
   }
@@ -4004,6 +4039,7 @@ var captureHandler = async (event) => {
     }
     if (storedCount > 0) {
       console.log(`[hawk-capture] Stored ${storedCount} memories`);
+      audit("capture", "stored", `Stored ${storedCount} memories`);
       markBm25Dirty();
     }
   } catch (err) {

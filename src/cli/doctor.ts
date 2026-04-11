@@ -9,6 +9,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
 import { getConfig } from '../config.js';
+import { Embedder } from '../embeddings.js';
 
 interface Check {
   name: string;
@@ -28,6 +29,9 @@ function check(name: string, fn: () => { status: Check['status']; message: strin
 }
 
 async function runDoctor() {
+  const args = process.argv.slice(2);
+  const testEmbed = args.includes('--test-embed') || args.includes('-e');
+
   console.log('\n🦅 hawk-bridge 诊断工具\n' + '═'.repeat(50) + '\n');
 
   // 1. Python check
@@ -143,6 +147,25 @@ async function runDoctor() {
   });
 
   // Summary
+  // Embedder connectivity test (async, only when --test-embed)
+  if (testEmbed) {
+    console.log('\n正在测试 Embedder 连通性...\n');
+    try {
+      const config: any = await getConfig();
+      const embedder = new Embedder(config.embedding);
+      const start = Date.now();
+      const vectors = await embedder.embed(['hello']);
+      const latency = Date.now() - start;
+      if (vectors && vectors.length > 0 && vectors[0].length > 0) {
+        console.log(`✅ Embedder 连通性: 成功 (${latency}ms, ${vectors[0].length}维向量)\n`);
+      } else {
+        console.log(`⚠️ Embedder 连通性: 返回结果异常\n`);
+      }
+    } catch (e: any) {
+      console.log(`❌ Embedder 连通性: 失败 — ${e.message}\n`);
+    }
+  }
+
   console.log('诊断结果:\n');
   const pass = checks.filter(c => c.status === 'pass').length;
   const fail = checks.filter(c => c.status === 'fail').length;

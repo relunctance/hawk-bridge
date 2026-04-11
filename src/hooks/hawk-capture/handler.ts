@@ -53,7 +53,10 @@ async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 3, delayMs = 100
     } catch (err) {
       lastErr = err;
       if (attempt < maxAttempts) {
+        console.warn(`[hawk-capture] Attempt ${attempt} failed, retrying in ${delayMs * attempt}ms...`);
         await new Promise(res => setTimeout(res, delayMs * attempt));
+      } else {
+        console.error(`[hawk-capture] All ${maxAttempts} attempts failed: ${err.message}`);
       }
     }
   }
@@ -556,6 +559,7 @@ const captureHandler = async (event: HookEvent) => {
 
     if (storedCount > 0) {
       console.log(`[hawk-capture] Stored ${storedCount} memories`);
+      audit('capture', 'stored', `Stored ${storedCount} memories`);
       markBm25Dirty();
     }
 
@@ -646,3 +650,15 @@ function generateId(): string {
 }
 
 export default captureHandler;
+
+
+// ─── Feishu Reaction (🦅) ───────────────────────────────────────────────
+// TODO(hawk-bridge): Feishu reaction to indicate capture success.
+// Requires OpenClaw plugin system to expose:
+//   1. Bot access token (via openclaw's internal credential store)
+//   2. A `bot.addReaction(messageId, emoji)` API callable from hooks
+// When implemented:
+//   - After successful store(), call addHawkReaction(messageId, chatId, '🦅')
+//   - Feishu API: POST /open-apis/reaction/v1/reactions
+//   - Reaction type: emoji with emoji_id 'approve'
+// Currently: capture success is logged to ~/.hawk/audit.log (already implemented)
