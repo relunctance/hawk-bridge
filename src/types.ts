@@ -107,6 +107,10 @@ export interface HawkConfig {
 
 export interface MemoryEntry {
   id: string;
+  /** Short name for dual-selector header scanning */
+  name: string;
+  /** One-line description used by the LLM selector to decide relevance */
+  description: string;
   text: string;
   vector: number[];
   category: 'fact' | 'preference' | 'decision' | 'entity' | 'other';
@@ -143,6 +147,10 @@ export interface MemoryEntry {
   metadata: Record<string, unknown>;
   /** 记忆来源类型: text | audio | video */
   source_type: SourceType;
+  /** Drift note: what might be stale (filled by dream consolidation) */
+  driftNote: string | null;
+  /** When drift was last detected */
+  driftDetectedAt: number | null;
 }
 
 export interface RetrievedMemory {

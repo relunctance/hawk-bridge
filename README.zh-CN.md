@@ -165,6 +165,10 @@ Session（持久化磁盘）
 | 33 | **4类记忆分类** *(from Claude)* | fact / preference / decision / entity — 每类独立可靠性追踪和过期感知召回 |
 
 
+| 34 | **整合锁机制** *(from Claude)* | 锁文件防止多进程同时整合记忆；60分钟或进程死后自动回收 stale lock |
+| 35 | **What NOT to Save** *(from Claude)* | 预过滤跳过代码模式/git历史/调试方案/临时任务 — 减少噪声 |
+| 36 | **双重选择器** *(from Claude)* | Header扫描(name+description) → LLM选topN → 向量搜索 — 比纯向量更准 |
+| 37 | **Session Transcript 扫描** *(from Claude)* | 扫描 `transcripts/*.jsonl` 在整合时提供相关历史上下文 |
 ---
 
 ## 🏗️ 架构

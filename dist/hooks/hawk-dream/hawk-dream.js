@@ -3111,7 +3111,11 @@ var LanceDBAdapter = class {
             { name: "updated_at", type: { type: "int64" } },
             { name: "scope_mem", type: { type: "utf8" } },
             { name: "importance_override", type: { type: "float" } },
-            { name: "cold_start_until", type: { type: "int64" } }
+            { name: "cold_start_until", type: { type: "int64" } },
+            { name: "name", type: { type: "utf8" } },
+            { name: "description", type: { type: "utf8" } },
+            { name: "drift_note", type: { type: "utf8" } },
+            { name: "drift_detected_at", type: { type: "int64" } }
           ]);
         } catch (_) {
         }
@@ -3193,7 +3197,11 @@ var LanceDBAdapter = class {
       importanceOverride: r.importance_override ?? 1,
       coldStartUntil: r.cold_start_until !== null ? Number(r.cold_start_until) : null,
       metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata || "{}") : r.metadata || {},
-      source_type: r.source_type || "text"
+      source_type: r.source_type || "text",
+      name: r.name ?? "",
+      description: r.description ?? "",
+      driftNote: r.drift_note ?? null,
+      driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null
     };
   }
   _rowToRetrieved(r, score, matchReason) {
@@ -3224,7 +3232,11 @@ var LanceDBAdapter = class {
       scope: r.scope_mem ?? "personal",
       importanceOverride: r.importance_override ?? 1,
       coldStartUntil: r.cold_start_until !== null ? Number(r.cold_start_until) : null,
-      matchReason
+      matchReason,
+      name: r.name ?? "",
+      description: r.description ?? "",
+      driftNote: r.drift_note ?? null,
+      driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null
     };
   }
   // ─── MemoryStore Interface Implementation ───────────────────────────────────
@@ -3237,6 +3249,8 @@ var LanceDBAdapter = class {
     const row = this._makeRow({
       id: entry.id,
       text: entry.text,
+      name: entry.name || "",
+      description: entry.description || "",
       vector: entry.vector,
       category: entry.category,
       scope: entry.scope ?? "global",
@@ -3258,7 +3272,9 @@ var LanceDBAdapter = class {
       importance_override: entry.importanceOverride ?? 1,
       cold_start_until: coldStartUntil,
       metadata: JSON.stringify(entry.metadata || {}),
-      source_type: entry.source_type || "text"
+      source_type: entry.source_type || "text",
+      drift_note: entry.driftNote || null,
+      drift_detected_at: entry.driftDetectedAt || null
     });
     await this.table.add([row]);
   }
@@ -3271,12 +3287,16 @@ var LanceDBAdapter = class {
       const updated = {
         ...existing,
         text: fields.text ?? existing.text,
+        name: fields.name ?? existing.name,
+        description: fields.description ?? existing.description,
         category: fields.category ?? existing.category,
         scope: fields.scope ?? existing.scope,
         importance: fields.importance ?? existing.importance,
         importanceOverride: fields.importanceOverride ?? existing.importanceOverride,
         updatedAt: Date.now(),
-        vector: existing.vector
+        vector: existing.vector,
+        driftNote: fields.driftNote ?? existing.driftNote,
+        driftDetectedAt: fields.driftDetectedAt ?? existing.driftDetectedAt
       };
       await this.store(updated, existing.sessionId ?? void 0);
       return true;
@@ -3743,6 +3763,43 @@ var DREAM_CONFIG = {
   driftCheckReliability: 0.6
   // re-verify memories with reliability > this (trust but verify)
 };
+var LOCK_FILE = path3.join(
+  process.env.HAWK_DIR || path3.join(process.env.HOME || "~", ".hawk"),
+  ".consolidate-lock"
+);
+var LOCK_TTL_MS = 60 * 60 * 1e3;
+function tryAcquireConsolidationLock() {
+  const now = Date.now();
+  try {
+    if (fs2.existsSync(LOCK_FILE)) {
+      const data = JSON.parse(fs2.readFileSync(LOCK_FILE, "utf-8"));
+      if (now < data.expiredAt) {
+        try {
+          process.kill(data.pid, 0);
+          return null;
+        } catch {
+        }
+      }
+    }
+    const lockData = { pid: process.pid, mtime: now, expiredAt: now + LOCK_TTL_MS };
+    const dir = path3.dirname(LOCK_FILE);
+    if (!fs2.existsSync(dir)) fs2.mkdirSync(dir, { recursive: true });
+    fs2.writeFileSync(LOCK_FILE, JSON.stringify(lockData));
+    return now;
+  } catch (e) {
+    console.warn("[hawk-dream] lock acquire error:", e);
+    return null;
+  }
+}
+function rollbackConsolidationLock(priorMtime) {
+  try {
+    if (priorMtime === null) {
+      if (fs2.existsSync(LOCK_FILE)) fs2.unlinkSync(LOCK_FILE);
+    }
+  } catch (e) {
+    console.warn("[hawk-dream] lock rollback error:", e);
+  }
+}
 var lastDreamRun = 0;
 var DREAM_INTERVAL_MS = 6 * 60 * 60 * 1e3;
 function buildDreamPrompt(memories) {
@@ -3809,90 +3866,164 @@ var dreamHandler = async (event) => {
     console.log(`[hawk-dream] time gate not passed: ${hoursSince.toFixed(1)}h < ${DREAM_CONFIG.minHours}h`);
     return;
   }
+  const priorMtime = tryAcquireConsolidationLock();
+  if (priorMtime === null) {
+    console.log("[hawk-dream] consolidation already in progress by another process, skipping");
+    return;
+  }
+  let lockHeld = true;
   try {
-    const db = await getMemoryStore();
-    await db.init();
-    const allMemories = await db.getAllMemories();
-    const activeMemories = allMemories.filter((m) => m.deletedAt === null);
-    const newMemoriesSince = activeMemories.filter(
-      (m) => state.lastDreamAt > 0 && m.createdAt > state.lastDreamAt
-    );
-    console.log(`[hawk-dream] ${newMemoriesSince.length} new memories since last dream, total active: ${activeMemories.length}`);
-    if (newMemoriesSince.length < DREAM_CONFIG.minNewMemories) {
-      console.log(`[hawk-dream] not enough new memories: ${newMemoriesSince.length} < ${DREAM_CONFIG.minNewMemories}`);
-      return;
-    }
-    const toReview = [...activeMemories].sort((a, b) => b.createdAt - a.createdAt).slice(0, DREAM_CONFIG.maxMemoriesToProcess);
-    const memoryInputs = toReview.map((m) => ({
-      id: m.id,
-      text: m.text,
-      category: m.category,
-      reliability: m.reliability
-    }));
-    const config = await getConfig();
-    const prompt = buildDreamPrompt(memoryInputs);
-    let actions = [];
-    try {
-      const response = await fetch(`${config.llm.baseURL}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${config.llm.apiKey}`
-        },
-        body: JSON.stringify({
-          model: config.llm.model,
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.3,
-          max_tokens: 2e3
-        })
-      });
-      if (response.ok) {
-        const data = await response.json();
-        const content = data.choices?.[0]?.message?.content || "";
-        const parsed = extractJson(content);
-        if (parsed?.actions) {
-          actions = parsed.actions;
-        }
-        console.log(`[hawk-dream] LLM returned ${actions.length} actions`);
-      } else {
-        console.warn(`[hawk-dream] LLM call failed: ${response.status}`);
-      }
-    } catch (e) {
-      console.warn("[hawk-dream] LLM consolidation error:", e);
-    }
-    let merged = 0, drifted = 0, confirmed = 0;
-    for (const action of actions) {
-      if (action.type === "merge" && action.ids?.length >= 2) {
-        const [keepId, ...deleteIds] = action.ids;
-        await db.update(keepId, { text: action.newText, updatedAt: now });
-        for (const id of deleteIds) {
-          await db.delete(id);
-          merged++;
-        }
-      } else if (action.type === "drift" && action.ids?.length >= 1) {
-        await db.update(action.ids[0], {
-          text: action.newText || void 0,
-          reliability: Math.max(0.3, action.priority === "HIGH" ? 0.4 : 0.5),
-          updatedAt: now
-        });
-        drifted++;
-      } else if (action.type === "confirm") {
-        await db.update(action.ids?.[0], { lastVerifiedAt: now });
-        confirmed++;
-      }
-    }
-    console.log(`[hawk-dream] done: merged=${merged}, drifted=${drifted}, confirmed=${confirmed}`);
-    writeDreamState({
-      lastDreamAt: now,
-      lastDreamMemoryCount: activeMemories.length
-    });
-  } catch (err) {
-    console.error("[hawk-dream] Error:", err);
+    await runDreamConsolidation(state, now);
+  } finally {
+    if (lockHeld) rollbackConsolidationLock(priorMtime);
   }
 };
+async function runDreamConsolidation(state, now) {
+  const db = await getMemoryStore();
+  await db.init();
+  const allMemories = await db.getAllMemories();
+  const activeMemories = allMemories.filter((m) => m.deletedAt === null);
+  const newMemoriesSince = activeMemories.filter(
+    (m) => state.lastDreamAt > 0 && m.createdAt > state.lastDreamAt
+  );
+  console.log(`[hawk-dream] ${newMemoriesSince.length} new memories since last dream, total active: ${activeMemories.length}`);
+  if (newMemoriesSince.length < DREAM_CONFIG.minNewMemories) {
+    console.log(`[hawk-dream] not enough new memories: ${newMemoriesSince.length} < ${DREAM_CONFIG.minNewMemories}`);
+    return;
+  }
+  const toReview = [...activeMemories].sort((a, b) => b.createdAt - a.createdAt).slice(0, DREAM_CONFIG.maxMemoriesToProcess);
+  const memoryInputs = toReview.map((m) => ({
+    id: m.id,
+    text: m.text,
+    category: m.category,
+    reliability: m.reliability
+  }));
+  const config = await getConfig();
+  const prompt = buildDreamPrompt(memoryInputs);
+  let actions = [];
+  try {
+    const response = await fetch(`${config.llm.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${config.llm.apiKey}`
+      },
+      body: JSON.stringify({
+        model: config.llm.model,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.3,
+        max_tokens: 2e3
+      })
+    });
+    if (response.ok) {
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content || "";
+      const parsed = extractJson(content);
+      if (parsed?.actions) {
+        actions = parsed.actions;
+      }
+      console.log(`[hawk-dream] LLM returned ${actions.length} actions`);
+    } else {
+      console.warn(`[hawk-dream] LLM call failed: ${response.status}`);
+    }
+  } catch (e) {
+    console.warn("[hawk-dream] LLM consolidation error:", e);
+  }
+  let merged = 0, drifted = 0, confirmed = 0;
+  for (const action of actions) {
+    if (action.type === "merge" && action.ids?.length >= 2) {
+      const [keepId, ...deleteIds] = action.ids;
+      await db.update(keepId, { text: action.newText, updatedAt: now });
+      for (const id of deleteIds) {
+        await db.delete(id);
+        merged++;
+      }
+    } else if (action.type === "drift" && action.ids?.length >= 1) {
+      await db.update(action.ids[0], {
+        text: action.newText || void 0,
+        reliability: Math.max(0.3, action.priority === "HIGH" ? 0.4 : 0.5),
+        updatedAt: now
+      });
+      drifted++;
+    } else if (action.type === "confirm") {
+      await db.update(action.ids?.[0], { lastVerifiedAt: now });
+      confirmed++;
+    }
+  }
+  console.log(`[hawk-dream] done: merged=${merged}, drifted=${drifted}, confirmed=${confirmed}`);
+  writeDreamState({
+    lastDreamAt: now,
+    lastDreamMemoryCount: activeMemories.length
+  });
+}
+function findRecentTranscriptFiles(sinceMs) {
+  const transcriptsDir = path3.join(
+    process.env.HAWK_DIR || path3.join(process.env.HOME || "~", ".hawk"),
+    "transcripts"
+  );
+  const files = [];
+  try {
+    if (!fs2.existsSync(transcriptsDir)) return files;
+    const entries = fs2.readdirSync(transcriptsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        const fullPath = path3.join(transcriptsDir, entry.name);
+        try {
+          const stat = fs2.statSync(fullPath);
+          if (stat.mtimeMs > sinceMs) {
+            files.push(fullPath);
+          }
+        } catch {
+        }
+      }
+    }
+  } catch {
+  }
+  return files;
+}
+function grepTranscript(filePath, searchTerms, topN = 5) {
+  const hits = [];
+  try {
+    const content = fs2.readFileSync(filePath, "utf-8");
+    const lines = content.split("\n").filter(Boolean);
+    for (const line of lines) {
+      const lowerLine = line.toLowerCase();
+      let score = 0;
+      for (const term of searchTerms) {
+        if (lowerLine.includes(term.toLowerCase())) score++;
+      }
+      if (score > 0) {
+        let preview = line.slice(0, 200);
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed.content) preview = String(parsed.content).slice(0, 200);
+        } catch {
+        }
+        hits.push({ file: path3.basename(filePath), linePreview: preview, relevanceScore: score });
+      }
+    }
+  } catch {
+  }
+  return hits.sort((a, b) => b.relevanceScore - a.relevanceScore).slice(0, topN);
+}
+function getRecentTranscriptContext(searchTerms, sinceMs, topN = 10) {
+  const files = findRecentTranscriptFiles(sinceMs);
+  if (!files.length) return "";
+  const allHits = [];
+  for (const file of files) {
+    allHits.push(...grepTranscript(file, searchTerms, topN));
+  }
+  if (!allHits.length) return "";
+  const grouped = allHits.sort((a, b) => b.relevanceScore - a.relevanceScore).slice(0, topN).map((h) => `[${h.file}] ${h.linePreview}`).join("\n\n");
+  return `
+
+## Recent Transcript Context
+${grouped}`;
+}
 var handler_default = dreamHandler;
 export {
-  handler_default as default
+  handler_default as default,
+  getRecentTranscriptContext
 };
 /*! Bundled license information:
 

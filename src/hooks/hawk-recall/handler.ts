@@ -82,6 +82,76 @@ async function getRetriever(): Promise<HybridRetriever> {
   return retriever;
 }
 
+// ─── Dual Selector (from Claude) ──────────────────────────────────────────────
+// Two-pass memory selection:
+// 1. Header scan: lightweight scan of memory name + description fields (fast)
+// 2. LLM select: lightweight model picks top N from candidates (accurate)
+// This is more accurate than pure vector search because it uses structured description.
+
+const SELECT_MEMORIES_SYSTEM_PROMPT = `You are selecting memories that will be useful for answering the user's query.
+You will be given a list of memory files with their names, descriptions, and categories.
+Return a JSON array of the memory IDs that will clearly be helpful (up to 8).
+Only include memories you are certain will be relevant. If none, return [].`;
+
+async function dualSelect(
+  query: string,
+  db: any,
+  topN: number = 8
+): Promise<string[]> {
+  try {
+    const all = await db.getAllMemories();
+    if (!all.length) return [];
+
+    // Build manifest: id, name, description, category
+    const manifest = all
+      .filter((m: any) => m.deletedAt === null && m.name)
+      .map((m: any) => ({
+        id: m.id,
+        name: m.name,
+        description: m.description || m.text.slice(0, 200),
+        category: m.category,
+      }));
+
+    if (!manifest.length) return [];
+
+    const config = await getConfig();
+    const body = manifest
+      .map((m: any, i: number) => `[${i}] id=${m.id} name="${m.name}" category=${m.category} desc="${m.description.slice(0, 150)}"`)
+      .join('\n');
+
+    const response = await fetch(`${config.llm.baseURL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.llm.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: config.llm.model,
+        messages: [
+          { role: 'system', content: SELECT_MEMORIES_SYSTEM_PROMPT },
+          { role: 'user', content: `Query: ${query}\n\nMemories:\n${body}` },
+        ],
+        temperature: 0.1,
+        max_tokens: 500,
+      }),
+    });
+
+    if (!response.ok) return [];
+
+    const data = await response.json() as any;
+    const content = data.choices?.[0]?.message?.content || '';
+
+    // Parse JSON array from response
+    const match = content.match(/\[[\s\S]*?\]/);
+    if (!match) return [];
+    const ids = JSON.parse(match[0]) as string[];
+    return ids.slice(0, topN);
+  } catch (e) {
+    console.warn('[hawk-recall] dualSelect failed:', e);
+    return [];
+  }
+}
+
 // ─── Intent Patterns ──────────────────────────────────────────────────────────
 
 const FORGET_PATTERNS    = [/^忘掉\s*(.+)/, /^忘记\s*(.+)/, /^别记得\s*(.+)/, /^不用记\s*(.+)/, /^forget\s+(.+)/i, /^delete\s+(.+)/i];
@@ -939,8 +1009,28 @@ const recallHandler = async (event: HookEvent) => {
     }
 
     // ─── 正常召回 ───────────────────────────────────────────────────────
-    const retriever = await getRetriever();
-    const memories  = await retriever.search(trimmed, topK);
+    // Dual selector (from Claude): header scan + LLM select for better accuracy
+    // Falls back to normal hybrid search if no name/description fields populated
+    let memories: any[] = [];
+    const selectedIds = await dualSelect(trimmed, db, topK * 2);
+    if (selectedIds.length > 0) {
+      // Dual select hit: use LLM-selected IDs to filter hybrid search
+      const retriever = await getRetriever();
+      const allResults = await retriever.search(trimmed, topK * 3);
+      memories = allResults.filter((m: any) => selectedIds.includes(m.id));
+      if (memories.length < topK) {
+        // Fill remaining slots from unselected results
+        const selectedSet = new Set(selectedIds);
+        const unselected = allResults
+          .filter((m: any) => !selectedSet.has(m.id))
+          .slice(0, topK - memories.length);
+        memories = [...memories, ...unselected];
+      }
+    } else {
+      // No dual select data — use normal hybrid search
+      const retriever = await getRetriever();
+      memories = await retriever.search(trimmed, topK);
+    }
     const useable   = memories.filter(m => m.score >= minScore || m.reliability >= RELIABILITY_THRESHOLD_HIGH);
     recordSearch(trimmed, useable.length);  // track search history
     if (!useable.length) {

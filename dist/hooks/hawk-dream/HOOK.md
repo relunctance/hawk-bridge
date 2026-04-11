@@ -10,6 +10,7 @@ Periodic memory consolidation hook.
 - Check new memory count: >= 5 new memories since last run
 - If both pass: call LLM to find duplicates, detect drift, confirm fresh memories
 - Write consolidation state to ~/.hawk/.dream-state.json
+- Lock file: ~/.hawk/.consolidate-lock (prevents concurrent dream runs)
 
 ## Environment Variables
 - HAWK_DRIFT_THRESHOLD_DAYS: days before memory flagged as stale (default 7)

@@ -249,6 +249,32 @@ function isValidChunk(text: string): boolean {
   return true;
 }
 
+// ─── What NOT to Save (from Claude memory guidelines) ──────────────────────────
+// Content that should NOT be stored as memory because it can be derived from code/state
+const SKIP_PATTERNS: Array<[RegExp, string]> = [
+  // Code patterns / file paths (derivable from reading code)
+  [/\b(function|class|const|let|var|import|export|interface|type)\s+\w+/g, 'code_pattern'],
+  [/\b(file|path|directory|folder)\s+[:=]\s*['"`][\w./-]+['"`]/g, 'file_path'],
+  [/`[^`]*\.(ts|js|py|go|rs|java|cpp|c|h|md|json|yaml|yml)`/g, 'code_reference'],
+  // Git history / who-changed-what (use git log/blame instead)
+  [/\b(git|commit|branch|merge|PR|pull.request|checkout|rebase)\b/gi, 'git_history'],
+  // Debug solutions / fix recipes (the fix is in the code, commit has context)
+  [/\b(fix|bug|issue|error|exception|crash|patch)\s+(was|is|to|:)/gi, 'debug_solution'],
+  // Ephemeral task details
+  [/^(TODO|FIXME|HACK|XXX|NOTE|BUG|NB):/gm, 'dev_note'],
+  // Already in CLAUDE.md files
+  [/\bCLAUDE\.(md|local\.md|rules)/gi, 'already_documented'],
+];
+
+function shouldSkipChunk(text: string): { skip: boolean; reason: string } {
+  for (const [pattern, label] of SKIP_PATTERNS) {
+    if (pattern.test(text)) {
+      return { skip: true, reason: label };
+    }
+  }
+  return { skip: false, reason: '' };
+}
+
 // ─── Truncation ───────────────────────────────────────────────────────────────
 
 function truncate(text: string, maxLen: number = MAX_CHUNK_SIZE): string {
@@ -470,6 +496,13 @@ const captureHandler = async (event: HookEvent) => {
 
       // 0. Full text normalization (structural cleaning)
       text = normalizeText(text);
+
+      // 0b. What NOT to Save — skip code patterns, git history, debug solutions, etc.
+      const { skip, reason } = shouldSkipChunk(text);
+      if (skip) {
+        audit('skip', reason, text);
+        continue;
+      }
 
       // 1. Validate (after normalization so length is accurate)
       if (!isValidChunk(text)) {

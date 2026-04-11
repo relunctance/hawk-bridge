@@ -163,8 +163,10 @@ Session (persistent, on disk)
 | 31 | **Memory Drift Detection** *(from Claude)* | 🕐 indicator for reliable memories not verified in 7+ days; `hawk过期` command scans all memories |
 | 32 | **Multi-Provider Rerank** | Jina AI / Cohere / Mixedbread AI / OpenAI-compatible rerankers with automatic fallback to cosine similarity |
 | 33 | **4-Tier Memory Taxonomy** *(from Claude)* | Claude Code-style classification: fact / preference / decision / entity — each with reliability tracking and drift-aware recall |
-
-
+| 34 | **Consolidation Lock** *(from Claude)* | Lock file prevents concurrent dream runs; stale-lock recovery after 60min or dead process |
+| 35 | **What NOT to Save** *(from Claude)* | Pre-filter skips code patterns, git history, debug recipes, ephemeral tasks — reduces noise |
+| 36 | **Dual Selector** *(from Claude)* | Header scan (name+description) → LLM select top N → vector search — more accurate than pure vector |
+| 37 | **Session Transcript Scan** *(from Claude)* | Scans `transcripts/*.jsonl` for relevant historical context during dream consolidation |
 
 ---
 

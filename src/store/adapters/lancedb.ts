@@ -73,6 +73,10 @@ export class LanceDBAdapter implements MemoryStore {
             { name: 'scope_mem', type: { type: 'utf8' } },
             { name: 'importance_override', type: { type: 'float' } },
             { name: 'cold_start_until', type: { type: 'int64' } },
+            { name: 'name', type: { type: 'utf8' } },
+            { name: 'description', type: { type: 'utf8' } },
+            { name: 'drift_note', type: { type: 'utf8' } },
+            { name: 'drift_detected_at', type: { type: 'int64' } },
           ]);
         } catch (_) {
           // Columns may already exist — ignore
@@ -194,6 +198,10 @@ export class LanceDBAdapter implements MemoryStore {
       coldStartUntil: r.cold_start_until !== null ? Number(r.cold_start_until) : null,
       metadata: typeof r.metadata === 'string' ? JSON.parse(r.metadata || '{}') : (r.metadata || {}),
       source_type: (r.source_type || 'text') as SourceType,
+      name: r.name ?? '',
+      description: r.description ?? '',
+      driftNote: r.drift_note ?? null,
+      driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
     };
   }
 
@@ -229,6 +237,10 @@ export class LanceDBAdapter implements MemoryStore {
       importanceOverride: r.importance_override ?? 1.0,
       coldStartUntil: r.cold_start_until !== null ? Number(r.cold_start_until) : null,
       matchReason: matchReason,
+      name: r.name ?? '',
+      description: r.description ?? '',
+      driftNote: r.drift_note ?? null,
+      driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
     };
   }
 
@@ -243,6 +255,8 @@ export class LanceDBAdapter implements MemoryStore {
     const row = this._makeRow({
       id: entry.id,
       text: entry.text,
+      name: entry.name || '',
+      description: entry.description || '',
       vector: entry.vector,
       category: entry.category,
       scope: entry.scope ?? 'global',
@@ -265,6 +279,8 @@ export class LanceDBAdapter implements MemoryStore {
       cold_start_until: coldStartUntil,
       metadata: JSON.stringify(entry.metadata || {}),
       source_type: entry.source_type || 'text',
+      drift_note: entry.driftNote || null,
+      drift_detected_at: entry.driftDetectedAt || null,
     });
     await this.table.add([row]);
   }
@@ -278,12 +294,16 @@ export class LanceDBAdapter implements MemoryStore {
       const updated: MemoryEntry = {
         ...existing,
         text: fields.text ?? existing.text,
+        name: fields.name ?? existing.name,
+        description: fields.description ?? existing.description,
         category: fields.category ?? existing.category,
         scope: fields.scope ?? existing.scope,
         importance: fields.importance ?? existing.importance,
         importanceOverride: fields.importanceOverride ?? existing.importanceOverride,
         updatedAt: Date.now(),
         vector: existing.vector,
+        driftNote: fields.driftNote ?? existing.driftNote,
+        driftDetectedAt: fields.driftDetectedAt ?? existing.driftDetectedAt,
       };
       await this.store(updated, existing.sessionId ?? undefined);
       return true;

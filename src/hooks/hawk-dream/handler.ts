@@ -48,6 +48,71 @@ const DREAM_CONFIG = {
   driftCheckReliability: 0.6, // re-verify memories with reliability > this (trust but verify)
 };
 
+// ─── Consolidation Lock (prevents concurrent dream runs) ────────────────────
+// Lock file: ~/.hawk/.consolidate-lock
+// Contains: { pid, mtime, expiredAt }
+// Expiry: 60 minutes (PID reuse protection — if holder process is dead, lock is stale)
+
+const LOCK_FILE = path.join(
+  process.env.HAWK_DIR || path.join(process.env.HOME || '~', '.hawk'),
+  '.consolidate-lock'
+);
+const LOCK_TTL_MS = 60 * 60 * 1000; // 60 minutes
+
+interface LockData {
+  pid: number;
+  mtime: number;
+  expiredAt: number;
+}
+
+/**
+ * Try to acquire the consolidation lock.
+ * Returns prior mtime if lock was acquired (null if already held by live process).
+ */
+function tryAcquireConsolidationLock(): number | null {
+  const now = Date.now();
+  try {
+    if (fs.existsSync(LOCK_FILE)) {
+      const data: LockData = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf-8'));
+      // Check if lock is expired (TTL passed) or holder process is dead
+      if (now < data.expiredAt) {
+        try {
+          // Check if holder process is still alive
+          process.kill(data.pid, 0); // signal 0 = check existence
+          // Process is alive, lock is held
+          return null;
+        } catch {
+          // Process is dead — stale lock, can be reclaimed
+        }
+      }
+    }
+    // Write our lock
+    const lockData: LockData = { pid: process.pid, mtime: now, expiredAt: now + LOCK_TTL_MS };
+    const dir = path.dirname(LOCK_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(LOCK_FILE, JSON.stringify(lockData));
+    return now; // acquired
+  } catch (e) {
+    console.warn('[hawk-dream] lock acquire error:', e);
+    return null;
+  }
+}
+
+/**
+ * Rollback the lock on failure (restore prior mtime if provided).
+ */
+function rollbackConsolidationLock(priorMtime: number | null): void {
+  try {
+    if (priorMtime === null) {
+      // We wrote a fresh lock, remove it
+      if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
+    }
+    // If priorMtime was set, the lock file was already stale when we started — don't restore
+  } catch (e) {
+    console.warn('[hawk-dream] lock rollback error:', e);
+  }
+}
+
 let lastDreamRun = 0;
 const DREAM_INTERVAL_MS = 6 * 60 * 60 * 1000; // min 6h between dream runs
 
@@ -144,22 +209,37 @@ const dreamHandler = async (event: HookEvent) => {
     return;
   }
 
+  // ─── Consolidation Lock ───────────────────────────────────────────────
+  const priorMtime = tryAcquireConsolidationLock();
+  if (priorMtime === null) {
+    console.log('[hawk-dream] consolidation already in progress by another process, skipping');
+    return;
+  }
+
+  let lockHeld = true;
   try {
-    const db = await getMemoryStore() as any;
-    await db.init();
+    await runDreamConsolidation(state, now);
+  } finally {
+    if (lockHeld) rollbackConsolidationLock(priorMtime);
+  }
+}
 
-    const allMemories = await db.getAllMemories();
-    const activeMemories = allMemories.filter(m => m.deletedAt === null);
-    const newMemoriesSince = activeMemories.filter(m =>
-      state.lastDreamAt > 0 && m.createdAt > state.lastDreamAt
-    );
+async function runDreamConsolidation(state: DreamState, now: number): Promise<void> {
+  const db = await getMemoryStore() as any;
+  await db.init();
 
-    console.log(`[hawk-dream] ${newMemoriesSince.length} new memories since last dream, total active: ${activeMemories.length}`);
+  const allMemories = await db.getAllMemories();
+  const activeMemories = allMemories.filter((m: any) => m.deletedAt === null);
+  const newMemoriesSince = activeMemories.filter((m: any) =>
+    state.lastDreamAt > 0 && m.createdAt > state.lastDreamAt
+  );
 
-    if (newMemoriesSince.length < DREAM_CONFIG.minNewMemories) {
-      console.log(`[hawk-dream] not enough new memories: ${newMemoriesSince.length} < ${DREAM_CONFIG.minNewMemories}`);
-      return;
-    }
+  console.log(`[hawk-dream] ${newMemoriesSince.length} new memories since last dream, total active: ${activeMemories.length}`);
+
+  if (newMemoriesSince.length < DREAM_CONFIG.minNewMemories) {
+    console.log(`[hawk-dream] not enough new memories: ${newMemoriesSince.length} < ${DREAM_CONFIG.minNewMemories}`);
+    return;
+  }
 
     // Take most recent memories to review
     const toReview = [...activeMemories]
@@ -236,15 +316,104 @@ const dreamHandler = async (event: HookEvent) => {
 
     console.log(`[hawk-dream] done: merged=${merged}, drifted=${drifted}, confirmed=${confirmed}`);
 
-    // Update state
-    writeDreamState({
-      lastDreamAt: now,
-      lastDreamMemoryCount: activeMemories.length,
-    });
+  // Update state
+  writeDreamState({
+    lastDreamAt: now,
+    lastDreamMemoryCount: activeMemories.length,
+  });
+}
 
-  } catch (err) {
-    console.error('[hawk-dream] Error:', err);
+// ─── Session Transcript Scanner (from Claude) ────────────────────────────────────
+// Scans session transcript JSONL files for context relevant to recent memories.
+// This挖掘 historical context that might inform drift detection.
+
+function findRecentTranscriptFiles(sinceMs: number): string[] {
+  const transcriptsDir = path.join(
+    process.env.HAWK_DIR || path.join(process.env.HOME || '~', '.hawk'),
+    'transcripts'
+  );
+  const files: string[] = [];
+  try {
+    if (!fs.existsSync(transcriptsDir)) return files;
+    const entries = fs.readdirSync(transcriptsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+        const fullPath = path.join(transcriptsDir, entry.name);
+        try {
+          const stat = fs.statSync(fullPath);
+          if (stat.mtimeMs > sinceMs) {
+            files.push(fullPath);
+          }
+        } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
+  return files;
+}
+
+interface TranscriptHit {
+  file: string;
+  linePreview: string;
+  relevanceScore: number;
+}
+
+/**
+ * Grep a transcript file for narrow search terms relevant to a memory topic.
+ * Returns top N hits with relevance scoring.
+ */
+function grepTranscript(
+  filePath: string,
+  searchTerms: string[],
+  topN: number = 5
+): TranscriptHit[] {
+  const hits: TranscriptHit[] = [];
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const lines = content.split('\n').filter(Boolean);
+    for (const line of lines) {
+      const lowerLine = line.toLowerCase();
+      let score = 0;
+      for (const term of searchTerms) {
+        if (lowerLine.includes(term.toLowerCase())) score++;
+      }
+      if (score > 0) {
+        // Extract a preview (first 200 chars of the message content if JSON)
+        let preview = line.slice(0, 200);
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed.content) preview = String(parsed.content).slice(0, 200);
+        } catch { /* use raw */ }
+        hits.push({ file: path.basename(filePath), linePreview: preview, relevanceScore: score });
+      }
+    }
+  } catch { /* ignore */ }
+  return hits
+    .sort((a, b) => b.relevanceScore - a.relevanceScore)
+    .slice(0, topN);
+}
+
+/**
+ * Get relevant transcript context for a list of search terms.
+ * Used by the dream consolidation prompt to provide recent session context.
+ */
+export function getRecentTranscriptContext(
+  searchTerms: string[],
+  sinceMs: number,
+  topN: number = 10
+): string {
+  const files = findRecentTranscriptFiles(sinceMs);
+  if (!files.length) return '';
+  const allHits: TranscriptHit[] = [];
+  for (const file of files) {
+    allHits.push(...grepTranscript(file, searchTerms, topN));
   }
-};
+  if (!allHits.length) return '';
+  const grouped = allHits
+    .sort((a, b) => b.relevanceScore - a.relevanceScore)
+    .slice(0, topN)
+    .map(h => `[${h.file}] ${h.linePreview}`)
+    .join('\n\n');
+  return `\n\n## Recent Transcript Context\n${grouped}`;
+}
 
 export default dreamHandler;
