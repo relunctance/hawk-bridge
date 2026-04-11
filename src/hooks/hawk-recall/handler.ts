@@ -3,10 +3,18 @@
 // Action: Hybrid search + reliability UX commands
 
 import type { HookEvent } from '../../../../../.npm-global/lib/node_modules/openclaw/dist/v10/types/hooks.js';
+import * as path from 'path';
+import { homedir } from 'os';
 import { HawkDB } from '../../lancedb.js';
 import { HybridRetriever } from '../../retriever.js';
 import { getConfig } from '../../config.js';
 import { RELIABILITY_THRESHOLD_HIGH } from '../../constants.js';
+
+// Recall injection control
+const INJECTION_LIMIT = 5;          // 最多注入 5 条记忆
+const MAX_INJECTION_CHARS = 2000;   // 总 injection 不超过 2000 字符（压缩前）
+const COMPOSITE_WEIGHT_RELIABILITY = 0.4;
+const COMPOSITE_WEIGHT_SCORE = 0.6;
 
 // Shared HawkDB instance
 let sharedDb: HawkDB | null = null;
@@ -52,6 +60,12 @@ const UNIMPORTANT_PATTERN  = /^hawk\s*不重要\s*(\d+)$/i;
 const REVIEW_PATTERN     = /^hawk\s*回顾(?:\s+(\d+))?$/i;
 const SCOPE_PATTERN      = /^hawk\s*(?:scope|作用域)\s*(\d+)\s+(personal|team|project)$/i;
 const CONFLICT_PATTERN   = /^hawk\s*冲突\s*(\d+)$/i;
+const EXPORT_PATTERN    = /^hawk\s*导出(?:\s+(.+?))?$/i;   // hawk导出 / hawk导出 /path/to/file.json
+const CLEAR_PATTERN     = /^hawk\s*清空$/i;                 // hawk清空
+const BATCHLOCK_PATTERN = /^hawk\s*锁定\s*all(?:\s+(.+))?$/i;  // hawk锁定all / hawk锁定all fact
+const BATCHUNLOCK_PATTERN = /^hawk\s*解锁\s*all$/i;
+const COMPARE_PATTERN   = /^hawk\s*对比\s*(\d+)\s+(\d+)$/i;  // hawk对比 3 4
+const PURGE_PATTERN     = /^hawk\s*清理$/i;  // hawk清理 强制执行decay+purge
 
 function matchFirst(text: string, patterns: RegExp[]): string | null {
   for (const p of patterns) { const m = text.trim().match(p); if (m) return (m[1] ?? '').trim(); }
@@ -96,6 +110,36 @@ function formatRecallResults(memories: any[], emoji: string): string {
   return lines.join('\n');
 }
 
+// ─── Text Compression ─────────────────────────────────────────────────────
+
+/**
+ * 压缩过长的记忆文本
+ * 策略：保留首句 + 关键词片段，总长不超过 limit
+ */
+function compressText(text: string, limit: number = 400): string {
+  if (text.length <= limit) return text;
+  // 保留第一句（到句号/换行/冒号）
+  const first = text.slice(0, limit * 0.6);
+  const breakIdx = Math.max(
+    first.lastIndexOf('。'),
+    first.lastIndexOf('\n'),
+    first.lastIndexOf('：'),
+    first.lastIndexOf('.')
+  );
+  const head = breakIdx > limit * 0.3 ? text.slice(0, breakIdx + 1) : first;
+  // 提取关键词片段
+  const kw = extractKeywords(text).slice(0, 5);
+  return `${head.slice(0, limit - kw.join('、').length - 5)}... [关键词: ${kw.join('、')}]`;
+}
+
+/**
+ * 计算记忆的综合排序分数
+ * composite = score × WEIGHT_SCORE + reliability × WEIGHT_RELIABILITY
+ */
+function compositeScore(m: any): number {
+  return m.score * COMPOSITE_WEIGHT_SCORE + m.reliability * COMPOSITE_WEIGHT_RELIABILITY;
+}
+
 // ─── Keyword Extractor ─────────────────────────────────────────────────────
 
 function extractKeywords(text: string): string[] {
@@ -104,6 +148,15 @@ function extractKeywords(text: string): string[] {
   for (let i = 0; i < text.length - 1; i++) { const w = text.slice(i,i+2); if (!stop.has(w)) words.push(w); }
   for (let i = 0; i < text.length - 2; i++) { const w = text.slice(i,i+3); if (!stop.has(w)) words.push(w); }
   return [...new Set(words)];
+}
+
+function textSimilarity(a: string, b: string): number {
+  const kwA = extractKeywords(a);
+  const kwB = extractKeywords(b);
+  if (!kwA.length || !kwB.length) return 0;
+  const overlap = kwA.filter((k: string) => kwB.includes(k)).length;
+  const union  = new Set([...kwA, ...kwB]).size;
+  return union > 0 ? overlap / union : 0;
 }
 
 function computeMatchReason(query: string, memory: any): string {
@@ -332,6 +385,114 @@ const recallHandler = async (event: HookEvent) => {
       return;
     }
 
+    // ─── hawk对比 N M ───────────────────────────────────────────────
+    var m = trimmed.match(COMPARE_PATTERN);
+    if (m) {
+      const idxA = parseInt(m[1], 10) - 1;
+      const idxB = parseInt(m[2], 10) - 1;
+      const all = await getSortedMemories(db);
+      if (idxA < 0 || idxA >= all.length || idxB < 0 || idxB >= all.length) {
+        event.messages.push(`\n${injectEmoji} 无效编号 (1-${all.length})\n`); return;
+      }
+      const memA = all[idxA];
+      const memB = all[idxB];
+      const sim = textSimilarity(memA.text, memB.text);
+      const kwA = extractKeywords(memA.text);
+      const kwB = extractKeywords(memB.text);
+      const overlap = kwA.filter((k: string) => kwB.includes(k));
+      const lines = [
+        `${injectEmoji} ** 记忆对比 [#${idxA+1} vs #${idxB+1}] **`,
+        ``,
+        `[#${idxA+1}] ${relLabel(memA.reliability)} ${fmtRel(memA)} [${memA.category}]`,
+        `内容: ${memA.text.slice(0, 80)}`,
+        `创建: ${formatTime(memA.createdAt)} | 验证: ${memA.verificationCount}次`,
+        ``,
+        `[#${idxB+1}] ${relLabel(memB.reliability)} ${fmtRel(memB)} [${memB.category}]`,
+        `内容: ${memB.text.slice(0, 80)}`,
+        `创建: ${formatTime(memB.createdAt)} | 验证: ${memB.verificationCount}次`,
+        ``,
+        `相似度: ${(sim * 100).toFixed(0)}%`,
+        `共同关键词: ${overlap.length > 0 ? overlap.slice(0, 5).join(', ') : '无'}`,
+        sim >= 0.6 ? `⚠️ 可能矛盾（相似但不同）` : sim < 0.3 ? `✅ 完全不同` : `⚡ 部分重叠`,
+      ];
+      event.messages.push(`\n${lines.join('\n')}\n`);
+      return;
+    }
+
+    // ─── hawk导出 [filepath] ────────────────────────────────────────
+    var m = trimmed.match(EXPORT_PATTERN);
+    if (m) {
+      const filepath = m[1]?.trim() || path.join(homedir(), '.hawk', `export-${Date.now()}.json`);
+      const all = await db.getAllMemories();
+      const exported = all.map(m => ({
+        id: m.id, text: m.text, category: m.category,
+        reliability: m.reliability, scope: m.scope,
+        locked: m.locked, verificationCount: m.verificationCount,
+        createdAt: formatTime(m.createdAt), updatedAt: formatTime(m.updatedAt),
+        correctionHistory: m.correctionHistory,
+      }));
+      try {
+        const { writeFileSync, mkdirSync, existsSync } = require('fs');
+        const dir = path.dirname(filepath);
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+        writeFileSync(filepath, JSON.stringify({ exported_at: new Date().toISOString(), count: exported.length, memories: exported }, null, 2));
+        event.messages.push(`\n${injectEmoji} ✅ 已导出 ${exported.length} 条记忆到\n${filepath}\n`);
+      } catch (err: any) {
+        event.messages.push(`\n${injectEmoji} ❌ 导出失败: ${err.message}\n`);
+      }
+      return;
+    }
+
+    // ─── hawk清空 ──────────────────────────────────────────────────
+    if (CLEAR_PATTERN.test(trimmed)) {
+      const all = await db.getAllMemories();
+      const unlocked = all.filter(m => !m.locked);
+      if (!unlocked.length) { event.messages.push(`\n${injectEmoji} 没有可清空的记忆（全部已锁定）\n`); return; }
+      let cleared = 0;
+      for (const m of unlocked) { if (await db.forget(m.id)) cleared++; }
+      event.messages.push(`\n${injectEmoji} ✅ 已清空 ${cleared} 条未锁定记忆。\n`);
+      return;
+    }
+
+    // ─── hawk锁定all [category] ────────────────────────────────────
+    var m = trimmed.match(BATCHLOCK_PATTERN);
+    if (m) {
+      const cat = m[1]?.trim();
+      const all = await db.getAllMemories();
+      const targets = cat ? all.filter(x => x.category === cat && !x.locked) : all.filter(x => !x.locked);
+      if (!targets.length) { event.messages.push(`\n${injectEmoji} 没有找到${cat ? `[${cat}]` : ''}未锁定的记忆。\n`); return; }
+      let locked = 0;
+      for (const t of targets) { if (await db.lock(t.id)) locked++; }
+      event.messages.push(`\n${injectEmoji} 🔒 已锁定 ${locked} 条${cat ? `[${cat}]` : ''}记忆。\n`);
+      return;
+    }
+
+    // ─── hawk解锁all ────────────────────────────────────────────────
+    if (BATCHUNLOCK_PATTERN.test(trimmed)) {
+      const all = await db.getAllMemories();
+      const locked = all.filter(x => x.locked);
+      if (!locked.length) { event.messages.push(`\n${injectEmoji} 没有已锁定的记忆。\n`); return; }
+      let unlocked = 0;
+      for (const t of locked) { if (await db.unlock(t.id)) unlocked++; }
+      event.messages.push(`\n${injectEmoji} 🔓 已解锁 ${unlocked} 条记忆。\n`);
+      return;
+    }
+
+    // ─── hawk清理 ──────────────────────────────────────────────────
+    if (PURGE_PATTERN.test(trimmed)) {
+      const { exec } = require('child_process');
+      const { promisify } = require('util');
+      const execAsync = promisify(exec);
+      const distDecay = path.join(process.cwd(), 'dist/cli/decay.js');
+      try {
+        const { stdout } = await execAsync(`node "${distDecay}"`, { timeout: 30000 });
+        event.messages.push(`\n${injectEmoji} ${stdout.trim()}\n`);
+      } catch (err: any) {
+        event.messages.push(`\n${injectEmoji} ❌ 清理失败: ${err.message}\n`);
+      }
+      return;
+    }
+
     // ─── hawk回顾 [N] ───────────────────────────────────────────────────
     var m = trimmed.match(REVIEW_PATTERN);
     if (m) {
@@ -451,14 +612,30 @@ const recallHandler = async (event: HookEvent) => {
     const useable   = memories.filter(m => m.score >= minScore || m.reliability >= RELIABILITY_THRESHOLD_HIGH);
     if (!useable.length) return;
 
-    // Compute match reasons for each result
-    const withReasons = useable.map(m => ({
+    // Sort by composite score (reliability × 0.4 + score × 0.6)
+    const sorted = [...useable].sort((a, b) => compositeScore(b) - compositeScore(a));
+
+    // Take top N and track char budget
+    const result: any[] = [];
+    let totalChars = 0;
+    for (const m of sorted) {
+      if (result.length >= INJECTION_LIMIT) break;
+      const compressed = compressText(m.text);
+      if (totalChars + compressed.length > MAX_INJECTION_CHARS) continue;
+      result.push(m);
+      totalChars += compressed.length;
+    }
+
+    if (!result.length) return;
+
+    // Compute match reasons
+    const withReasons = result.map(m => ({
       ...m,
       matchReason: computeMatchReason(trimmed, m),
+      text: sanitize(compressText(m.text)),
     }));
 
-    const sanitized = withReasons.map(m => ({ ...m, text: sanitize(m.text) }));
-    event.messages.push(`\n${formatRecallResults(sanitized, injectEmoji)}\n`);
+    event.messages.push(`\n${formatRecallResults(withReasons, injectEmoji)}\n`);
 
     for (const m of useable) {
       if (m.score >= minScore) await db.verify(m.id, true);

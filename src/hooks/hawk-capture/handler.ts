@@ -324,10 +324,85 @@ const captureHandler = async (event: HookEvent) => {
     const content = event.context?.content;
     if (typeof content !== 'string' || content.length < 50) return;
 
-    const memories = await callExtractor(content, config);
+    // ─── Pre-extraction: Code blocks ─────────────────────────────────────
+    // Extract fenced code blocks as high-importance fact memories
+    const CODE_BLOCK_RE = /```(?:\w+)?\n([\s\S]{20,500}?)```/g;
+    const codeBlockMemories: any[] = [];
+    let codeMatch;
+    while ((codeMatch = CODE_BLOCK_RE.exec(content)) !== null) {
+      const code = codeMatch[1].trim();
+      if (code.length < 20) continue;
+      // Detect language hint from the fence
+      const fenceWithLang = content.slice(Math.max(0, codeMatch.index - 10), codeMatch.index);
+      const langMatch = fenceWithLang.match(/```(\w+)/);
+      const lang = langMatch ? langMatch[1] : 'code';
+      codeBlockMemories.push({
+        text: `[${lang.toUpperCase()}] ${code.slice(0, 200)}${code.length > 200 ? '...' : ''}`,
+        category: 'fact',
+        importance: 0.8,
+        abstract: `代码片段 (${lang})，${code.split('\n').length} 行`,
+        overview: `用户分享的 ${lang} 代码：${code.slice(0, 100)}`,
+      });
+    }
+
+    // ─── Pre-extraction: URLs ─────────────────────────────────────────────
+    // Extract URLs with surrounding context as fact memories
+    const URL_RE = /(?:https?:\/\/[^\s\n，,。!?）\]]+)/g;
+    const urlMemories: any[] = [];
+    let urlMatch;
+    const seenUrls = new Set<string>();
+    while ((urlMatch = URL_RE.exec(content)) !== null) {
+      const url = urlMatch[0];
+      if (seenUrls.has(url)) continue;
+      seenUrls.add(url);
+      // Get surrounding context (50 chars before URL)
+      const ctxStart = Math.max(0, urlMatch.index - 80);
+      const ctx = content.slice(ctxStart, urlMatch.index).replace(/\n/g, ' ').trim();
+      urlMemories.push({
+        text: `分享链接: ${url}`,
+        category: 'fact',
+        importance: 0.7,
+        abstract: `链接分享: ${url}`,
+        overview: ctx || `分享的链接: ${url}`,
+      });
+    }
+
+    // ─── Multi-turn grouping: merge consecutive user messages ─────────────
+    // Group consecutive user messages into a single context block for extraction
+    let enrichedContent = content;
+    const USER_MSG_RE = /^user:\s*(.+)/gim;
+    const userMessages: Array<{ text: string; idx: number }> = [];
+    let um;
+    while ((um = USER_MSG_RE.exec(content)) !== null) {
+      userMessages.push({ text: um[1], idx: um.index });
+    }
+    if (userMessages.length >= 2) {
+      // Merge consecutive user messages (within 200 chars of each other)
+      const merged: Array<{ text: string; start: number; end: number }> = [];
+      for (const msg of userMessages) {
+        const prev = merged[merged.length - 1];
+        if (prev && msg.idx - (prev.end) < 200) {
+          prev.text += '\n' + msg.text;
+          prev.end = msg.idx + msg.text.length + 5; // "user: " prefix
+        } else {
+          merged.push({ text: msg.text, start: msg.idx, end: msg.idx + msg.text.length + 5 });
+        }
+      }
+      // Replace original content with merged content for better extraction
+      enrichedContent = merged.map(m => `user: ${m.text}`).join('\n\n');
+    }
+
+    const memories = await callExtractor(enrichedContent, config);
     if (!memories || !memories.length) return;
 
-    const significant = memories.filter(
+    // Merge pre-extracted memories (code blocks + URLs) with LLM-extracted memories
+    const allMemories = [
+      ...codeBlockMemories,
+      ...urlMemories,
+      ...memories,
+    ];
+
+    const significant = allMemories.filter(
       (m: any) => m.importance >= importanceThreshold
     ).slice(0, maxChunks);
 
