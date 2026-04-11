@@ -5,6 +5,7 @@
 import type { HookEvent } from '../../../../../../.npm-global/lib/node_modules/openclaw/dist/v10/types/hooks.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawn } from 'child_process';
 import { getMemoryStore } from '../../store/factory.js';
 import type { MemoryStore } from '../../store/interface.js';
 import { getConfig } from '../../config.js';
@@ -321,6 +322,17 @@ async function runDreamConsolidation(state: DreamState, now: number): Promise<vo
     lastDreamAt: now,
     lastDreamMemoryCount: activeMemories.length,
   });
+
+  // Trigger auto-evolve inspect if enough new memories were consolidated
+  if (newMemoriesSince.length >= DREAM_CONFIG.minNewMemories) {
+    const autoEvolveScript = path.join(process.env.HAWK_DIR || path.join(process.env.HOME || '~', '.hawk'), '..', 'scripts', 'auto-evolve.py');
+    console.log(`[hawk-dream] triggering auto-evolve inspect: ${newMemoriesSince.length} new memories >= ${DREAM_CONFIG.minNewMemories}`);
+    spawn('python3', [autoEvolveScript, 'inspect', '--repo', '.'], {
+      detached: true,
+      stdio: 'ignore',
+      cwd: path.join(process.env.HAWK_DIR || path.join(process.env.HOME || '~', '.hawk'), '..'),
+    });
+  }
 }
 
 // ─── Session Transcript Scanner (from Claude) ────────────────────────────────────

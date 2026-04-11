@@ -147,6 +147,8 @@ export interface MemoryEntry {
   metadata: Record<string, unknown>;
   /** 记忆来源类型: text | audio | video */
   source_type: SourceType;
+  /** 记忆来源：capture | evolution-success | evolution-failure | user-import */
+  source: string;
   /** Drift note: what might be stale (filled by dream consolidation) */
   driftNote: string | null;
   /** When drift was last detected */
@@ -161,6 +163,8 @@ export interface RetrievedMemory {
   metadata: Record<string, unknown>;
   /** 记忆来源类型 */
   source_type: SourceType;
+  /** 记忆来源：capture | evolution-success | evolution-failure | user-import */
+  source: string;
   /** 可信度 0-1（含时间衰减后） */
   reliability: number;
   /** 可信度标签 */

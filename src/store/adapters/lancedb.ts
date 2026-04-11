@@ -51,6 +51,7 @@ export class LanceDBAdapter implements MemoryStore {
           last_accessed_at: Date.now(),
           metadata: '{}',
           source_type: 'text',
+          source: '',
         });
         const table = makeArrowTable([sampleRow]);
         this.table = await this.db.createTable(TABLE_NAME, table);
@@ -77,6 +78,7 @@ export class LanceDBAdapter implements MemoryStore {
             { name: 'description', type: { type: 'utf8' } },
             { name: 'drift_note', type: { type: 'utf8' } },
             { name: 'drift_detected_at', type: { type: 'int64' } },
+            { name: 'source', type: { type: 'utf8' } },
           ]);
         } catch (_) {
           // Columns may already exist — ignore
@@ -119,6 +121,7 @@ export class LanceDBAdapter implements MemoryStore {
     cold_start_until: number | null;
     metadata: string;
     source_type: SourceType;
+    source: string;
   }): any {
     const vec = data.vector.length > 0 ? Array.from(data.vector) : new Array(DEFAULT_EMBEDDING_DIM).fill(0);
     return {
@@ -146,6 +149,7 @@ export class LanceDBAdapter implements MemoryStore {
       cold_start_until: data.cold_start_until !== null ? BigInt(data.cold_start_until) : null,
       metadata: data.metadata,
       source_type: data.source_type,
+      source: data.source,
     };
   }
 
@@ -202,6 +206,7 @@ export class LanceDBAdapter implements MemoryStore {
       description: r.description ?? '',
       driftNote: r.drift_note ?? null,
       driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
+      source: r.source ?? '',
     };
   }
 
@@ -241,6 +246,7 @@ export class LanceDBAdapter implements MemoryStore {
       description: r.description ?? '',
       driftNote: r.drift_note ?? null,
       driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
+      source: r.source ?? '',
     };
   }
 
@@ -279,6 +285,7 @@ export class LanceDBAdapter implements MemoryStore {
       cold_start_until: coldStartUntil,
       metadata: JSON.stringify(entry.metadata || {}),
       source_type: entry.source_type || 'text',
+      source: entry.source || '',
       drift_note: entry.driftNote || null,
       drift_detected_at: entry.driftDetectedAt || null,
     });
@@ -673,6 +680,7 @@ export class LanceDBAdapter implements MemoryStore {
           updatedAt: Number(r.updated_at ?? Date.now()),
           metadata: JSON.parse(r.metadata || '{}'),
           source_type: (r.source_type || 'text') as SourceType,
+          source: r.source ?? '',
         });
       }
     } catch { /* ignore */ }
