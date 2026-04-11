@@ -133,3 +133,47 @@ export const DEDUP_SIMILARITY = parseFloat(process.env.HAWK_DEDUP_SIMILARITY || 
  * 0 = no expiry. Default 30 days.
  */
 export const MEMORY_TTL_MS = parseInt(process.env.HAWK_MEMORY_TTL_MS || String(30 * 24 * 60 * 60 * 1000), 10);
+
+// ─── Reliability / Verification ────────────────────────────────────────────────
+
+/**
+ * Initial reliability score for newly captured memories (0-1).
+ * New memories start neutral until verified by the user.
+ * Range: 0.0-1.0. Default 0.5.
+ */
+export const INITIAL_RELIABILITY = parseFloat(process.env.HAWK_INITIAL_RELIABILITY || '0.5');
+
+/**
+ * Reliability boost when a memory is confirmed correct (user doesn't correct it).
+ * Each successful recall where the user doesn't correct the agent adds this.
+ * Range: 0.0-0.3. Default 0.1.
+ */
+export const RELIABILITY_BOOST_CONFIRM = parseFloat(process.env.HAWK_RELIABILITY_BOOST_CONFIRM || '0.1');
+
+/**
+ * Reliability penalty when a memory is corrected by the user.
+ * The corrected text replaces the old text and reliability resets accordingly.
+ * Range: 0.0-0.5. Default 0.3.
+ */
+export const RELIABILITY_PENALTY_CORRECT = parseFloat(process.env.HAWK_RELIABILITY_PENALTY_CORRECT || '0.3');
+
+/**
+ * Reliability score threshold for "high confidence" (✅) label.
+ * Memories at or above this are shown with ✅.
+ * Range: 0.0-1.0. Default 0.7.
+ */
+export const RELIABILITY_THRESHOLD_HIGH = parseFloat(process.env.HAWK_RELIABILITY_THRESHOLD_HIGH || '0.7');
+
+/**
+ * Reliability score threshold for "medium confidence" (⚠️) label.
+ * Memories below HIGH but at or above this are shown with ⚠️.
+ * Below this → ❌.
+ * Range: 0.0-1.0. Default 0.4.
+ */
+export const RELIABILITY_THRESHOLD_MEDIUM = parseFloat(process.env.HAWK_RELIABILITY_THRESHOLD_MEDIUM || '0.4');
+
+/**
+ * Grace period in days before soft-deleted (forgotten) memories are permanently purged.
+ * Range: 1-365. Default 30 days.
+ */
+export const FORGET_GRACE_DAYS = parseInt(process.env.HAWK_FORGET_GRACE_DAYS || '30', 10);

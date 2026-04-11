@@ -100,6 +100,14 @@ export interface MemoryEntry {
   expiresAt: number;  // 0 = never expire
   accessCount: number;
   lastAccessedAt: number;
+  /** 软删除标记：非 null = 已遗忘 */
+  deletedAt: number | null;
+  /** 可信度 0-1，初始 0.5 */
+  reliability: number;
+  /** 被验证次数 */
+  verificationCount: number;
+  /** 最后验证时间 */
+  lastVerifiedAt: number | null;
   metadata: Record<string, unknown>;
   /** 记忆来源类型: text | audio | video */
   source_type: SourceType;
@@ -113,6 +121,10 @@ export interface RetrievedMemory {
   metadata: Record<string, unknown>;
   /** 记忆来源类型 */
   source_type: SourceType;
+  /** 可信度 0-1 */
+  reliability: number;
+  /** 可信度标签 */
+  reliabilityLabel: '✅' | '⚠️' | '❌';
 }
 
 export interface ExtractionResult {
