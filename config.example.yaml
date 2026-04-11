@@ -39,5 +39,16 @@ python:
   pythonPath: python3
   hawkDir: ~/.openclaw/hawk
 
+# Rerank 配置（可选，不配置则用 cosine similarity 兜底）
+rerank:
+  # 优先级: JINA > COHERE > MIXEDBREAD > RERANK_BASE_URL > cosine
+  jinaApiKey: ${JINA_RERANKER_API_KEY}  # https://jina.ai/reranker/ 免费额度
+  cohereApiKey: ${COHERE_API_KEY}
+  mixedbreadApiKey: ${MIXTBREAD_API_KEY}  # https://www.mixedbread.ai/ 免费额度
+  # 通用 OpenAI-compatible rerank 端点
+  baseUrl: ""   # e.g. https://api.myservice.com
+  apiKey: ${RERANK_API_KEY}
+  model: ""    # e.g. gpt-4o-mini-retrieval
+
 i18n:
   lang: zh  # zh | en — 界面语言

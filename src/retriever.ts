@@ -226,18 +226,15 @@ export class HybridRetriever {
   ): Promise<Array<{ id: string; text: string; rerankScore: number }>> {
     if (candidates.length <= 2) return candidates.map(c => ({ id: c.id, text: c.text, rerankScore: c.score }));
 
-    try {
-      // Use Jina reranker API (free tier available)
-      const apiKey = process.env.JINA_RERANKER_API_KEY || process.env.OPENAI_API_KEY;
-      const useJina = !!process.env.JINA_RERANKER_API_KEY;
-
-      if (useJina) {
+    // Try each rerank provider in priority order
+    const providers = [
+      // 1. Jina AI Reranker
+      async () => {
+        const apiKey = process.env.JINA_RERANKER_API_KEY;
+        if (!apiKey) return null;
         const resp = await fetch('https://api.jina.ai/v1/rerank', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-          },
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
           body: JSON.stringify({
             model: 'jina-reranker-v1-base-en',
             query,
@@ -245,29 +242,101 @@ export class HybridRetriever {
             top_n: Math.min(topN * 2, candidates.length),
           }),
         });
+        if (!resp.ok) return null;
+        const data = await resp.json() as any;
+        return data.results.map((r: any) => ({
+          id: candidates[r.index].id,
+          text: candidates[r.index].text,
+          rerankScore: r.relevance_score,
+        }));
+      },
 
-        if (resp.ok) {
-          const data = await resp.json() as any;
-          return data.results.map((r: any) => ({
-            id: candidates[r.index].id,
-            text: candidates[r.index].text,
-            rerankScore: r.relevance_score,
-          }));
-        }
-      }
+      // 2. Cohere Rerank
+      async () => {
+        const apiKey = process.env.COHERE_API_KEY || process.env.COHERE_RERANK_API_KEY;
+        if (!apiKey) return null;
+        const resp = await fetch('https://api.cohere.ai/v1/rerank', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model: 'rerank-english-v3.0',
+            query,
+            documents: candidates.map(c => c.text),
+            top_n: Math.min(topN * 2, candidates.length),
+            return_documents: false,
+          }),
+        });
+        if (!resp.ok) return null;
+        const data = await resp.json() as any;
+        const idMap = new Map(candidates.map((c, i) => [i, c]));
+        return data.results.map((r: any) => {
+          const mem = idMap.get(r.index)!;
+          return { id: mem.id, text: mem.text, rerankScore: r.relevance_score };
+        });
+      },
 
-      // Fallback: cosine similarity rerank using query embedding
+      // 3. Mixedbread AI (free tier available)
+      async () => {
+        const apiKey = process.env.MIXTBREAD_API_KEY || process.env.MIXEDBREAD_API_KEY;
+        if (!apiKey) return null;
+        const resp = await fetch('https://api.mixedbread.ai/v1/rerank', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model: 'mxbai-rerank-large-v1',
+            query,
+            input: candidates.map(c => c.text),
+            top_k: Math.min(topN * 2, candidates.length),
+          }),
+        });
+        if (!resp.ok) return null;
+        const data = await resp.json() as any;
+        const idMap = new Map(candidates.map((c, i) => [i, c]));
+        return data.data.map((r: any) => {
+          const mem = idMap.get(r.index)!;
+          return { id: mem.id, text: mem.text, rerankScore: r.relevance_score };
+        });
+      },
+
+      // 4. Generic OpenAI-compatible rerank endpoint
+      async () => {
+        const baseURL = process.env.RERANK_BASE_URL;
+        const apiKey = process.env.RERANK_API_KEY || process.env.OPENAI_API_KEY;
+        const model = process.env.RERANK_MODEL || '';
+        if (!baseURL || !apiKey || !model) return null;
+        const resp = await fetch(`${baseURL}/rerank`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+          body: JSON.stringify({ model, query, documents: candidates.map(c => c.text), top_n: Math.min(topN * 2, candidates.length) }),
+        });
+        if (!resp.ok) return null;
+        const data = await resp.json() as any;
+        const idMap = new Map(candidates.map((c, i) => [i, c]));
+        return data.results.map((r: any) => {
+          const mem = idMap.get(r.index)!;
+          return { id: mem.id, text: mem.text, rerankScore: r.relevance_score };
+        });
+      },
+    ];
+
+    // Try providers in order
+    for (const providerFn of providers) {
+      try {
+        const result = await providerFn();
+        if (result && result.length > 0) return result;
+      } catch { /* try next */ }
+    }
+
+    // Ultimate fallback: cosine similarity rerank
+    try {
       const queryVec = await this.embedder.embedQuery(query);
       const docVecs = await this.embedder.embed(candidates.map(c => c.text));
-
       const scored = candidates.map((c, i) => ({
         id: c.id,
         text: c.text,
         rerankScore: cosineSimilarity(queryVec, docVecs[i]),
       }));
-
       return scored.sort((a, b) => b.rerankScore - a.rerankScore).slice(0, topN * 2);
-
     } catch (e) {
       console.warn('[hawk-bridge] rerank failed, using RRF scores:', e);
       return candidates.slice(0, topN).map(c => ({ id: c.id, text: c.text, rerankScore: c.score }));
