@@ -581,6 +581,46 @@ export class HawkDB {
   }
 
   /**
+   * SoulForge 验证通过后的回写
+   * - 将 soul_verified 标记设为 true（持久化到 metadata）
+   * - 记录 soul_pattern_id 和 verified_text（通过 metadata）
+   * - 不改 reliability（hawk-verify CLI 自己算 boost）
+   */
+  async verifySoulPattern(
+    id: string,
+    patternId: string,
+    patternText: string,
+    boostAmount: number,
+  ): Promise<boolean> {
+    if (!this.table) await this.init();
+    try {
+      const existing = await this.getById(id);
+      if (!existing) return false;
+      const metadata = { ...existing.metadata };
+      (metadata as any).soulVerified = true;
+      (metadata as any).soulPatternId = patternId;
+      (metadata as any).soulVerifiedText = patternText.slice(0, 200);
+      (metadata as any).soulVerifiedAt = Date.now();
+
+      // Boost reliability by boostAmount (capped at 1.0)
+      const newReliability = Math.min(1.0, existing.reliability + boostAmount);
+
+      await this.table.update({
+        where: `id = '${id.replace(/'/g, "''")}'`,
+        updates: {
+          reliability: newReliability,
+          verification_count: existing.verificationCount + 1,
+          last_verified_at: BigInt(Date.now()),
+          metadata: JSON.stringify(metadata),
+        },
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * 检测与新内容可能冲突的记忆
    * 策略：在同类记忆中找相似度高但内容不同的
    */

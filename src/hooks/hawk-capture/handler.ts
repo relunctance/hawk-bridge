@@ -395,6 +395,10 @@ const captureHandler = async (event: HookEvent) => {
 
       // 7. Embed & store
       const id = generateId();
+      const capture_trigger = m.category === 'entity' ? 'new_entity'
+        : m.category === 'decision' ? 'decision_made'
+        : m.category === 'preference' ? 'preference_signal'
+        : 'general_content';
       try {
         const [vector] = await embedderInstance.embed([text]);
         await dbInstance.store({
@@ -407,6 +411,8 @@ const captureHandler = async (event: HookEvent) => {
           timestamp: Date.now(),
           expiresAt,
           metadata: {
+            capture_trigger,
+            capture_confidence: m.importance,
             l0_abstract: m.abstract,
             l1_overview: m.overview,
             source: 'hawk-capture',
