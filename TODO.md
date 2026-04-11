@@ -341,3 +341,48 @@ hawk-bridge
 | 事实类 | 90 天 | 用户是产品经理 |
 | 偏好类 | 180 天 | 用户喜欢 Arial |
 | 永久信息 | 永不过期 | 用户工作 10 年 |
+
+---
+
+## 多租户支持（v1.6+）
+
+### MT-1. tenant_id 上下文注入
+
+**目标**：所有 API 支持 tenant_id 隔离
+
+**实现**：
+```typescript
+// 改动前
+hawk_bridge.add_memory(text: "...", category: "fact")
+
+// 改动后
+hawk_bridge.add_memory(text: "...", category: "fact", tenant_id: "self")
+```
+
+**隔离方式**：查询时加 `WHERE tenant_id = {current_tenant}`
+
+---
+
+### MT-2. 多租户目录结构
+
+**目标**：记忆按 tenant_id 隔离存储
+
+```
+~/.hawk/
+  lancedb/
+    memory_{tenant_id}.lance.db   # 按租户分库
+  audit_{tenant_id}.log
+  config_{tenant_id}.yaml
+```
+
+---
+
+### MT-3. Learnings 三层隔离
+
+**目标**：Tenant/Team/Global 三层
+
+| 层级 | 归属 | 隔离 |
+|------|------|------|
+| Tenant Learnings | 租户私有 | tenant_id 隔离 |
+| Team Learnings | 租户内共享 | team_id 隔离 |
+| Global Learnings | 厂商维护 | 所有租户可见 |
