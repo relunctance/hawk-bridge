@@ -177,3 +177,60 @@ export const RELIABILITY_THRESHOLD_MEDIUM = parseFloat(process.env.HAWK_RELIABIL
  * Range: 1-365. Default 30 days.
  */
 export const FORGET_GRACE_DAYS = parseInt(process.env.HAWK_FORGET_GRACE_DAYS || '30', 10);
+
+// ─── Reliability: Time Decay ────────────────────────────────────────────────────
+
+/**
+ * Days within which a verification is considered fully fresh (recency_factor = 1.0).
+ * Beyond this, reliability decays.
+ * Range: 1-365. Default 30 days.
+ */
+export const RECENCY_GRACE_DAYS = parseInt(process.env.HAWK_RECENCY_GRACE_DAYS || '30', 10);
+
+/**
+ * Decay rate for reliability beyond RECENCY_GRACE_DAYS (exponential).
+ * Lower = faster decay. Range: 0.1-0.99. Default 0.95.
+ */
+export const RECENCY_DECAY_RATE = parseFloat(process.env.HAWK_RECENCY_DECAY_RATE || '0.95');
+
+/**
+ * Maximum recency factor floor (reliability won't drop below this even for very old verifications).
+ * Range: 0.0-0.5. Default 0.3.
+ */
+export const RECENCY_FACTOR_FLOOR = parseFloat(process.env.HAWK_RECENCY_FACTOR_FLOOR || '0.3');
+
+// ─── Reliability: Consistency Factor ──────────────────────────────────────────
+
+/**
+ * Multiplier applied to reliability when a memory has been verified multiple times.
+ * consistency_factor = min(1 + verificationCount * 0.05, CONSISTENCY_MAX).
+ * Range: 1.0-2.0. Default 1.0 (disabled).
+ */
+export const CONSISTENCY_MAX = parseFloat(process.env.HAWK_CONSISTENCY_MAX || '1.5');
+
+/**
+ * Penalty multiplier when a memory has been corrected multiple times.
+ * consistency_factor is multiplied by this for each correction.
+ * Range: 0.1-1.0. Default 0.7 per correction.
+ */
+export const CORRECTION_PENALTY_MULTIPLIER = parseFloat(process.env.HAWK_CORRECTION_PENALTY_MULTIPLIER || '0.7');
+
+// ─── Decay: Reliability-based Differentiation ────────────────────────────────────
+
+/**
+ * Decay rate multiplier for ✅ (high reliability) memories.
+ * Lower = slower decay. Range: 0.0-1.0. Default 0.2 (barely decays).
+ */
+export const DECAY_RATE_HIGH_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_HIGH || '0.2');
+
+/**
+ * Decay rate multiplier for ⚠️ (medium reliability) memories.
+ * Range: 0.5-1.5. Default 0.8.
+ */
+export const DECAY_RATE_MEDIUM_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_MEDIUM || '0.8');
+
+/**
+ * Decay rate multiplier for ❌ (low reliability) memories.
+ * Range: 1.0-2.0. Default 1.5 (fast decay).
+ */
+export const DECAY_RATE_LOW_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_LOW || '1.5');

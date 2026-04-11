@@ -19,10 +19,18 @@ type MemoryMap = Map<string, {
   reliability: number;
   verificationCount: number;
   lastVerifiedAt: number | null;
+  locked: boolean;
+  correctionHistory: Array<{ ts: number; oldText: string; newText: string }>;
   metadata: Record<string, unknown>;
   source_type: SourceType;
 }>;
-import { BM25_QUERY_LIMIT, DEFAULT_EMBEDDING_DIM, INITIAL_RELIABILITY, FORGET_GRACE_DAYS, RELIABILITY_BOOST_CONFIRM, RELIABILITY_PENALTY_CORRECT } from './constants.js';
+import {
+  BM25_QUERY_LIMIT, DEFAULT_EMBEDDING_DIM, INITIAL_RELIABILITY, FORGET_GRACE_DAYS,
+  RELIABILITY_BOOST_CONFIRM, RELIABILITY_PENALTY_CORRECT,
+  RECENCY_GRACE_DAYS, RECENCY_DECAY_RATE, RECENCY_FACTOR_FLOOR,
+  CONSISTENCY_MAX, CORRECTION_PENALTY_MULTIPLIER,
+  DECAY_RATE_HIGH_RELIABILITY, DECAY_RATE_MEDIUM_RELIABILITY, DECAY_RATE_LOW_RELIABILITY,
+} from './constants.js';
 import type { MemoryEntry, RetrievedMemory } from './types.js';
 
 const TABLE_NAME = 'hawk_memories';
@@ -77,6 +85,8 @@ export class HawkDB {
             { name: 'reliability', type: { type: 'float' } },
             { name: 'verification_count', type: { type: 'int32' } },
             { name: 'last_verified_at', type: { type: 'int64' } },
+            { name: 'locked', type: { type: 'int8' } },         // 0=unlocked, 1=locked
+            { name: 'correction_history', type: { type: 'utf8' } }, // JSON array
           ]);
         } catch (_) {
           // Columns may already exist — ignore
@@ -96,7 +106,7 @@ export class HawkDB {
     scope: string;
     importance: number;
     timestamp: number;
-    expires_at: number;  // 0 = never expire
+    expires_at: number;
     created_at: number;
     access_count: number;
     last_accessed_at: number;
@@ -104,11 +114,11 @@ export class HawkDB {
     reliability: number;
     verification_count: number;
     last_verified_at: number | null;
+    locked: boolean;
+    correction_history: string; // JSON string
     metadata: string;
     source_type: SourceType;
   }): any {
-    // Use a dummy zero vector if embedding is empty.
-    // DEFAULT_EMBEDDING_DIM must match your embedding model's output dimension.
     const vec = data.vector.length > 0 ? Array.from(data.vector) : new Array(DEFAULT_EMBEDDING_DIM).fill(0);
     return {
       id: data.id,
@@ -126,29 +136,10 @@ export class HawkDB {
       reliability: data.reliability,
       verification_count: data.verification_count,
       last_verified_at: data.last_verified_at !== null ? BigInt(data.last_verified_at) : null,
+      locked: data.locked ? 1 : 0,
+      correction_history: data.correction_history,
       metadata: data.metadata,
       source_type: data.source_type,
-    };
-  }
-
-  private _rowToMemory(r: any): MemoryEntry {
-    return {
-      id: r.id,
-      text: r.text,
-      vector: r.vector || [],
-      category: r.category,
-      scope: r.scope,
-      importance: r.importance,
-      timestamp: Number(r.timestamp),
-      expiresAt: Number(r.expires_at || 0),
-      accessCount: r.access_count,
-      lastAccessedAt: Number(r.last_accessed_at),
-      deletedAt: r.deleted_at !== null ? Number(r.deleted_at) : null,
-      reliability: r.reliability ?? INITIAL_RELIABILITY,
-      verificationCount: r.verification_count ?? 0,
-      lastVerifiedAt: r.last_verified_at !== null ? Number(r.last_verified_at) : null,
-      metadata: typeof r.metadata === 'string' ? JSON.parse(r.metadata || '{}') : (r.metadata || {}),
-      source_type: (r.source_type || 'text') as SourceType,
     };
   }
 
@@ -161,8 +152,88 @@ export class HawkDB {
     return rows;
   }
 
+  /**
+   * 计算有效可靠性（考虑时间衰减 + 一致性因子）
+   * effective = base * recency_factor * consistency_factor
+   *
+   * recency_factor:
+   *   - 30天内验证 → 1.0
+   *   - 30天外 → RECENCY_DECAY_RATE^(days/30)
+   *   - 下限 RECENCY_FACTOR_FLOOR
+   *
+   * consistency_factor:
+   *   - 多次确认 → min(1 + count * 0.05, 1.5)
+   *   - 每次纠正 → ×0.7（CORRECTION_PENALTY_MULTIPLIER）
+   */
+  private computeEffectiveReliability(
+    base: number,
+    verificationCount: number,
+    lastVerifiedAt: number | null,
+    correctionCount: number
+  ): number {
+    // Recency factor
+    let recencyFactor = 1.0;
+    if (lastVerifiedAt !== null) {
+      const daysSince = (Date.now() - lastVerifiedAt) / 86400000;
+      if (daysSince > RECENCY_GRACE_DAYS) {
+        const decayCycles = (daysSince - RECENCY_GRACE_DAYS) / RECENCY_GRACE_DAYS;
+        recencyFactor = Math.max(RECENCY_FACTOR_FLOOR, Math.pow(RECENCY_DECAY_RATE, decayCycles));
+      }
+    }
+
+    // Consistency factor: confirm boosts, correct penalizes
+    const confirmBoost = Math.min(1 + verificationCount * 0.05, CONSISTENCY_MAX);
+    const correctionPenalty = Math.pow(CORRECTION_PENALTY_MULTIPLIER, correctionCount);
+
+    const effective = base * recencyFactor * confirmBoost * correctionPenalty;
+    return Math.max(0.0, Math.min(1.0, effective));
+  }
+
+  private _rowToMemory(r: any): MemoryEntry {
+    const base = r.reliability ?? INITIAL_RELIABILITY;
+    const correctionHistory: Array<{ ts: number; oldText: string; newText: string }> =
+      typeof r.correction_history === 'string'
+        ? JSON.parse(r.correction_history || '[]')
+        : (r.correction_history || []);
+    const correctionCount = correctionHistory.length;
+
+    return {
+      id: r.id,
+      text: r.text,
+      vector: r.vector || [],
+      category: r.category,
+      scope: r.scope,
+      importance: r.importance,
+      timestamp: Number(r.timestamp),
+      expiresAt: Number(r.expires_at || 0),
+      accessCount: r.access_count,
+      lastAccessedAt: Number(r.last_accessed_at),
+      deletedAt: r.deleted_at !== null ? Number(r.deleted_at) : null,
+      reliability: base,
+      verificationCount: r.verification_count ?? 0,
+      lastVerifiedAt: r.last_verified_at !== null ? Number(r.last_verified_at) : null,
+      locked: r.locked === 1,
+      correctionHistory,
+      metadata: typeof r.metadata === 'string' ? JSON.parse(r.metadata || '{}') : (r.metadata || {}),
+      source_type: (r.source_type || 'text') as SourceType,
+    };
+  }
+
   private _rowToRetrieved(r: any, score: number): RetrievedMemory {
-    const reliability = r.reliability ?? INITIAL_RELIABILITY;
+    const base = r.reliability ?? INITIAL_RELIABILITY;
+    const correctionHistory: Array<{ ts: number; oldText: string; newText: string }> =
+      typeof r.correction_history === 'string'
+        ? JSON.parse(r.correction_history || '[]')
+        : (r.correction_history || []);
+    const correctionCount = correctionHistory.length;
+
+    const effective = this.computeEffectiveReliability(
+      base,
+      r.verification_count ?? 0,
+      r.last_verified_at !== null ? Number(r.last_verified_at) : null,
+      correctionCount
+    );
+
     return {
       id: r.id,
       text: r.text,
@@ -170,14 +241,18 @@ export class HawkDB {
       category: r.category,
       metadata: typeof r.metadata === 'string' ? JSON.parse(r.metadata || '{}') : (r.metadata || {}),
       source_type: (r.source_type || 'text') as SourceType,
-      reliability,
-      reliabilityLabel: reliability >= 0.7 ? '✅' : reliability >= 0.4 ? '⚠️' : '❌',
+      reliability: effective,
+      reliabilityLabel: effective >= 0.7 ? '✅' : effective >= 0.4 ? '⚠️' : '❌',
+      locked: r.locked === 1,
+      correctionCount,
+      baseReliability: base,
     };
   }
 
   async store(entry: Omit<MemoryEntry, 'accessCount' | 'lastAccessedAt'>): Promise<void> {
     if (!this.table) await this.init();
     const now = Date.now();
+    const correctionHistory = entry.correctionHistory ?? [];
     const row = this._makeRow({
       id: entry.id,
       text: entry.text,
@@ -194,6 +269,8 @@ export class HawkDB {
       reliability: entry.reliability ?? INITIAL_RELIABILITY,
       verification_count: entry.verificationCount ?? 0,
       last_verified_at: null,
+      locked: entry.locked ?? false,
+      correction_history: JSON.stringify(correctionHistory),
       metadata: JSON.stringify(entry.metadata || {}),
       source_type: entry.source_type || 'text',
     });
@@ -334,6 +411,10 @@ export class HawkDB {
           reliability: r.reliability ?? INITIAL_RELIABILITY,
           verificationCount: r.verification_count ?? 0,
           lastVerifiedAt: r.last_verified_at !== null ? Number(r.last_verified_at) : null,
+          locked: r.locked === 1,
+          correctionHistory: typeof r.correction_history === 'string'
+            ? JSON.parse(r.correction_history || '[]')
+            : (r.correction_history || []),
           metadata: JSON.parse(r.metadata || '{}'),
           source_type: (r.source_type || 'text') as SourceType,
         });
@@ -347,13 +428,19 @@ export class HawkDB {
   /**
    * 软删除：标记记忆为已遗忘（recall 时自动过滤）
    * 30 天后 purgeForgotten 会彻底删除
+   * 注意：锁定的记忆无法被遗忘
    */
   async forget(id: string): Promise<boolean> {
     if (!this.table) await this.init();
     try {
+      const memory = await this.getById(id);
+      if (!memory) return false;
+      if (memory.locked) {
+        console.log(`[hawk-bridge] Cannot forget locked memory: ${id}`);
+        return false;
+      }
       await this.table.update({
-        where: 'id = ?',
-        whereParams: [id],
+        where: `id = '${id.replace(/'/g, "''")}'`,
         updates: { deleted_at: BigInt(Date.now()) },
       });
       return true;
@@ -365,7 +452,8 @@ export class HawkDB {
   /**
    * 验证记忆可信度
    * - confirmed=true: 用户确认记忆正确 → reliability + boost（上限 1.0）
-   * - confirmed=false: 用户纠正 → reliability - penalty（下限 0），记录纠正后文本
+   * - confirmed=false: 用户纠正 → reliability - penalty，记录纠正历史
+   * 注意：锁定的记忆也可以被验证，但不改变 reliability
    */
   async verify(id: string, confirmed: boolean, correctedText?: string): Promise<boolean> {
     if (!this.table) await this.init();
@@ -373,21 +461,30 @@ export class HawkDB {
       const memory = await this.getById(id);
       if (!memory) return false;
       const now = Date.now();
-      const newReliability = confirmed
-        ? Math.min(1.0, memory.reliability + RELIABILITY_BOOST_CONFIRM)
-        : Math.max(0.0, memory.reliability - RELIABILITY_PENALTY_CORRECT);
-      const metadata = { ...memory.metadata };
+
+      const newReliability = memory.locked
+        ? memory.reliability  // 锁定记忆不改变 reliability
+        : confirmed
+          ? Math.min(1.0, memory.reliability + RELIABILITY_BOOST_CONFIRM)
+          : Math.max(0.0, memory.reliability - RELIABILITY_PENALTY_CORRECT);
+
+      const correctionHistory = [...(memory.correctionHistory || [])];
       if (!confirmed && correctedText) {
-        metadata.correctedText = memory.text; // 保留原始错误文本
+        correctionHistory.push({
+          ts: now,
+          oldText: memory.text,
+          newText: correctedText,
+        });
       }
+
       await this.table.update({
-        where: 'id = ?',
-        whereParams: [id],
+        where: `id = '${id.replace(/'/g, "''")}'`,
         updates: {
           reliability: newReliability,
           verification_count: memory.verificationCount + 1,
           last_verified_at: BigInt(now),
-          ...(!confirmed && correctedText ? { text: correctedText, metadata: JSON.stringify(metadata) } : {}),
+          correction_history: JSON.stringify(correctionHistory),
+          ...(!confirmed && correctedText ? { text: correctedText } : {}),
         },
       });
       return true;
@@ -397,15 +494,39 @@ export class HawkDB {
   }
 
   /**
-   * 记忆衰减：降低长期未访问记忆的 importance，根据 accessCount 调整层级
-   * 同时调用 purgeForgotten 清理过期软删除
+   * 锁定/解锁记忆
+   * 锁定的记忆：忽略 decay，不会被自动删除
+   */
+  async lock(id: string): Promise<boolean> {
+    if (!this.table) await this.init();
+    try {
+      await this.table.update({
+        where: `id = '${id.replace(/'/g, "''")}'`,
+        updates: { locked: 1 },
+      });
+      return true;
+    } catch { return false; }
+  }
+
+  async unlock(id: string): Promise<boolean> {
+    if (!this.table) await this.init();
+    try {
+      await this.table.update({
+        where: `id = '${id.replace(/'/g, "''")}'`,
+        updates: { locked: 0 },
+      });
+      return true;
+    } catch { return false; }
+  }
+
+  /**
+   * 记忆衰减：降低长期未访问记忆的 importance
+   * 差异化：✅ 记忆几乎不衰减，⚠️ 正常衰减，❌ 快速消亡
+   * 锁定的记忆完全跳过衰减
    */
   async decay(): Promise<{ updated: number; deleted: number }> {
     if (!this.table) await this.init();
 
-    const DECAY_RATE = 0.95;
-    const SHORT_TTL_DAYS = 7;
-    const LONG_TTL_DAYS = 90;
     const ARCHIVE_TTL_DAYS = 180;
     const IMPORTANCE_THRESHOLD_LOW = 0.3;
     const IMPORTANCE_THRESHOLD_HIGH = 0.8;
@@ -420,19 +541,28 @@ export class HawkDB {
       return 'working';
     }
 
+    function getDecayMultiplier(reliability: number): number {
+      // 基于 effective reliability 计算衰减倍数
+      if (reliability >= 0.7) return DECAY_RATE_HIGH_RELIABILITY;      // 0.2 → 几乎不衰减
+      if (reliability >= 0.4) return DECAY_RATE_MEDIUM_RELIABILITY;  // 0.8 → 正常衰减
+      return DECAY_RATE_LOW_RELIABILITY;                            // 1.5 → 加速衰减
+    }
+
     const memories = await this.getAllMemories();
     let updated = 0;
     let deleted = 0;
     const now = Date.now();
 
     for (const m of memories) {
+      // 锁定的记忆完全跳过衰减
+      if (m.locked) continue;
+
       const daysIdle = Math.max(0, Math.floor((now - m.lastAccessedAt) / 86400000));
 
       if (m.scope === 'archive') {
-        // archive 超过 180 天删除
         if (daysIdle > ARCHIVE_TTL_DAYS) {
           try {
-            await this.table.delete(`id = '${m.id}'`);
+            await this.table.delete(`id = '${m.id.replace(/'/g, "''")}'`);
             deleted++;
           } catch { /* ignore */ }
         }
@@ -440,15 +570,15 @@ export class HawkDB {
       }
 
       if (daysIdle > 0) {
-        const newImportance = m.importance * Math.pow(DECAY_RATE, daysIdle);
+        const decayMultiplier = getDecayMultiplier(m.reliability);
+        const effectiveDays = Math.ceil(daysIdle * decayMultiplier);
+        const newImportance = m.importance * Math.pow(0.95, effectiveDays);
         const newLayer = computeLayer(newImportance, m.accessCount);
 
         if (LAYERS.indexOf(newLayer) < LAYERS.indexOf(m.scope)) {
-          // 降级（升级靠 access 时主动升）
           try {
             await this.table.update({
-              where: 'id = ?',
-              whereParams: [m.id],
+              where: `id = '${m.id.replace(/'/g, "''")}'`,
               updates: { importance: newImportance, scope: newLayer },
             });
             updated++;
@@ -456,8 +586,7 @@ export class HawkDB {
         } else if (newImportance !== m.importance) {
           try {
             await this.table.update({
-              where: 'id = ?',
-              whereParams: [m.id],
+              where: `id = '${m.id.replace(/'/g, "''")}'`,
               updates: { importance: newImportance },
             });
             updated++;
@@ -466,7 +595,6 @@ export class HawkDB {
       }
     }
 
-    // 清理过期软删除
     const purged = await this.purgeForgotten();
     deleted += purged;
 
@@ -487,7 +615,7 @@ export class HawkDB {
       );
       for (const r of toDelete) {
         try {
-          await this.table.delete(`id = '${r.id}'`);
+          await this.table.delete(`id = '${r.id.replace(/'/g, "''")}'`);
           deleted++;
         } catch { /* ignore */ }
       }

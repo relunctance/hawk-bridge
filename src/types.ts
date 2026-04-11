@@ -108,6 +108,10 @@ export interface MemoryEntry {
   verificationCount: number;
   /** 最后验证时间 */
   lastVerifiedAt: number | null;
+  /** 锁定标记：true = 忽略 decay，永不过期 */
+  locked: boolean;
+  /** 纠正历史：每次纠正记录 { ts, oldText, newText } */
+  correctionHistory: Array<{ ts: number; oldText: string; newText: string }>;
   metadata: Record<string, unknown>;
   /** 记忆来源类型: text | audio | video */
   source_type: SourceType;
@@ -121,10 +125,16 @@ export interface RetrievedMemory {
   metadata: Record<string, unknown>;
   /** 记忆来源类型 */
   source_type: SourceType;
-  /** 可信度 0-1 */
+  /** 可信度 0-1（含时间衰减后） */
   reliability: number;
   /** 可信度标签 */
   reliabilityLabel: '✅' | '⚠️' | '❌';
+  /** 是否被锁定 */
+  locked: boolean;
+  /** 纠正次数 */
+  correctionCount: number;
+  /** 初始 reliability（未经时间衰减） */
+  baseReliability: number;
 }
 
 export interface ExtractionResult {
