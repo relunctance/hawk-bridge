@@ -3,7 +3,8 @@
 // Action: Age importance scores, promote/demote memory layers, purge forgotten memories
 
 import type { HookEvent } from '../../../../../../.npm-global/lib/node_modules/openclaw/dist/v10/types/hooks.js';
-import { HawkDB } from '../../lancedb.js';
+import { getMemoryStore } from '../../store/factory.js';
+import type { MemoryStore } from '../../store/interface.js';
 import { FORGET_GRACE_DAYS } from '../../constants.js';
 
 let lastDecayRun = 0;
@@ -19,7 +20,7 @@ const decayHandler = async (event: HookEvent) => {
   lastDecayRun = now;
 
   try {
-    const db = new HawkDB();
+    const db = await getMemoryStore() as any;
     await db.init();
 
     // Run importance decay + layer management

@@ -1,0 +1,40 @@
+# hawk-bridge 配置文件示例
+# 复制到 ~/.hawk/config.yaml 即可生效
+# 支持 ${ENV_VAR} 占位符，会自动替换为环境变量值
+
+db:
+  provider: lancedb  # lancedb | qdrant | chroma
+
+embedding:
+  provider: jina  # jina | openai | qianwen | ollama | cohere
+  apiKey: ${JINA_API_KEY}  # 支持 env 占位符
+  model: jina-embeddings-v5-small
+  baseURL: ""
+  dimensions: 1024
+
+llm:
+  provider: groq  # groq | openai | qianwen | ollama
+  apiKey: ${GROQ_API_KEY}
+  model: llama-3.3-70b-versatile
+  baseURL: ""
+
+recall:
+  topK: 5
+  minScore: 0.3
+  injectEmoji: "🦅"
+
+audit:
+  enabled: true
+
+capture:
+  enabled: true
+  maxChunks: 3
+  importanceThreshold: 0.5
+  ttlMs: 2592000000  # 30 days in ms
+  maxChunkSize: 2000
+  minChunkSize: 20
+  dedupSimilarity: 0.95
+
+python:
+  pythonPath: python3.12
+  hawkDir: ~/.openclaw/hawk

@@ -8,7 +8,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import type { HookEvent } from '../../../../../.npm-global/lib/node_modules/openclaw/dist/v10/types/hooks.js';
-import { HawkDB } from '../../lancedb.js';
+import { getMemoryStore } from '../../store/factory.js';
+import type { MemoryStore } from '../../store/interface.js';
 import { Embedder } from '../../embeddings.js';
 import { getConfig } from '../../config.js';
 import type { RetrievedMemory } from '../../types.js';
@@ -21,13 +22,12 @@ import { markBm25Dirty } from '../hawk-recall/handler.js';
 
 const exec = promisify((require('child_process').exec));
 
-let db: HawkDB | null = null;
+let db: MemoryStore | null = null;
 let embedder: Embedder | null = null;
 
-async function getDB(): Promise<HawkDB> {
+async function getDB(): Promise<any> {
   if (!db) {
-    db = new HawkDB();
-    await db.init();
+    db = await getMemoryStore();
   }
   return db;
 }

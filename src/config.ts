@@ -1,13 +1,16 @@
 // Config Provider — auto-reads OpenClaw's built-in model config
-// No extra API keys needed, uses whatever is already configured in openclaw.json
+// Config file: ~/.hawk/config.yaml (YAML) with ${ENV_VAR} support, falls back to ~/.hawk/config.json
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { DEFAULT_MIN_SCORE, DEFAULT_EMBEDDING_DIM } from './constants.js';
+import * as yaml from 'js-yaml';
+import { DEFAULT_MIN_SCORE } from './constants.js';
+import { getEnvOverrides, deepMerge } from './config/env.js';
 import type { HawkConfig } from './types.js';
 
 const OPENCLAW_CONFIG_PATH = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+const HAWK_CONFIG_DIR = path.join(os.homedir(), '.hawk');
 
 export interface OpenClawModelProvider {
   id: string;
@@ -58,27 +61,26 @@ export function getDefaultModelId(): string {
   if (!config?.models?.providers) return 'MiniMax-M2.7';
   const prov = config.models.providers['minimax'];
   if (!prov?.models?.length) return 'MiniMax-M2.7';
-  // Return first model (usually the latest/default)
   return prov.models[0].id;
 }
 
 const DEFAULT_CONFIG: HawkConfig = {
   embedding: {
-    provider: 'qianwen', // 阿里云 DashScope, 国内首选
+    provider: 'qianwen',
     apiKey: '',
     model: 'text-embedding-v1',
     baseURL: 'https://dashscope.aliyuncs.com/api/v1',
-    dimensions: 1024,  // Qianwen text-embedding-v1 输出 1024 维
+    dimensions: 1024,
   },
   llm: {
-    provider: 'groq',  // Default: free groq Llama-3, no API key needed
+    provider: 'groq',
     apiKey: '',
     model: 'llama-3.3-70b-versatile',
     baseURL: '',
   },
   recall: {
     topK: 5,
-    minScore: DEFAULT_MIN_SCORE,  // from constants.ts
+    minScore: DEFAULT_MIN_SCORE,
     injectEmoji: '🦅',
   },
   audit: {
@@ -88,7 +90,7 @@ const DEFAULT_CONFIG: HawkConfig = {
     enabled: true,
     maxChunks: 3,
     importanceThreshold: 0.5,
-    ttlMs: 30 * 24 * 60 * 60 * 1000,  // 30 days
+    ttlMs: 30 * 24 * 60 * 60 * 1000,
     maxChunkSize: 2000,
     minChunkSize: 20,
     dedupSimilarity: 0.95,
@@ -99,20 +101,62 @@ const DEFAULT_CONFIG: HawkConfig = {
   },
 };
 
-// Promise-based cache prevents concurrent initialization
+function resolveEnvVars(raw: string): string {
+  return raw.replace(/\$\{([^}]+)\}/g, (_, varName) => {
+    return process.env[varName] ?? '';
+  });
+}
+
+function loadYamlConfig(): Record<string, any> {
+  const yamlPath = path.join(HAWK_CONFIG_DIR, 'config.yaml');
+  const legacyPath = path.join(HAWK_CONFIG_DIR, 'config.json');
+
+  if (fs.existsSync(yamlPath)) {
+    try {
+      const raw = fs.readFileSync(yamlPath, 'utf-8');
+      const resolved = resolveEnvVars(raw);
+      return yaml.load(resolved) as Record<string, any>;
+    } catch (e) {
+      console.warn('[hawk-bridge] Failed to load config.yaml:', e);
+    }
+  } else if (fs.existsSync(legacyPath)) {
+    try {
+      const raw = fs.readFileSync(legacyPath, 'utf-8');
+      return JSON.parse(raw) as Record<string, any>;
+    } catch (e) {
+      console.warn('[hawk-bridge] Failed to load legacy config.json:', e);
+    }
+  }
+  return {};
+}
+
 let configPromise: Promise<HawkConfig> | null = null;
 
 export async function getConfig(): Promise<HawkConfig> {
   if (!configPromise) {
     configPromise = (async () => {
-      const config: HawkConfig = { ...DEFAULT_CONFIG };
+      // 1. Start with defaults
+      let config: HawkConfig = { ...DEFAULT_CONFIG } as HawkConfig;
 
-      // Env var overrides (highest priority) — OLLAMA > QWEN > JINA > default
+      // 2. Merge YAML config file (yaml > defaults)
+      const yamlConfig = loadYamlConfig();
+      if (Object.keys(yamlConfig).length > 0) {
+        config = deepMerge(DEFAULT_CONFIG, yamlConfig as Partial<HawkConfig>);
+      }
+
+      // 3. Env var overrides (env > yaml > defaults)
+      const envOverrides = getEnvOverrides();
+      if (Object.keys(envOverrides).length > 0) {
+        config = deepMerge(config, envOverrides);
+      }
+
+      // 4. Auto-detect embedding provider from env vars (legacy compat)
+      //    This block preserves the existing "auto-detect from env" behavior
       if (process.env.OLLAMA_BASE_URL) {
         config.embedding.provider = 'ollama';
         config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
         config.embedding.model = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
-        config.embedding.dimensions = 768;  // nomic-embed-text is 768-dim
+        config.embedding.dimensions = 768;
       } else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
         config.embedding.provider = 'qianwen';
         config.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '';

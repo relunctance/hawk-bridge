@@ -5,7 +5,8 @@
 import type { HookEvent } from '../../../../../.npm-global/lib/node_modules/openclaw/dist/v10/types/hooks.js';
 import * as path from 'path';
 import { homedir } from 'os';
-import { HawkDB } from '../../lancedb.js';
+import { getMemoryStore } from '../../store/factory.js';
+import type { MemoryStore } from '../../store/interface.js';
 import { HybridRetriever } from '../../retriever.js';
 import { Embedder } from '../../embeddings.js';
 import { getConfig } from '../../config.js';
@@ -18,9 +19,14 @@ const MAX_INJECTION_CHARS = 2000;   // 总 injection 不超过 2000 字符（压
 const COMPOSITE_WEIGHT_RELIABILITY = 0.4;
 const COMPOSITE_WEIGHT_SCORE = 0.6;
 
-// Shared HawkDB instance
-let sharedDb: HawkDB | null = null;
-function getSharedDb(): HawkDB { if (!sharedDb) sharedDb = new HawkDB(); return sharedDb; }
+// Shared MemoryStore instance
+let sharedDb: MemoryStore | null = null;
+async function getSharedDb(): Promise<any> {
+  if (!sharedDb) {
+    sharedDb = await getMemoryStore();
+  }
+  return sharedDb;
+}
 
 // Shared embedder instance
 let sharedEmbedder: Embedder | null = null;
@@ -201,7 +207,7 @@ function computeMatchReason(query: string, memory: any): string {
 
 // ─── Semantic Matcher ────────────────────────────────────────────────────────
 
-async function findMemoryBySemanticMatch(db: HawkDB, newContent: string): Promise<{ id: string; score: number } | null> {
+async function findMemoryBySemanticMatch(db: any, newContent: string): Promise<{ id: string; score: number } | null> {
   const all = await db.getAllMemories();
   if (!all.length) return null;
   const keywords = extractKeywords(newContent);
@@ -895,7 +901,7 @@ function getAgentId(ctx: any): string | null {
 }
 
 // Get memories for current agent (personal + team memories)
-async function getSortedMemories(db: HawkDB, agentId?: string | null) {
+async function getSortedMemories(db: any, agentId?: string | null) {
   const all = await db.getAllMemories(agentId);
   return [...all].sort((a, b) => {
     if (a.locked !== b.locked) return a.locked ? -1 : 1;

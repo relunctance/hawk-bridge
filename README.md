@@ -539,15 +539,31 @@ Jina AI offers a **generous free tier** — no credit card required:
 
 > ⚠️ **Important: Jina AI requires a proxy in China (api.jina.ai is blocked).** Set `HTTPS_PROXY` to your proxy URL (e.g. `http://192.168.1.109:10808`).
 
-### ~/.hawk/config.json
+### ~/.hawk/config.yaml
 
-```json
-{
-  "openai_api_key": "YOUR_API_KEY",
-  "embedding_model": "text-embedding-v1",
-  "embedding_dimensions": 1024,
-  "base_url": "https://dashscope.aliyuncs.com/api/v1"
-}
+```yaml
+# 复制为 ~/.hawk/config.yaml 即可
+db:
+  provider: lancedb
+
+embedding:
+  provider: jina
+  apiKey: ${JINA_API_KEY}
+  model: jina-embeddings-v5-small
+  dimensions: 1024
+
+llm:
+  provider: groq
+  apiKey: ${GROQ_API_KEY}
+  model: llama-3.3-70b-versatile
+
+capture:
+  enabled: true
+  importanceThreshold: 0.5
+
+recall:
+  topK: 5
+  minScore: 0.3
 ```
 
 | Provider | Field | Description |
