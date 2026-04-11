@@ -3661,6 +3661,20 @@ async function getEmbedder() {
   return embedder;
 }
 var AUDIT_LOG_PATH = path3.join(os3.homedir(), ".hawk", "audit.log");
+async function withRetry(fn, maxAttempts = 3, delayMs = 1e3) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxAttempts) {
+        await new Promise((res) => setTimeout(res, delayMs * attempt));
+      }
+    }
+  }
+  throw lastErr;
+}
 function audit(action, reason, text) {
   const config = getConfig();
   if (!config.audit?.enabled) return;
@@ -3908,7 +3922,7 @@ var captureHandler = async (event) => {
       }
       enrichedContent = merged.map((m) => `user: ${m.text}`).join("\n\n");
     }
-    const memories = await callExtractor(enrichedContent, config);
+    const memories = await withRetry(() => callExtractor(enrichedContent, config), 3, 2e3);
     if (!memories || !memories.length) return;
     const allMemories = [
       ...codeBlockMemories,
@@ -3964,7 +3978,7 @@ var captureHandler = async (event) => {
       const id = generateId();
       const capture_trigger = m.category === "entity" ? "new_entity" : m.category === "decision" ? "decision_made" : m.category === "preference" ? "preference_signal" : "general_content";
       try {
-        const [vector] = await embedderInstance.embed([text]);
+        const [vector] = await withRetry(() => embedderInstance.embed([text]), 3, 1e3);
         await dbInstance.store({
           id,
           text,

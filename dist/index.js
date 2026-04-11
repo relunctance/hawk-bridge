@@ -4026,6 +4026,8 @@ var BATCHLOCK_PATTERN = /^hawk\s*锁定\s*all(?:\s+(.+))?$/i;
 var BATCHUNLOCK_PATTERN = /^hawk\s*解锁\s*all$/i;
 var COMPARE_PATTERN = /^hawk\s*对比\s*(\d+)\s+(\d+)$/i;
 var PURGE_PATTERN = /^hawk\s*清理$/i;
+var ADD_PATTERN = /^hawk\s*添加\s*(.+)$/i;
+var DELETE_IDX_PATTERN = /^hawk\s*删除\s*(\d+)$/i;
 var STATS_PATTERN = /^hawk\s*统计$/i;
 var QUALITY_PATTERN = /^hawk\s*质量$/i;
 var STATUS_PATTERN = /^hawk\s*状态$/i;
@@ -4193,9 +4195,11 @@ ${injectEmoji} \u8FD8\u6CA1\u6709\u4EFB\u4F55\u8BB0\u5FC6\u3002
       lines.push(`
 \u2192 hawk\u91CD\u8981 N \xD72  \u6807\u8BB0\u4E3A\u91CD\u8981`);
       lines.push(`\u2192 hawk\u4E0D\u91CD\u8981 N     \u964D\u4F4E\u91CD\u8981\u6027`);
+      lines.push(`\u2192 hawk\u5220\u9664 N       \u5220\u9664\u8BB0\u5FC6`);
       event.messages.push(`
 ${lines.join("\n")}
 `);
+      ctx._hawkListIndex = sorted2.map((mem) => mem.id);
       return;
     }
     var m = trimmed.match(IMPORTANT_PATTERN);
@@ -4859,6 +4863,74 @@ ${injectEmoji} \u6CA1\u6709\u627E\u5230\u4E0E"${keyword}"\u76F8\u5173\u7684\u8BB
       }
     }
     {
+      const m2 = trimmed.match(ADD_PATTERN);
+      if (m2) {
+        const text = m2[1].trim();
+        if (text.length < 5) {
+          event.messages.push(`
+${injectEmoji} \u5185\u5BB9\u592A\u77ED\uFF0C\u81F3\u5C115\u4E2A\u5B57\u3002
+`);
+          return;
+        }
+        const embedderInstance = await getSharedEmbedder();
+        try {
+          const [vector] = await embedderInstance.embed([text]);
+          await db2.store({
+            id: "hawk_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8),
+            text,
+            vector,
+            category: "fact",
+            scope: "personal",
+            importance: 0.8,
+            timestamp: Date.now(),
+            expiresAt: 0,
+            locked: false,
+            metadata: { source: "hawk-\u6DFB\u52A0" }
+          });
+          event.messages.push(`
+${injectEmoji} \u2705 \u5DF2\u6DFB\u52A0\u8BB0\u5FC6\uFF1A${text.slice(0, 60)}${text.length > 60 ? "..." : ""}
+`);
+        } catch (err) {
+          event.messages.push(`
+${injectEmoji} \u274C \u6DFB\u52A0\u5931\u8D25: ${err.message}
+`);
+        }
+        return;
+      }
+    }
+    {
+      const m2 = trimmed.match(DELETE_IDX_PATTERN);
+      if (m2) {
+        const idx = parseInt(m2[1], 10) - 1;
+        const targetIds = ctx._hawkListIndex || [];
+        const id = targetIds[idx];
+        if (!id) {
+          const all = await db2.getAllMemories(getAgentId(ctx));
+          const sorted2 = [...all].sort((a, b) => {
+            if (a.locked !== b.locked) return a.locked ? -1 : 1;
+            return b.reliability - a.reliability;
+          });
+          if (idx < 0 || idx >= sorted2.length) {
+            event.messages.push(`
+${injectEmoji} \u65E0\u6548\u7F16\u53F7\u3002
+`);
+            return;
+          }
+          const mem = sorted2[idx];
+          const ok2 = await db2.forget(mem.id);
+          event.messages.push(`
+${injectEmoji} ${ok2 ? "\u2705 \u5DF2\u5220\u9664\uFF1A" + mem.text.slice(0, 50) + "..." : "\u274C \u5DF2\u9501\u5B9A\uFF0C\u65E0\u6CD5\u5220\u9664\u3002"}
+`);
+          return;
+        }
+        const ok = await db2.forget(id);
+        event.messages.push(`
+${injectEmoji} ${ok ? "\u2705 \u5DF2\u5220\u9664\u3002" : "\u274C \u5DF2\u9501\u5B9A\uFF0C\u65E0\u6CD5\u5220\u9664\u3002"}
+`);
+        return;
+      }
+    }
+    {
       const correct = matchFirst(trimmed, [CORRECT_PATTERN]);
       if (correct !== null) {
         const result2 = await findMemoryBySemanticMatch(db2, correct);
@@ -4971,6 +5043,20 @@ async function getEmbedder2() {
   return embedder;
 }
 var AUDIT_LOG_PATH = path4.join(os3.homedir(), ".hawk", "audit.log");
+async function withRetry(fn, maxAttempts = 3, delayMs = 1e3) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxAttempts) {
+        await new Promise((res) => setTimeout(res, delayMs * attempt));
+      }
+    }
+  }
+  throw lastErr;
+}
 function audit(action, reason, text) {
   const config = getConfig();
   if (!config.audit?.enabled) return;
@@ -5218,7 +5304,7 @@ var captureHandler = async (event) => {
       }
       enrichedContent = merged.map((m) => `user: ${m.text}`).join("\n\n");
     }
-    const memories = await callExtractor(enrichedContent, config);
+    const memories = await withRetry(() => callExtractor(enrichedContent, config), 3, 2e3);
     if (!memories || !memories.length) return;
     const allMemories = [
       ...codeBlockMemories,
@@ -5274,7 +5360,7 @@ var captureHandler = async (event) => {
       const id = generateId();
       const capture_trigger = m.category === "entity" ? "new_entity" : m.category === "decision" ? "decision_made" : m.category === "preference" ? "preference_signal" : "general_content";
       try {
-        const [vector] = await embedderInstance.embed([text]);
+        const [vector] = await withRetry(() => embedderInstance.embed([text]), 3, 1e3);
         await dbInstance.store({
           id,
           text,
