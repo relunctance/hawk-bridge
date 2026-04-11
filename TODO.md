@@ -145,7 +145,91 @@ Step 3: name/description 自动生成  ← capture 时 LLM 同步
 Step 4: evolution 专属 importance   ← 读写时区分
 Step 5: dream 后触发 inspect      ← L0 → L1 闭环
 Step 6: drift 超时 re-verify     ← 感知增强
+Step 7: 多维质量分（A）           ← 给 L5 提供进化参考数据
+Step 8: 感知反馈 L5→L1（B）     ← 成功经验反向优化 capture
+Step 9: 跨项目经验迁移（C）      ← 新项目继承经验
+Step 10: 主动验证（D）          ← 定时确认重要记忆
+Step 11: 记忆版本历史（E）       ← 可审计、可回滚
 ```
+
+---
+
+## 更深层能力补全（v1.4+）
+
+### A. 多维质量分
+
+**目标**：reliability 之外新增三个维度，供 L5 进化参考
+
+| 维度 | 说明 | 范围 |
+|------|------|------|
+| `quality` | 记忆内容质量（完整度、描述清晰度） | 0.0-1.0 |
+| `utility` | 有用程度（被 recall 次数、带来价值） | 0.0-1.0 |
+| `freshness` | 新鲜度（内容是否过时，不只是时间） | 0.0-1.0 |
+
+**接口**：`hawk_bridge quality --id xxx` 查询记忆多维质量
+
+---
+
+### B. 感知反馈（L5 → L1）
+
+**目标**：L5 成功修复的模式 → 反向影响 L1 capture 的加权策略
+
+**实现**：
+- L5 写 `evolution-success` 记忆时，同时写 `~/.hawk/evolution-tags.json`
+- hawk-capture 读取该文件，动态调整同类内容的 importance threshold
+- 例：某类内容多次成功修复 → capture 时该类 importance 上调 0.1
+
+**效果**：capture 策略随进化动态优化
+
+---
+
+### C. 跨项目经验迁移
+
+**目标**：项目 A 解决过的问题 → 推荐给遇到类似问题的项目 B
+
+**实现**：
+- 记忆按 `project` scope 隔离
+- 新项目启动时，向相似项目学习经验
+- `hawk recall --project-similar=laravel-ecommerce` 拉取跨项目经验
+
+**效果**：新项目快速继承历史经验，少走弯路
+
+---
+
+### D. 主动验证（定时确认重要记忆）
+
+**目标**：不只在 recall 时被动验证，而是主动去确认重要记忆是否还正确
+
+**实现**：
+- 定时任务（cron）扫描 reliability ≥ 0.7 的记忆
+- 对每条记忆，grep 相关代码段，验证内容是否还匹配
+- 不匹配 → 自动降级 reliability + 写入 driftNote
+- 匹配 → reliability 小幅提升
+
+**效果**：重要记忆不随时间失效
+
+---
+
+### E. 记忆版本历史（update 快照）
+
+**目标**：每次 update 记录旧版本快照，支持回滚和审计
+
+**实现**：
+```json
+{
+  "id": "mem_xxx",
+  "current_version": 3,
+  "versions": [
+    {"version": 1, "text": "...", "updated_at": "2026-01-01"},
+    {"version": 2, "text": "...", "updated_at": "2026-03-15"},
+    {"version": 3, "text": "...", "updated_at": "2026-04-12"}
+  ]
+}
+```
+- `hawk_bridge history --id xxx` 查看版本历史
+- `hawk_bridge rollback --id xxx --version 2` 回滚到指定版本
+
+**效果**：记忆修改可审计、可回滚
 
 ---
 
