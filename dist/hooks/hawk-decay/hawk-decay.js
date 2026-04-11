@@ -2821,6 +2821,7 @@ var RELIABILITY_PENALTY_CORRECT = parseFloat(process.env.HAWK_RELIABILITY_PENALT
 var RELIABILITY_THRESHOLD_HIGH = parseFloat(process.env.HAWK_RELIABILITY_THRESHOLD_HIGH || "0.7");
 var RELIABILITY_THRESHOLD_MEDIUM = parseFloat(process.env.HAWK_RELIABILITY_THRESHOLD_MEDIUM || "0.4");
 var FORGET_GRACE_DAYS = parseInt(process.env.HAWK_FORGET_GRACE_DAYS || "30", 10);
+var DRIFT_THRESHOLD_DAYS = parseInt(process.env.HAWK_DRIFT_THRESHOLD_DAYS || "7", 10);
 var RECENCY_GRACE_DAYS = parseInt(process.env.HAWK_RECENCY_GRACE_DAYS || "30", 10);
 var RECENCY_DECAY_RATE = parseFloat(process.env.HAWK_RECENCY_DECAY_RATE || "0.95");
 var RECENCY_FACTOR_FLOOR = parseFloat(process.env.HAWK_RECENCY_FACTOR_FLOOR || "0.3");
@@ -2834,6 +2835,14 @@ var COLD_START_DECAY_MULTIPLIER = parseFloat(process.env.HAWK_COLD_START_DECAY_M
 var CONFLICT_SIMILARITY_THRESHOLD = parseFloat(process.env.HAWK_CONFLICT_THRESHOLD || "0.6");
 var ENTITY_DEDUP_THRESHOLD = parseFloat(process.env.HAWK_ENTITY_DEDUP_THRESHOLD || "0.75");
 var ENTITY_DEDUP_SESSION_WINDOW = parseInt(process.env.HAWK_ENTITY_DEDUP_SESSION_WINDOW || "10", 10);
+var TIER_PERMANENT_MIN_SCORE = parseFloat(process.env.HAWK_TIER_PERMANENT_MIN_SCORE || "0.85");
+var TIER_STABLE_MIN_SCORE = parseFloat(process.env.HAWK_TIER_STABLE_MIN_SCORE || "0.6");
+var TIER_DECAY_MIN_SCORE = parseFloat(process.env.HAWK_TIER_DECAY_MIN_SCORE || "0.3");
+var RECENCY_HALF_LIFE_MS = parseFloat(process.env.HAWK_RECENCY_HALF_LIFE_MS || String(30 * 24 * 60 * 60 * 1e3));
+var WEIGHT_BASE = parseFloat(process.env.HAWK_WEIGHT_BASE || "0.4");
+var WEIGHT_USEFULNESS = parseFloat(process.env.HAWK_WEIGHT_USEFULNESS || "0.3");
+var WEIGHT_RECENCY = parseFloat(process.env.HAWK_WEIGHT_RECENCY || "0.2");
+var ACCESS_BONUS_MAX = parseFloat(process.env.HAWK_ACCESS_BONUS_MAX || "0.1");
 
 // src/config/env.ts
 function getEnvOverrides() {
@@ -3084,7 +3093,14 @@ var LanceDBAdapter = class {
           access_count: 0,
           last_accessed_at: Date.now(),
           metadata: "{}",
-          source_type: "text"
+          source_type: "text",
+          name: "",
+          description: "",
+          drift_note: null,
+          drift_detected_at: null,
+          last_used_at: 0,
+          usefulness_score: 0.5,
+          recall_count: 0
         });
         const table = makeArrowTable([sampleRow]);
         this.table = await this.db.createTable(TABLE_NAME, table);
@@ -3106,7 +3122,14 @@ var LanceDBAdapter = class {
             { name: "updated_at", type: { type: "int64" } },
             { name: "scope_mem", type: { type: "utf8" } },
             { name: "importance_override", type: { type: "float" } },
-            { name: "cold_start_until", type: { type: "int64" } }
+            { name: "cold_start_until", type: { type: "int64" } },
+            { name: "name", type: { type: "utf8" } },
+            { name: "description", type: { type: "utf8" } },
+            { name: "drift_note", type: { type: "utf8" } },
+            { name: "drift_detected_at", type: { type: "int64" } },
+            { name: "last_used_at", type: { type: "int64" } },
+            { name: "usefulness_score", type: { type: "float" } },
+            { name: "recall_count", type: { type: "int32" } }
           ]);
         } catch (_) {
         }
@@ -3146,7 +3169,12 @@ var LanceDBAdapter = class {
       importance_override: data.importance_override,
       cold_start_until: data.cold_start_until !== null ? BigInt(data.cold_start_until) : null,
       metadata: data.metadata,
-      source_type: data.source_type
+      source_type: data.source_type,
+      drift_note: data.drift_note ?? null,
+      drift_detected_at: data.drift_detected_at !== null ? BigInt(data.drift_detected_at) : null,
+      last_used_at: data.last_used_at != null ? BigInt(data.last_used_at) : null,
+      usefulness_score: data.usefulness_score ?? null,
+      recall_count: data.recall_count ?? 0
     };
   }
   computeEffectiveReliability(base, verificationCount, lastVerifiedAt, correctionCount) {
@@ -3162,6 +3190,80 @@ var LanceDBAdapter = class {
     const correctionPenalty = Math.pow(CORRECTION_PENALTY_MULTIPLIER, correctionCount);
     const effective = base * recencyFactor * confirmBoost * correctionPenalty;
     return Math.max(0, Math.min(1, effective));
+  }
+  /**
+   * Clamp helper.
+   */
+  clamp(val, min, max) {
+    return Math.max(min, Math.min(max, val));
+  }
+  /**
+   * Value-driven importance score — single source of truth for memory "health".
+   * Combines base importance, recency, usefulness, and recall frequency.
+   *
+   * score = base*0.4 + usefulness*0.3 + recency*0.2 + accessBonus
+   * where accessBonus = min(log1p(recall_count)*0.05, 0.1)
+   */
+  computeEffectiveImportance(memory) {
+    const {
+      importance,
+      last_used_at,
+      usefulness_score,
+      recall_count
+    } = memory;
+    const base = importance ?? 0.5;
+    const recency = last_used_at ? Math.exp(-(Date.now() - last_used_at) / (RECENCY_HALF_LIFE_MS / Math.LN2)) : 0;
+    const usefulness = usefulness_score ?? 0.5;
+    const accessBonus = Math.min(Math.log1p(recall_count ?? 0) * 0.05, ACCESS_BONUS_MAX);
+    const score = base * WEIGHT_BASE + usefulness * WEIGHT_USEFULNESS + recency * WEIGHT_RECENCY + accessBonus;
+    return this.clamp(score, 0, 1);
+  }
+  /**
+   * Recompute the tier for a memory based on its effective importance score.
+   */
+  recomputeTier(memory) {
+    const score = this.computeEffectiveImportance(memory);
+    if (score >= TIER_PERMANENT_MIN_SCORE && (memory.recall_count ?? 0) >= 3) {
+      return "permanent";
+    }
+    if (score >= TIER_STABLE_MIN_SCORE) {
+      return "stable";
+    }
+    if (score >= TIER_DECAY_MIN_SCORE) {
+      return "decay";
+    }
+    return "archived";
+  }
+  /**
+   * Run tier maintenance at startup: recompute effective importance and tier
+   * for all memories. Tier changes are persisted back to the DB.
+   * Called once per startup (not on every access) for performance.
+   */
+  async runTierMaintenance() {
+    if (!this.table) await this.init();
+    const memories = await this.getAllMemories();
+    let updated = 0;
+    for (const memory of memories) {
+      if (memory.locked) continue;
+      const newScore = this.computeEffectiveImportance(memory);
+      const oldTier = memory.scope;
+      const newTier = this.recomputeTier(memory);
+      if (oldTier !== newTier || Math.abs(memory.importance - newScore) > 1e-3) {
+        try {
+          await this.table.update(
+            {
+              scope: newTier,
+              importance: String(newScore),
+              updated_at: String(Date.now())
+            },
+            { where: `id = '${memory.id.replace(/'/g, "''")}'` }
+          );
+          updated++;
+        } catch {
+        }
+      }
+    }
+    return { updated };
   }
   _rowToMemory(r) {
     const correctionHistory = typeof r.correction_history === "string" ? JSON.parse(r.correction_history || "[]") : r.correction_history || [];
@@ -3184,11 +3286,18 @@ var LanceDBAdapter = class {
       sessionId: r.session_id ?? null,
       createdAt: Number(r.created_at ?? Date.now()),
       updatedAt: Number(r.updated_at ?? Date.now()),
-      scope: r.scope_mem ?? "personal",
+      scope: r.scope ?? r.scope_mem ?? "personal",
       importanceOverride: r.importance_override ?? 1,
       coldStartUntil: r.cold_start_until !== null ? Number(r.cold_start_until) : null,
       metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata || "{}") : r.metadata || {},
-      source_type: r.source_type || "text"
+      source_type: r.source_type || "text",
+      name: r.name ?? "",
+      description: r.description ?? "",
+      driftNote: r.drift_note ?? null,
+      driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
+      last_used_at: Number(r.last_used_at ?? 0),
+      usefulness_score: r.usefulness_score ?? 0.5,
+      recall_count: r.recall_count ?? 0
     };
   }
   _rowToRetrieved(r, score, matchReason) {
@@ -3216,10 +3325,13 @@ var LanceDBAdapter = class {
       sessionId: r.session_id ?? null,
       createdAt: Number(r.created_at ?? Date.now()),
       updatedAt: Number(r.updated_at ?? Date.now()),
-      scope: r.scope_mem ?? "personal",
+      scope: r.scope ?? r.scope_mem ?? "personal",
       importanceOverride: r.importance_override ?? 1,
       coldStartUntil: r.cold_start_until !== null ? Number(r.cold_start_until) : null,
-      matchReason
+      matchReason,
+      last_used_at: r.last_used_at !== null ? Number(r.last_used_at) : null,
+      usefulness_score: r.usefulness_score ?? null,
+      recall_count: r.recall_count ?? 0
     };
   }
   // ─── MemoryStore Interface Implementation ───────────────────────────────────
@@ -3227,11 +3339,13 @@ var LanceDBAdapter = class {
     if (!this.table) await this.init();
     const now = Date.now();
     const correctionHistory = entry.correctionHistory ?? [];
-    const scope2 = entry.scope ?? "personal";
+    const scope2 = entry.scope_mem ?? entry.scope ?? "personal";
     const coldStartUntil = entry.coldStartUntil ?? now + COLD_START_GRACE_DAYS * 864e5;
     const row = this._makeRow({
       id: entry.id,
       text: entry.text,
+      name: entry.name || "",
+      description: entry.description || "",
       vector: entry.vector,
       category: entry.category,
       scope: entry.scope ?? "global",
@@ -3253,7 +3367,12 @@ var LanceDBAdapter = class {
       importance_override: entry.importanceOverride ?? 1,
       cold_start_until: coldStartUntil,
       metadata: JSON.stringify(entry.metadata || {}),
-      source_type: entry.source_type || "text"
+      source_type: entry.source_type || "text",
+      drift_note: entry.driftNote || null,
+      drift_detected_at: entry.driftDetectedAt || null,
+      last_used_at: entry.last_used_at ?? null,
+      usefulness_score: entry.usefulness_score ?? null,
+      recall_count: entry.recall_count ?? 0
     });
     await this.table.add([row]);
   }
@@ -3266,12 +3385,16 @@ var LanceDBAdapter = class {
       const updated = {
         ...existing,
         text: fields.text ?? existing.text,
+        name: fields.name ?? existing.name,
+        description: fields.description ?? existing.description,
         category: fields.category ?? existing.category,
         scope: fields.scope ?? existing.scope,
         importance: fields.importance ?? existing.importance,
         importanceOverride: fields.importanceOverride ?? existing.importanceOverride,
         updatedAt: Date.now(),
-        vector: existing.vector
+        vector: existing.vector,
+        driftNote: fields.driftNote ?? existing.driftNote,
+        driftDetectedAt: fields.driftDetectedAt ?? existing.driftDetectedAt
       };
       await this.store(updated, existing.sessionId ?? void 0);
       return true;
@@ -3412,8 +3535,15 @@ var LanceDBAdapter = class {
   async incrementAccess(id) {
     try {
       const current = await this._getAccessCount(id);
+      const now = Date.now();
       await this.table.update(
-        { access_count: String(current + 1), last_accessed_at: String(Date.now()) },
+        {
+          access_count: String(current + 1),
+          last_accessed_at: String(now),
+          // Value-driven: track recall for tier computation
+          last_used_at: String(now),
+          recall_count: String(current + 1)
+        },
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch {
@@ -3422,16 +3552,6 @@ var LanceDBAdapter = class {
   async decay() {
     if (!this.table) await this.init();
     const ARCHIVE_TTL_DAYS = 180;
-    const IMPORTANCE_THRESHOLD_LOW = 0.3;
-    const IMPORTANCE_THRESHOLD_HIGH = 0.8;
-    const LAYER_THRESHOLDS = { working: 0, short: 3, long: 10, archive: 100 };
-    const LAYERS = ["working", "short", "long", "archive"];
-    function computeLayer(importance, accessCount) {
-      if (accessCount >= LAYER_THRESHOLDS.long || importance >= IMPORTANCE_THRESHOLD_HIGH) return "long";
-      if (accessCount >= LAYER_THRESHOLDS.short || importance >= IMPORTANCE_THRESHOLD_HIGH * 0.75) return "short";
-      if (importance < IMPORTANCE_THRESHOLD_LOW) return "archive";
-      return "working";
-    }
     function getDecayMultiplier(reliability) {
       if (reliability >= 0.7) return DECAY_RATE_HIGH_RELIABILITY;
       if (reliability >= 0.4) return DECAY_RATE_MEDIUM_RELIABILITY;
@@ -3461,7 +3581,7 @@ var LanceDBAdapter = class {
         continue;
       }
       const daysIdle = Math.max(0, Math.floor((now - m.lastAccessedAt) / 864e5));
-      if (m.scope === "archive") {
+      if (m.scope === "archived" || m.scope === "archive") {
         if (daysIdle > ARCHIVE_TTL_DAYS) {
           try {
             await this.table.delete(`id = '${m.id.replace(/'/g, "''")}'`);
@@ -3475,17 +3595,18 @@ var LanceDBAdapter = class {
         const decayMultiplier = getDecayMultiplier(m.reliability);
         const effectiveDays = Math.ceil(daysIdle * decayMultiplier);
         const newImportance = m.importance * Math.pow(0.95, effectiveDays);
-        const newLayer = computeLayer(newImportance, m.accessCount);
-        if (LAYERS.indexOf(newLayer) < LAYERS.indexOf(m.scope)) {
+        const prospectiveMem = { ...m, importance: newImportance };
+        const newTier = this.recomputeTier(prospectiveMem);
+        if (newTier !== m.scope) {
           try {
             await this.table.update(
-              { importance: String(newImportance), scope: newLayer },
+              { importance: String(newImportance), scope: newTier, updated_at: String(Date.now()) },
               { where: `id = '${m.id.replace(/'/g, "''")}'` }
             );
             updated++;
           } catch {
           }
-        } else if (newImportance !== m.importance) {
+        } else if (Math.abs(newImportance - m.importance) > 1e-3) {
           try {
             await this.table.update(
               { importance: String(newImportance) },
@@ -3591,7 +3712,14 @@ var LanceDBAdapter = class {
           createdAt: Number(r.created_at ?? Date.now()),
           updatedAt: Number(r.updated_at ?? Date.now()),
           metadata: JSON.parse(r.metadata || "{}"),
-          source_type: r.source_type || "text"
+          source_type: r.source_type || "text",
+          name: r.name ?? "",
+          description: r.description ?? "",
+          driftNote: r.drift_note ?? null,
+          driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
+          last_used_at: Number(r.last_used_at ?? 0),
+          usefulness_score: r.usefulness_score ?? 0.5,
+          recall_count: r.recall_count ?? 0
         });
       }
     } catch {
@@ -3681,6 +3809,66 @@ var LanceDBAdapter = class {
     const rows = await this.table.query().where(`id = '${id.replace(/'/g, "''")}'`).limit(1).toArray();
     return rows.length ? Number(rows[0].access_count || 0) : 0;
   }
+  // ─── Feedback Loop ─────────────────────────────────────────────────────────────
+  /** Clamp a usefulness score change based on rating */
+  _clampUsefulness(current, rating) {
+    const base = current ?? 0.5;
+    if (rating === "neutral") return base;
+    if (rating === "helpful") return Math.min(1, base + 0.1);
+    return Math.max(0, base - 0.2);
+  }
+  async rateMemory(id, rating, _sessionId) {
+    if (!this.table) await this.init();
+    const mem = await this.getById(id);
+    if (!mem) return;
+    const now = Date.now();
+    const newUsefulness = this._clampUsefulness(mem.usefulness_score, rating);
+    const newRecallCount = (mem.recall_count ?? 0) + 1;
+    try {
+      await this.table.update(
+        {
+          last_used_at: String(now),
+          usefulness_score: String(newUsefulness),
+          recall_count: String(newRecallCount),
+          updated_at: String(now)
+        },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
+    } catch (e) {
+      console.warn("[hawk-bridge] rateMemory update failed:", e);
+      return;
+    }
+    if (rating === "harmful") {
+      await this.demoteMemory(id);
+    } else if (rating === "helpful") {
+      await this.incrementImportance(id, 0.05);
+    }
+  }
+  async demoteMemory(id) {
+    if (!this.table) await this.init();
+    try {
+      await this.table.update(
+        { scope: "decay", scope_mem: "decay" },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
+    } catch (e) {
+      console.warn("[hawk-bridge] demoteMemory failed:", e);
+    }
+  }
+  async incrementImportance(id, delta) {
+    if (!this.table) await this.init();
+    const mem = await this.getById(id);
+    if (!mem) return;
+    const newImportance = Math.min(1, mem.importance + delta);
+    try {
+      await this.table.update(
+        { importance: String(newImportance), updated_at: String(Date.now()) },
+        { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
+    } catch (e) {
+      console.warn("[hawk-bridge] incrementImportance failed:", e);
+    }
+  }
 };
 
 // src/store/factory.ts
@@ -3705,6 +3893,7 @@ async function getMemoryStore() {
 
 // src/hooks/hawk-decay/handler.ts
 var lastDecayRun = 0;
+var tierMaintenanceDone = false;
 var DECAY_INTERVAL_MS = 6 * 60 * 60 * 1e3;
 var decayHandler = async (event) => {
   if (event.type !== "agent" || event.action !== "heartbeat") return;
@@ -3714,6 +3903,13 @@ var decayHandler = async (event) => {
   try {
     const db = await getMemoryStore();
     await db.init();
+    if (!tierMaintenanceDone) {
+      const tierResult = await db.runTierMaintenance();
+      tierMaintenanceDone = true;
+      if (tierResult.updated > 0) {
+        console.log(`[hawk-decay] tier maintenance: updated=${tierResult.updated} memories`);
+      }
+    }
     const decayResult = await db.decay();
     global.__hawk_last_decay__ = Date.now();
     const purged = await db.purgeForgotten(FORGET_GRACE_DAYS);

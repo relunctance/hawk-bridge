@@ -8,6 +8,7 @@ import type { MemoryStore } from '../../store/interface.js';
 import { FORGET_GRACE_DAYS } from '../../constants.js';
 
 let lastDecayRun = 0;
+let tierMaintenanceDone = false;
 const DECAY_INTERVAL_MS = 6 * 60 * 60 * 1000; // minimum 6h between decay runs
 
 const decayHandler = async (event: HookEvent) => {
@@ -22,6 +23,15 @@ const decayHandler = async (event: HookEvent) => {
   try {
     const db = await getMemoryStore() as any;
     await db.init();
+
+    // Run value-driven tier maintenance once at startup (not on every heartbeat)
+    if (!tierMaintenanceDone) {
+      const tierResult = await db.runTierMaintenance();
+      tierMaintenanceDone = true;
+      if (tierResult.updated > 0) {
+        console.log(`[hawk-decay] tier maintenance: updated=${tierResult.updated} memories`);
+      }
+    }
 
     // Run importance decay + layer management
     const decayResult = await db.decay();

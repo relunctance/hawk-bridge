@@ -281,3 +281,54 @@ export const ENTITY_DEDUP_THRESHOLD = parseFloat(process.env.HAWK_ENTITY_DEDUP_T
  * Range: 1-50. Default 10.
  */
 export const ENTITY_DEDUP_SESSION_WINDOW = parseInt(process.env.HAWK_ENTITY_DEDUP_SESSION_WINDOW || '10', 10);
+
+// ─── Value-Driven Tier System ───────────────────────────────────────────────────
+
+/**
+ * Effective importance score >= this AND recall_count >= 3 → TIER_PERMANENT.
+ * Range: 0.0-1.0. Default 0.85.
+ */
+export const TIER_PERMANENT_MIN_SCORE = parseFloat(process.env.HAWK_TIER_PERMANENT_MIN_SCORE || '0.85');
+
+/**
+ * Effective importance score >= this → TIER_STABLE.
+ * Range: 0.0-1.0. Default 0.6.
+ */
+export const TIER_STABLE_MIN_SCORE = parseFloat(process.env.HAWK_TIER_STABLE_MIN_SCORE || '0.6');
+
+/**
+ * Effective importance score >= this → TIER_DECAY.
+ * Below this → TIER_ARCHIVED.
+ * Range: 0.0-1.0. Default 0.3.
+ */
+export const TIER_DECAY_MIN_SCORE = parseFloat(process.env.HAWK_TIER_DECAY_MIN_SCORE || '0.3');
+
+/**
+ * Recency half-life in milliseconds for the exponential decay in computeEffectiveImportance.
+ * Default 30 days.
+ */
+export const RECENCY_HALF_LIFE_MS = parseFloat(process.env.HAWK_RECENCY_HALF_LIFE_MS || String(30 * 24 * 60 * 60 * 1000));
+
+/**
+ * Weight of base importance in computeEffectiveImportance formula.
+ * Range: 0.0-1.0. Default 0.4.
+ */
+export const WEIGHT_BASE = parseFloat(process.env.HAWK_WEIGHT_BASE || '0.4');
+
+/**
+ * Weight of usefulness_score in computeEffectiveImportance formula.
+ * Range: 0.0-1.0. Default 0.3.
+ */
+export const WEIGHT_USEFULNESS = parseFloat(process.env.HAWK_WEIGHT_USEFULNESS || '0.3');
+
+/**
+ * Weight of recency in computeEffectiveImportance formula.
+ * Range: 0.0-1.0. Default 0.2.
+ */
+export const WEIGHT_RECENCY = parseFloat(process.env.HAWK_WEIGHT_RECENCY || '0.2');
+
+/**
+ * Maximum bonus from recall_count in computeEffectiveImportance (log scale).
+ * Range: 0.0-1.0. Default 0.1.
+ */
+export const ACCESS_BONUS_MAX = parseFloat(process.env.HAWK_ACCESS_BONUS_MAX || '0.1');
