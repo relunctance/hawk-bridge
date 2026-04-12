@@ -4,6 +4,12 @@
 
 hawk-bridge 是自我进化闭环的 L0 记忆层。需要补充与 L5 soul-force 的闭环接口，以及作为 L0→L1 触发层的能力。
 
+**与 autoself 的关系**：
+- autoself（7层自我进化架构）= hawk-bridge + auto-evolve + soul-force + qujin-editor 等组件
+- hawk-bridge 位于 autoself 的 **L0 记忆层**，context-hawk 是其底层 Python 记忆引擎
+- 100年架构是 context-hawk v2.0 的核心特性，为 autoself 提供**永久可靠的记忆存储**
+- L5 soul-force 的进化结果写回 hawk-bridge → 影响 future recall → 形成闭环
+
 ---
 
 ## 分布式记忆系统路线图（v2.0 目标）
@@ -675,6 +681,139 @@ def list_pending_l0_confirmations():
 - `_move_to_hot()` — 桩实现，只更新字段（未来加 S3 下载）
 
 **向后兼容**：所有新字段有 DEFAULT 值，现有 store()/recall()/access() 接口不变。
+
+---
+
+### 100年架构扩展性方案：Tier Registry 模式
+
+> **核心问题**：当前 L0-L4 是固定的 5 层，未来 ToB 需要更多层级（如 Project/Team/Compliance）怎么办？
+>
+> **解决思路**：三个维度正交分解 + Tier Registry 动态注册。
+
+#### 当前设计的问题
+
+当前设计把三个独立维度耦合在一起：
+
+```
+tier = "L0"  ← 层级（晋升顺序）
+         + storage = "archived"  ← 存储位置（隐含）
+         + permanence = "permanent"  ← 生命周期（隐含）
+```
+
+**问题**：
+- ToB 需要 "Project 层"（3年）？需要改代码
+- permanence_policy 需要动态调整？和 tier 耦合
+- 多租户每个租户想要不同层级？无法隔离
+
+#### 改进设计：正交三维度
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   MemoryItem                         │
+├─────────────────┬──────────────────┬────────────────┤
+│  tier (晋升顺序)  │ permanence_policy │ storage_policy │
+│  L0 / L1 / P / T │ permanent/conditional │ hot/cold/glacier │
+└─────────────────┴──────────────────┴────────────────┘
+       ↑                   ↑                    ↑
+   决定谁能          决定 TTL            决定存储介质
+   晋升到谁           和删除规则            和费用
+```
+
+**三维度完全解耦**：改任何一个不需要影响其他两个。
+
+#### TierRegistry：动态注册，可随时加新层
+
+```python
+# 不再 hardcode L0-L4，从数据库动态加载
+class TierRegistry:
+    """可扩展的层级注册表"""
+    _tiers: Dict[str, TierConfig] = {}
+
+    @classmethod
+    def register(cls, tier_id: str, config: TierConfig):
+        """
+        动态注册新层级。
+        升级时只需要在 memory_tiers 表插入新行，调用 register() 即可。
+        不需要改一行代码。
+        """
+        cls._tiers[tier_id] = config
+
+    @classmethod
+    def get(cls, tier_id: str) -> TierConfig:
+        return cls._tiers[tier_id]
+
+    @classmethod
+    def list_tiers(cls) -> List[str]:
+        """按优先级排序返回所有层级"""
+        return sorted(cls._tiers.keys(), key=lambda t: cls._tiers[t].priority)
+
+@dataclass
+class TierConfig:
+    tier_id: str           # "L0", "P" (Project), "C" (Compliance)
+    name: str              # "Constitutional", "Project"
+    priority: int          # 越小越高（L0=10, L1=20, P=35...）
+    min_years: int        # 最低保留年限
+    permanence_default: str  # 默认 permanence_policy
+    storage_default: str  # 默认 storage_policy
+    cold_after_days: int  # 多少天后迁冷（None=不迁）
+    promotion_rules: List[PromotionRule]  # 晋升条件
+
+# memory_tiers 表重新设计（可插拔）
+CREATE TABLE memory_tiers (
+    tier_id          TEXT PRIMARY KEY,
+    name             TEXT NOT NULL,
+    priority         INTEGER NOT NULL,   -- 越小越高（L0=10, L1=20...）
+    min_years        INTEGER NOT NULL,
+    permanence_default TEXT,
+    storage_default   TEXT,
+    cold_after_days  INTEGER,
+    promotion_rules   TEXT,   -- JSON，晋升条件
+    created_at        REAL NOT NULL
+);
+```
+
+#### ToB 扩展示例
+
+```sql
+-- 个人层（L0-L4，维持现状）
+INSERT INTO memory_tiers VALUES
+  ("L0", "Constitutional", 10, 100, "permanent", "archived", NULL, ...),
+  ("L1", "Lifetime", 20, 50, "permanent", "cold", NULL, ...),
+  ("L2", "Period", 30, 30, "conditional", "cold", 365*20, ...),
+  ("L3", "Event", 40, 10, "conditional", "hot", 365*5, ...),
+  ("L4", "Working", 50, 0, "ttl_1d", "hot", NULL, ...);
+
+-- ToB 企业层（动态扩展，不需要改代码）
+INSERT INTO memory_tiers VALUES
+  ("P", "Project", 35, 3, "conditional_3y", "cold_ia", 365*2,
+   '{"criteria": [{"field": "category", "op": "=", "value": "project"}]}'),
+  ("T", "Team", 25, 5, "conditional_5y", "cold", 365*3,
+   '{"criteria": [{"field": "team_votes", "op": ">=", "value": 3}]}'),
+  ("C", "Compliance", 15, 10, "permanent", "cold_glacier", NULL,
+   '{"criteria": [{"field": "tag", "op": "=", "value": "compliance"}]}');
+```
+
+#### 扩展性对比
+
+| 维度 | 当前设计 | 改进后 |
+|------|---------|--------|
+| 加新层级 | 改代码 + 改 schema | 插表一行 + registry.register() |
+| 改存储策略 | 硬编码在 tier 里 | permanence_policy 独立配置 |
+| 多租户 | tenant_id 字段 | tenant_id + 每个租户独立 tier 规则 |
+| ToB 行业层 | 不支持 | 动态注册 P/C/T 等新层级 |
+| 迁移成本 | 可能要改 schema | 插表行 + 调 registry |
+
+#### 实施策略
+
+**立即可做（不破坏兼容性）**：
+1. 把 `TIERS = ["L0", "L1", "L2", "L3", "L4"]` 改为从 `memory_tiers` 表加载
+2. `TierRegistry` 从表加载所有层级，不 hardcode
+3. promotion 逻辑通过 `priority` 比较，不依赖具体 tier_id
+
+**未来可做（ToB 需要时）**：
+1. 在 `memory_tiers` 表插入新行（Project / Team / Compliance）
+2. 调用 `TierRegistry.register("P", TierConfig(...))`
+3. 晋升逻辑自动包含新层级
 
 ---
 
