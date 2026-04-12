@@ -192,7 +192,9 @@ Session（持久化磁盘）
 │                   ↓                                                │
 │         ┌───────────────────────┐                             │
 │         │  context-hawk (Python) │  ← 提取 / 评分 / 衰减     │
-│         │  MemoryManager + Extractor │                       │
+│         │  MemoryManager         │                             │
+│         │  SQLite WAL 存储        │ ← v2.0: 替代 JSON 文件   │
+│         │  + VectorRetriever     │                             │
 │         └───────────────────────┘                             │
 │                                                                   │
 └─────────────────────────────────────────────────────────────────┘
@@ -667,12 +669,31 @@ hawk-bridge/
 
 ## 🤝 与 context-hawk 的关系
 
+hawk-bridge 和 context-hawk 是**两个独立的 GitHub 仓库**，协同工作：
+
+```
+ hawk-bridge (TypeScript 插件)         context-hawk (Python 库)
+┌──────────────────────────┐            ┌─────────────────────────────┐
+│  TypeScript OpenClaw      │  spawn()    │  Python MemoryManager       │
+│  Hook 处理器               │ ────────→  │  SQLite WAL 存储           │
+│  (hawk-recall 等)        │  subprocess │  + VectorRetriever         │
+└──────────────────────────┘            └─────────────────────────────┘
+        ↑ 决定*何时*行动                       ↑ 处理*如何*执行
+```
+
 | | hawk-bridge | context-hawk |
 |---|---|---|
-| **角色** | OpenClaw Hook 桥接器 | Python 记忆库 |
-| **职责** | 触发 Hook、管理生命周期 | 记忆提取、评分、衰减 |
-| **接口** | TypeScript Hooks → LanceDB | Python `MemoryManager`、`VectorRetriever` |
-| **安装方式** | npm 包、系统依赖 | 克隆到 `~/.openclaw/workspace/` |
+| **GitHub** | `relunctance/hawk-bridge` | `relunctance/context-hawk` |
+| **语言** | TypeScript | Python |
+| **角色** | OpenClaw Hook 桥接器（触发 Hook、管理生命周期） | Python 记忆引擎（存储、检索、提取） |
+| **存储** | 无（纯编排层） | SQLite WAL + LanceDB 向量 |
+| **调用方式** | `python3 -c "from hawk.memory import MemoryManager"` | 返回结果给 hawk-bridge |
+| **安装方式** | npm 包 | 克隆到 `~/.openclaw/workspace/context-hawk` |
+
+**核心原则**：hawk-bridge 不直接操作存储，所有读写都通过 context-hawk 的 Python API。这意味着：
+- **存储升级对 hawk-bridge 透明** — 例如从 JSON 切换到 SQLite 完全不需要改动 hawk-bridge
+- **100年架构完全在 context-hawk** — tier/permanence_policy/storage_tier 字段在 Python 层计算，TypeScript 只看到最终结果
+- **迁移无需任何 hawk-bridge 改动** — Python 接口保持兼容即可
 
 **两者协同**：hawk-bridge 决定"*何时*行动"，context-hawk 负责"*如何*执行"。
 

@@ -191,7 +191,9 @@ Session (persistent, on disk)
 │                   ↓                                               │
 │         ┌───────────────────────┐                                │
 │         │  context-hawk (Python) │  ← Extraction / scoring     │
-│         │  MemoryManager + Extractor │   / decay               │
+│         │  MemoryManager         │                                │
+│         │  SQLite WAL storage   │  ← v2.0: replaces JSON file  │
+│         │  + VectorRetriever   │                                │
 │         └───────────────────────┘                                │
 │                                                               │
 └─────────────────────────────────────────────────────────────────┘
@@ -672,12 +674,31 @@ hawk-bridge/
 
 ## 🤝 Relationship with context-hawk
 
+hawk-bridge and context-hawk are **two independent GitHub repos** that work together:
+
+```
+ hawk-bridge (TypeScript plugin)         context-hawk (Python library)
+┌──────────────────────────┐            ┌─────────────────────────────┐
+│  TypeScript OpenClaw    │  spawn()    │  Python MemoryManager       │
+│  Hook handlers          │ ────────→  │  SQLite WAL storage        │
+│  (hawk-recall, etc.)   │  subprocess │  + VectorRetriever         │
+└──────────────────────────┘            └─────────────────────────────┘
+        ↑ decides *when*                         ↑ handles *how*
+```
+
 | | hawk-bridge | context-hawk |
 |---|---|---|
-| **Role** | OpenClaw hook bridge | Python memory library |
-| **What it does** | Triggers hooks, manages lifecycle | Memory extraction, scoring, decay |
-| **Interface** | TypeScript hooks → LanceDB | Python `MemoryManager`, `VectorRetriever` |
-| **Installs** | npm packages, system deps | Cloned into `~/.openclaw/workspace/` |
+| **GitHub** | `relunctance/hawk-bridge` | `relunctance/context-hawk` |
+| **Language** | TypeScript | Python |
+| **Role** | OpenClaw hook bridge (triggers hooks, manages lifecycle) | Python memory engine (storage, retrieval, extraction) |
+| **Storage** | N/A (pure orchestration) | SQLite WAL + LanceDB vectors |
+| **What it calls** | `python3 -c "from hawk.memory import MemoryManager"` | Returns results to hawk-bridge |
+| **Installs** | npm packages | Cloned into `~/.openclaw/workspace/context-hawk` |
+
+**Key principle**: hawk-bridge never touches storage directly. All reads/writes go through context-hawk's Python API. This means:
+- **Storage upgrades are transparent to hawk-bridge** — e.g. switching from JSON to SQLite doesn't require any hawk-bridge changes
+- **100-year architecture lives entirely in context-hawk** — tier/permanence_policy/storage_tier fields are computed in Python, TypeScript only sees the result
+- **Migrations need zero hawk-bridge changes** — the Python interface stays compatible
 
 **They work together**: hawk-bridge decides *when* to act, context-hawk handles *how*.
 
