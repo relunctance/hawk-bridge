@@ -254,6 +254,94 @@ That's it. The installer handles:
 
 **Supported distros**: Ubuntu · Debian · Fedora · CentOS · Arch · Alpine · openSUSE
 
+---
+
+## 🦅 Quick Commands
+
+All commands run from the `hawk-bridge` workspace directory:
+```bash
+cd ~/.openclaw/workspace/hawk-bridge
+```
+
+### 📊 Statistics & Diagnostics
+
+```bash
+# 🦅 Statistics — show memory count, category/scope/reliability distribution
+node dist/cli/doctor.js
+# or
+hawk doctor
+
+# 📊 Statistics — show memory count, category/scope/reliability distribution
+node dist/cli/doctor.js --stats
+```
+
+### 📖 Read & Write Memories
+
+```bash
+# Write a memory directly
+node dist/cli/write.js --text "team decision: use Redis for caching" --category decision --importance 0.8 --source user-import
+
+# Read memories by source (e.g. evolution-success, user-feedback)
+node dist/cli/read-source.js --source evolution-success --source evolution-failure --limit 20
+```
+
+### 🔍 Query Memories (Natural Language)
+
+```bash
+# Search memories (requires embedding configured)
+ hawk recall "what did we decide about the architecture"
+
+# Compare two memories by ID
+ hawk对比 1 2
+```
+
+### ✏️ Feedback & Correction
+
+```bash
+# ❌ Mark memory N as unreliable (reliability -5%)
+ hawk否认 3
+
+# ✅ Mark memory N as correct/reliable (reliability stays, verification_count +1)
+ hawk确认 3
+
+# ✏️ Correct memory N with new text
+ hawk纠正 3 新修正的内容
+
+# 🔍 Scan for expired/stale memories
+ hawk过期
+```
+
+### 🗑️ Maintenance
+
+```bash
+# Export all memories to JSON
+ hawk导出
+
+# Clear ALL memories (⚠️ irreversible)
+ hawk清空
+
+# Clear expired/locked memories
+ hawk清理
+
+# Lock memory N (prevents auto-deletion)
+ hawk锁定 5
+
+# Unlock memory N
+ hawk解锁 5
+```
+
+### ⚡ Batch Operations
+
+```bash
+# Lock all memories
+ hawk锁定all
+
+# Unlock all memories
+ hawk解锁all
+```
+
+---
+
 ## 🔧 Manual Install (per Distro)
 
 If you prefer to install manually instead of using the one-command script:

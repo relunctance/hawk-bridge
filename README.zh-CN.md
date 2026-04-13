@@ -270,6 +270,92 @@ openclaw plugins install /tmp/hawk-bridge
 
 ---
 
+## 🦅 快速命令
+
+所有命令在 `hawk-bridge` 工作目录下执行：
+```bash
+cd ~/.openclaw/workspace/hawk-bridge
+```
+
+### 📊 统计与诊断
+
+```bash
+# 🦅 诊断 — 检查安装状态、配置、连接
+node dist/cli/doctor.js
+# 或简写
+hawk doctor
+
+# 📊 统计 — 显示记忆数量、分类/来源/可信度分布
+node dist/cli/doctor.js --stats
+```
+
+### 📖 读写记忆
+
+```bash
+# 写入一条记忆
+node dist/cli/write.js --text "团队决策：使用 Redis 做缓存" --category decision --importance 0.8 --source user-import
+
+# 按来源读取记忆（如 evolution-success、user-feedback）
+node dist/cli/read-source.js --source evolution-success --source evolution-failure --limit 20
+```
+
+### 🔍 查询记忆
+
+```bash
+# 语义搜索记忆（需要配置 embedding）
+ hawk recall "我们关于架构做了什么决定"
+
+# 对比两条记忆
+ hawk对比 1 2
+```
+
+### ✏️ 反馈与纠正
+
+```bash
+# ❌ 标记记忆 N 不可靠（可信度 -5%）
+ hawk否认 3
+
+# ✅ 标记记忆 N 正确（可信度不变，验证计数 +1）
+ hawk确认 3
+
+# ✏️ 纠正记忆 N 的内容
+ hawk纠正 3 修正后的新内容
+
+# 🔍 扫描过期/陈旧记忆
+ hawk过期
+```
+
+### 🗑️ 维护操作
+
+```bash
+# 导出所有记忆为 JSON
+ hawk导出
+
+# 清空所有记忆（⚠️ 不可逆）
+ hawk清空
+
+# 清理过期/锁定记忆
+ hawk清理
+
+# 锁定记忆 N（防止自动删除）
+ hawk锁定 5
+
+# 解锁记忆 N
+ hawk解锁 5
+```
+
+### ⚡ 批量操作
+
+```bash
+# 锁定所有记忆
+ hawk锁定all
+
+# 解锁所有记忆
+ hawk解锁all
+```
+
+---
+
 ## 🔧 各系统手动安装
 
 如果你不想用一键脚本，可以手动逐步安装：
