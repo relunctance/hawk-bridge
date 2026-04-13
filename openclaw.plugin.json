@@ -15,7 +15,8 @@
       "name": "hawk-capture",
       "events": [
         "message:sent",
-        "message:received"
+        "message:received",
+        "session:compact:after"
       ],
       "description": "Auto-extract and store memories from both inbound user messages and outbound agent responses"
     },
