@@ -37,8 +37,29 @@
  *   node dist/cli/verify.js                    # 验证并回写
  *   node dist/cli/verify.js --dry-run          # 只显示不写入
  *   node dist/cli/verify.js --min-confidence 0.8  # 只处理高置信度
- *   node dist/cli/verify.js --soul-dir ~/.soulforge-main  # 指定 soul-force 目录
+
+/**
+ * Safe JSON parse — wraps JSON.parse in try-catch to prevent crashes on malformed input.
+ * Returns null on error instead of throwing.
  */
+function safeParseJSON<T>(raw: string, context: string): T | null {
+  try {
+    return JSON.parse(raw) as T;
+  } catch (e: any) {
+    console.warn(`[hawk-verify] Failed to parse ${context}: ${e.message}`);
+    return null;
+  }
+}
+
+function safeReadJSON<T>(filePath: string, context: string): T | null {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    return safeParseJSON<T>(raw, context);
+  } catch (e: any) {
+    console.warn(`[hawk-verify] Failed to read ${context} at '${filePath}': ${e.message}`);
+    return null;
+  }
+}
 
 import { HawkDB } from '../lancedb.js';
 import * as fs from 'fs';
@@ -54,11 +75,27 @@ function getArg(arg: string, fallback: string): string {
 
 function hasFlag(flag: string): boolean { return ARGV.includes(flag); }
 
+/**
+ * Resolve a path safely, rejecting path-traversal attacks (../ etc.).
+ * Returns resolved path if it's under `base`, otherwise exits with error.
+ */
+function safeResolve(given: string, base: string): string {
+  const resolved = path.resolve(given);
+  const baseResolved = path.resolve(base);
+  // Normalize both, ensure resolved starts with base
+  if (!resolved.startsWith(baseResolved + path.sep) && resolved !== baseResolved) {
+    console.error(`[hawk-verify] SECURITY: Path '${given}' escapes base directory '${baseResolved}' — rejecting.`);
+    process.exit(1);
+  }
+  return resolved;
+}
+
 const DRY_RUN     = hasFlag('--dry-run');
 const MIN_CONF    = parseFloat(getArg('--min-confidence', '0')) || 0;
-const SOUL_DIR    = path.resolve(getArg('--soul-dir', path.join(homedir(), '.soulforge-main')));
+const SOUL_DIR_DEFAULT = path.join(homedir(), '.soulforge-main');
+const SOUL_DIR    = safeResolve(getArg('--soul-dir', SOUL_DIR_DEFAULT), SOUL_DIR_DEFAULT);
 const BOOST       = parseFloat(getArg('--boost', '0.15'));  // reliability 每次验证通过 +0.15
-const SOUL_CONFIG = path.join(SOUL_DIR, '.soulforgerc.json');
+const SOUL_CONFIG = safeResolve(path.join(SOUL_DIR, '.soulforgerc.json'), SOUL_DIR);
 
 // ─── SoulForge Output Parser ──────────────────────────────────────────────────
 
@@ -93,24 +130,18 @@ function findSoulReviewFiles(): string[] {
 }
 
 function parseSoulReview(filePath: string): SoulReviewOutput | null {
-  try {
-    const content = fs.readFileSync(filePath, 'utf-8');
-    const data = JSON.parse(content);
-    if (data.patterns && Array.isArray(data.patterns)) {
-      return data as SoulReviewOutput;
-    }
-    // Some formats store patterns differently
-    if (Array.isArray(data)) {
-      return { patterns: data as SoulPattern[] };
-    }
-    // v2.2 full format
-    if (data.patterns?.patterns) {
-      return data.patterns as SoulReviewOutput;
-    }
-    return null;
-  } catch {
-    return null;
+  const data = safeReadJSON<any>(filePath, `review file '${path.basename(filePath)}'`);
+  if (!data) return null;
+  if (data.patterns && Array.isArray(data.patterns)) {
+    return data as SoulReviewOutput;
   }
+  if (Array.isArray(data)) {
+    return { patterns: data as SoulPattern[] };
+  }
+  if (data.patterns?.patterns) {
+    return data.patterns as SoulReviewOutput;
+  }
+  return null;
 }
 
 // ─── Text Matching ────────────────────────────────────────────────────────────
@@ -167,14 +198,12 @@ async function main() {
   // Detect SoulForge directory from config
   let soulDir = SOUL_DIR;
   if (fs.existsSync(SOUL_CONFIG)) {
-    try {
-      const cfg = JSON.parse(fs.readFileSync(SOUL_CONFIG, 'utf-8'));
-      if (cfg.learnings_dir) {
-        // Learnings dir is like ~/.soulforge-main/learnings/
-        // Parent is the soulforge root
-        soulDir = path.dirname(cfg.learnings_dir);
-      }
-    } catch { /* ignore */ }
+    const cfg = safeReadJSON<any>(SOUL_CONFIG, 'SOUL_CONFIG');
+    if (cfg?.learnings_dir) {
+      // Learnings dir is like ~/.soulforge-main/learnings/
+      // Parent is the soulforge root
+      soulDir = path.dirname(cfg.learnings_dir);
+    }
   }
 
   const reviewFiles = findSoulReviewFiles();

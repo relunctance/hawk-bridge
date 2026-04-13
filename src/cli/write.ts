@@ -7,7 +7,23 @@
  *
  * Migration (re-embed all records with new dimension):
  *   HAWK_EMBEDDING_DIM=1024 node dist/cli/write.js --reinit
+
+/**
+ * Safe JSON parse — wraps JSON.parse in try-catch to prevent crashes on malformed input.
+ * Exits with error for migration-critical parses (backup), warns for optional parses (metadata).
  */
+function safeParseJSON<T>(raw: string, context: string, exitOnError = false): T | null {
+  try {
+    return JSON.parse(raw) as T;
+  } catch (e: any) {
+    if (exitOnError) {
+      console.error(`[hawk migrate] FATAL: Failed to parse ${context}: ${e.message}`);
+      process.exit(1);
+    }
+    console.warn(`[hawk write] WARNING: Failed to parse ${context}: ${e.message}`);
+    return null;
+  }
+}
 
 import * as path from 'path';
 import * as os from 'os';
@@ -109,7 +125,8 @@ async function reinit() {
     console.error(`[hawk migrate] VERIFICATION FAILED — restoring from backup`);
     try {
       const raw = await fs.readFile(backupPath, 'utf-8');
-      const backup = JSON.parse(raw);
+      const backup = safeParseJSON<{ memories: any[]; exportedAt: string }>(raw, 'backup file', true);
+      if (!backup) return; // safeParseJSON already exited
       await store.reset();
       await store.init();
       for (const mem of backup.memories) {
@@ -148,7 +165,7 @@ async function writeEntry() {
     process.exit(1);
   }
 
-  const metadata: Record<string, unknown> = metadataArg ? JSON.parse(metadataArg) : {};
+  const metadata: Record<string, unknown> = safeParseJSON<Record<string, unknown>>(metadataArg || '{}', '--metadata JSON', false) ?? {};
   const store = await getMemoryStore();
   await store.init();
 

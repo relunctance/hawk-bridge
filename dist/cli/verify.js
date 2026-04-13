@@ -4387,6 +4387,23 @@ var LanceDBAdapter = class {
 import * as fs2 from "fs";
 import * as path3 from "path";
 import { homedir as homedir3 } from "os";
+function safeParseJSON(raw, context) {
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    console.warn(`[hawk-verify] Failed to parse ${context}: ${e.message}`);
+    return null;
+  }
+}
+function safeReadJSON(filePath, context) {
+  try {
+    const raw = fs2.readFileSync(filePath, "utf-8");
+    return safeParseJSON(raw, context);
+  } catch (e) {
+    console.warn(`[hawk-verify] Failed to read ${context} at '${filePath}': ${e.message}`);
+    return null;
+  }
+}
 var ARGV = process.argv.slice(2);
 function getArg(arg, fallback) {
   const idx = ARGV.indexOf(arg);
@@ -4395,11 +4412,21 @@ function getArg(arg, fallback) {
 function hasFlag(flag) {
   return ARGV.includes(flag);
 }
+function safeResolve(given, base) {
+  const resolved = path3.resolve(given);
+  const baseResolved = path3.resolve(base);
+  if (!resolved.startsWith(baseResolved + path3.sep) && resolved !== baseResolved) {
+    console.error(`[hawk-verify] SECURITY: Path '${given}' escapes base directory '${baseResolved}' \u2014 rejecting.`);
+    process.exit(1);
+  }
+  return resolved;
+}
 var DRY_RUN = hasFlag("--dry-run");
 var MIN_CONF = parseFloat(getArg("--min-confidence", "0")) || 0;
-var SOUL_DIR = path3.resolve(getArg("--soul-dir", path3.join(homedir3(), ".soulforge-main")));
+var SOUL_DIR_DEFAULT = path3.join(homedir3(), ".soulforge-main");
+var SOUL_DIR = safeResolve(getArg("--soul-dir", SOUL_DIR_DEFAULT), SOUL_DIR_DEFAULT);
 var BOOST = parseFloat(getArg("--boost", "0.15"));
-var SOUL_CONFIG = path3.join(SOUL_DIR, ".soulforgerc.json");
+var SOUL_CONFIG = safeResolve(path3.join(SOUL_DIR, ".soulforgerc.json"), SOUL_DIR);
 function findSoulReviewFiles() {
   const reviewDir = path3.join(SOUL_DIR, "review");
   if (!fs2.existsSync(reviewDir)) return [];
@@ -4409,22 +4436,18 @@ function findSoulReviewFiles() {
   return [...files, ...interactiveFiles.slice(0, 3)];
 }
 function parseSoulReview(filePath) {
-  try {
-    const content = fs2.readFileSync(filePath, "utf-8");
-    const data = JSON.parse(content);
-    if (data.patterns && Array.isArray(data.patterns)) {
-      return data;
-    }
-    if (Array.isArray(data)) {
-      return { patterns: data };
-    }
-    if (data.patterns?.patterns) {
-      return data.patterns;
-    }
-    return null;
-  } catch {
-    return null;
+  const data = safeReadJSON(filePath, `review file '${path3.basename(filePath)}'`);
+  if (!data) return null;
+  if (data.patterns && Array.isArray(data.patterns)) {
+    return data;
   }
+  if (Array.isArray(data)) {
+    return { patterns: data };
+  }
+  if (data.patterns?.patterns) {
+    return data.patterns;
+  }
+  return null;
 }
 function extractKeywords(text) {
   const stop = /* @__PURE__ */ new Set(["\u7684", "\u4E86", "\u662F", "\u5728", "\u548C", "\u4E5F", "\u6709", "\u5C31", "\u4E0D", "\u6211", "\u4F60", "\u4ED6", "\u5979", "\u5B83", "\u4EEC", "\u8FD9", "\u90A3", "\u4E2A", "\u4E0E", "\u6216", "\u88AB", "\u4E3A", "\u4E0A", "\u4E0B", "\u6765", "\u53BB"]);
@@ -4464,12 +4487,9 @@ async function main() {
   if (DRY_RUN) console.log("[hawk-verify] DRY RUN \u2014 no changes will be written");
   let soulDir = SOUL_DIR;
   if (fs2.existsSync(SOUL_CONFIG)) {
-    try {
-      const cfg = JSON.parse(fs2.readFileSync(SOUL_CONFIG, "utf-8"));
-      if (cfg.learnings_dir) {
-        soulDir = path3.dirname(cfg.learnings_dir);
-      }
-    } catch {
+    const cfg = safeReadJSON(SOUL_CONFIG, "SOUL_CONFIG");
+    if (cfg?.learnings_dir) {
+      soulDir = path3.dirname(cfg.learnings_dir);
     }
   }
   const reviewFiles = findSoulReviewFiles();
