@@ -18,17 +18,74 @@ var __export = (target, all) => {
 var embeddings_exports = {};
 __export(embeddings_exports, {
   Embedder: () => Embedder,
-  formatRecallForContext: () => formatRecallForContext
+  formatRecallForContext: () => formatRecallForContext,
+  getProxyUrl: () => getProxyUrl,
+  setProxyUrl: () => setProxyUrl
 });
-async function fetchWithTimeout(url, init) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const resp = await fetch(url, { ...init, signal: controller.signal });
-    return resp;
-  } finally {
-    clearTimeout(timer);
+import http from "http";
+import https from "https";
+import { URL } from "url";
+import { HttpsProxyAgent } from "https-proxy-agent";
+function setProxyUrl(url) {
+  _activeProxyUrl = url;
+  _proxyAgent = null;
+}
+function getProxyUrl() {
+  return process.env.HAWK_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || _activeProxyUrl;
+}
+function getProxyAgent() {
+  const proxyUrl = getProxyUrl();
+  if (!proxyUrl) return void 0;
+  if (!_proxyAgent) {
+    _proxyAgent = new HttpsProxyAgent(proxyUrl);
   }
+  return _proxyAgent;
+}
+async function fetchWithTimeout(url, init) {
+  const parsedUrl = new URL(url);
+  const isHttps = parsedUrl.protocol === "https:";
+  const agent = getProxyAgent();
+  const body = init?.body || null;
+  return new Promise((resolve, reject) => {
+    const headers = {
+      ...init?.headers || {}
+    };
+    if (body) {
+      headers["Content-Length"] = Buffer.byteLength(body);
+    }
+    const options = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || (isHttps ? 443 : 80),
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: init?.method || "GET",
+      headers,
+      ...agent ? { agent } : {}
+    };
+    const timer = setTimeout(() => {
+      req.destroy(new Error("Fetch timeout"));
+    }, FETCH_TIMEOUT_MS);
+    const mod = isHttps ? https : http;
+    const req = mod.request(options, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {
+        clearTimeout(timer);
+        const responseBody = Buffer.concat(chunks);
+        const response = new Response(responseBody, {
+          status: res.statusCode || 0,
+          statusText: res.statusMessage || "",
+          headers: new Headers(res.headers)
+        });
+        resolve(response);
+      });
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    if (body) {
+      req.write(body);
+    }
+    req.end();
+  });
 }
 function formatRecallForContext(memories, emoji = "\u{1F985}") {
   if (!memories.length) return "";
@@ -38,11 +95,13 @@ function formatRecallForContext(memories, emoji = "\u{1F985}") {
   }
   return lines.join("\n");
 }
-var FETCH_TIMEOUT_MS, Embedder;
+var FETCH_TIMEOUT_MS, _activeProxyUrl, _proxyAgent, Embedder;
 var init_embeddings = __esm({
   "src/embeddings.ts"() {
     "use strict";
     FETCH_TIMEOUT_MS = 15e3;
+    _activeProxyUrl = process.env.HAWK_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || "";
+    _proxyAgent = null;
     Embedder = class _Embedder {
       config;
       // TTL cache: normalized_text → { vector, timestamp }
@@ -51,6 +110,9 @@ var init_embeddings = __esm({
       // 24h
       constructor(config) {
         this.config = config;
+        if (config.proxy) {
+          setProxyUrl(config.proxy);
+        }
       }
       normalizeForCache(text) {
         return text.toLowerCase().replace(/\s+/g, " ").trim();
@@ -172,7 +234,11 @@ var init_embeddings = __esm({
         const { OpenAI } = await import("openai");
         const client = new OpenAI({
           apiKey: this.config.apiKey || process.env.OPENAI_API_KEY,
-          timeout: FETCH_TIMEOUT_MS
+          baseURL: this.config.baseURL || void 0,
+          timeout: FETCH_TIMEOUT_MS,
+          // @ts-ignore — Node-specific http agent for proxy
+          httpAgent: getProxyAgent(),
+          httpsAgent: getProxyAgent()
         });
         const model = this.config.model || "text-embedding-3-small";
         const resp = await client.embeddings.create({ model, input: texts });
@@ -217,7 +283,10 @@ var init_embeddings = __esm({
       async embedOllama(texts) {
         const baseURL = (this.config.baseURL || process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
         const model = this.config.model || process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
-        const resp = await fetchWithTimeout(`${baseURL}/api/embed`, {
+        const embedPath = process.env.OLLAMA_EMBED_PATH || "/embeddings";
+        const normalizedBase = baseURL.replace(/\/$/, "");
+        const url = `${normalizedBase}${embedPath}`;
+        const resp = await fetchWithTimeout(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ model, input: texts })
@@ -227,12 +296,16 @@ var init_embeddings = __esm({
           throw new Error(`Ollama embedding error: ${resp.status} ${err}`);
         }
         const data = await resp.json();
+        if (Array.isArray(data.data)) {
+          const sorted = data.data.sort((a, b) => a.index - b.index);
+          return sorted.map((item) => item.embedding);
+        }
         if (Array.isArray(data.embeddings) && Array.isArray(data.embeddings[0])) {
           return data.embeddings;
         } else if (Array.isArray(data.embeddings)) {
           return [data.embeddings];
         }
-        throw new Error(`Unexpected Ollama response: ${JSON.stringify(data)}`);
+        throw new Error(`Unexpected embedding response: ${JSON.stringify(data)}`);
       }
     };
   }
@@ -240,17 +313,18 @@ var init_embeddings = __esm({
 
 // src/hooks/hawk-recall/handler.ts
 import * as path3 from "path";
+import * as fs2 from "fs";
 import { homedir as homedir3 } from "os";
 
 // src/store/adapters/lancedb.ts
 init_embeddings();
 import * as path2 from "path";
-import * as os2 from "os";
+import * as os3 from "os";
 
 // src/config.ts
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
+import * as os2 from "os";
 
 // node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
@@ -2862,6 +2936,9 @@ var RELIABILITY_THRESHOLD_HIGH = parseFloat(process.env.HAWK_RELIABILITY_THRESHO
 var RELIABILITY_THRESHOLD_MEDIUM = parseFloat(process.env.HAWK_RELIABILITY_THRESHOLD_MEDIUM || "0.4");
 var FORGET_GRACE_DAYS = parseInt(process.env.HAWK_FORGET_GRACE_DAYS || "30", 10);
 var DRIFT_THRESHOLD_DAYS = parseInt(process.env.HAWK_DRIFT_THRESHOLD_DAYS || "7", 10);
+var DRIFT_REVERIFY_DAYS = parseInt(process.env.HAWK_DRIFT_REVERIFY_DAYS || "14", 10);
+var EVOLUTION_SUCCESS = parseFloat(process.env.HAWK_EVOLUTION_SUCCESS || "0.95");
+var EVOLUTION_FAILURE = parseFloat(process.env.HAWK_EVOLUTION_FAILURE || "0.25");
 var RECENCY_GRACE_DAYS = parseInt(process.env.HAWK_RECENCY_GRACE_DAYS || "30", 10);
 var RECENCY_DECAY_RATE = parseFloat(process.env.HAWK_RECENCY_DECAY_RATE || "0.95");
 var RECENCY_FACTOR_FLOOR = parseFloat(process.env.HAWK_RECENCY_FACTOR_FLOOR || "0.3");
@@ -2925,9 +3002,9 @@ function deepMerge(base, override) {
 }
 
 // src/config.ts
-var OPENCLAW_CONFIG_PATH = path.join(os.homedir(), ".openclaw", "openclaw.json");
-var OPENCLAW_AGENT_MODELS = path.join(os.homedir(), ".openclaw", "agents", "main", "agent", "models.json");
-var HAWK_CONFIG_DIR = path.join(os.homedir(), ".hawk");
+var OPENCLAW_CONFIG_PATH = path.join(os2.homedir(), ".openclaw", "openclaw.json");
+var OPENCLAW_AGENT_MODELS = path.join(os2.homedir(), ".openclaw", "agents", "main", "agent", "models.json");
+var HAWK_CONFIG_DIR = path.join(os2.homedir(), ".hawk");
 var cachedOpenClawConfig = null;
 var cachedAgentModels = null;
 function loadOpenClawConfig() {
@@ -2980,7 +3057,8 @@ var DEFAULT_CONFIG = {
     apiKey: "",
     model: "text-embedding-v1",
     baseURL: "https://dashscope.aliyuncs.com/api/v1",
-    dimensions: 1024
+    dimensions: 1024,
+    proxy: ""
   },
   llm: {
     provider: "groq",
@@ -3015,6 +3093,18 @@ function resolveEnvVars(raw) {
     return process.env[varName] ?? "";
   });
 }
+function snakeToCamel(obj) {
+  if (Array.isArray(obj)) return obj.map(snakeToCamel);
+  if (obj !== null && typeof obj === "object") {
+    return Object.fromEntries(
+      Object.entries(obj).map(([k, v]) => [
+        k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()),
+        snakeToCamel(v)
+      ])
+    );
+  }
+  return obj;
+}
 function loadYamlConfig() {
   const yamlPath = path.join(HAWK_CONFIG_DIR, "config.yaml");
   const legacyPath = path.join(HAWK_CONFIG_DIR, "config.json");
@@ -3029,7 +3119,31 @@ function loadYamlConfig() {
   } else if (fs.existsSync(legacyPath)) {
     try {
       const raw = fs.readFileSync(legacyPath, "utf-8");
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      const camel = snakeToCamel(parsed);
+      const embeddingKeys = [
+        "embeddingModel",
+        "embeddingDimensions",
+        "baseUrl",
+        "proxy",
+        "openaiApiKey",
+        "apiKey",
+        "model",
+        "dimensions",
+        "provider"
+      ];
+      const embedding = {};
+      for (const key of embeddingKeys) {
+        if (camel[key] !== void 0) {
+          const embeddingField = key === "embeddingModel" ? "model" : key === "embeddingDimensions" ? "dimensions" : key === "openaiApiKey" ? "apiKey" : key;
+          embedding[embeddingField] = camel[key];
+          delete camel[key];
+        }
+      }
+      if (Object.keys(embedding).length > 0) {
+        camel.embedding = embedding;
+      }
+      return camel;
     } catch (e) {
       console.warn("[hawk-bridge] Failed to load legacy config.json:", e);
     }
@@ -3049,42 +3163,47 @@ async function getConfig() {
       if (Object.keys(envOverrides).length > 0) {
         config = deepMerge(config, envOverrides);
       }
-      const openclawkEmbed = getAgentModelKey("minimax");
-      if (openclawkEmbed?.apiKey) {
-        config.embedding.provider = "minimax";
-        config.embedding.apiKey = openclawkEmbed.apiKey;
-        config.embedding.baseURL = openclawkEmbed.baseUrl || "https://api.minimaxi.com/v1";
-        config.embedding.model = "text-embedding-v2";
-        config.embedding.dimensions = 1024;
-      } else if (process.env.OLLAMA_BASE_URL) {
-        config.embedding.provider = "ollama";
-        config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
-        config.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
-        config.embedding.dimensions = 768;
-      } else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
-        config.embedding.provider = "qianwen";
-        config.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || "";
-        config.embedding.baseURL = "https://dashscope.aliyuncs.com/api/v1";
-        config.embedding.model = "text-embedding-v1";
-        config.embedding.dimensions = 1024;
-      } else if (process.env.JINA_API_KEY) {
-        config.embedding.provider = "jina";
-        config.embedding.apiKey = process.env.JINA_API_KEY;
-        config.embedding.baseURL = "";
-        config.embedding.model = "jina-embeddings-v5-small";
-        config.embedding.dimensions = 1024;
-      } else if (process.env.OPENAI_API_KEY) {
-        config.embedding.provider = "openai";
-        config.embedding.apiKey = process.env.OPENAI_API_KEY;
-        config.embedding.baseURL = "";
-        config.embedding.model = "text-embedding-3-small";
-        config.embedding.dimensions = 1536;
-      } else if (process.env.COHERE_API_KEY) {
-        config.embedding.provider = "cohere";
-        config.embedding.apiKey = process.env.COHERE_API_KEY;
-        config.embedding.baseURL = "";
-        config.embedding.model = "embed-english-v3.0";
-        config.embedding.dimensions = 1024;
+      const hasExplicitEmbedConfig = process.env.HAWK_EMBED_PROVIDER || process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_MODEL;
+      if (!hasExplicitEmbedConfig) {
+        if (process.env.OLLAMA_BASE_URL) {
+          config.embedding.provider = "ollama";
+          config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
+          config.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
+          config.embedding.dimensions = 768;
+        } else {
+          const openclawkEmbed = getAgentModelKey("minimax");
+          if (openclawkEmbed?.apiKey) {
+            config.embedding.provider = "minimax";
+            config.embedding.apiKey = openclawkEmbed.apiKey;
+            config.embedding.baseURL = openclawkEmbed.baseUrl || "https://api.minimaxi.com/v1";
+            config.embedding.model = "text-embedding-v2";
+            config.embedding.dimensions = 1024;
+          } else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
+            config.embedding.provider = "qianwen";
+            config.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || "";
+            config.embedding.baseURL = "https://dashscope.aliyuncs.com/api/v1";
+            config.embedding.model = "text-embedding-v1";
+            config.embedding.dimensions = 1024;
+          } else if (process.env.JINA_API_KEY) {
+            config.embedding.provider = "jina";
+            config.embedding.apiKey = process.env.JINA_API_KEY;
+            config.embedding.baseURL = "";
+            config.embedding.model = "jina-embeddings-v5-small";
+            config.embedding.dimensions = 1024;
+          } else if (process.env.OPENAI_API_KEY) {
+            config.embedding.provider = "openai";
+            config.embedding.apiKey = process.env.OPENAI_API_KEY;
+            config.embedding.baseURL = "";
+            config.embedding.model = "text-embedding-3-small";
+            config.embedding.dimensions = 1536;
+          } else if (process.env.COHERE_API_KEY) {
+            config.embedding.provider = "cohere";
+            config.embedding.apiKey = process.env.COHERE_API_KEY;
+            config.embedding.baseURL = "";
+            config.embedding.model = "embed-english-v3.0";
+            config.embedding.dimensions = 1024;
+          }
+        }
       }
       if (!config.llm.model || !config.llm.apiKey) {
         const openclawkKey = getAgentModelKey("minimax");
@@ -3113,7 +3232,7 @@ var LanceDBAdapter = class {
   dbPath;
   embedder = null;
   constructor(dbPath) {
-    const home = os2.homedir();
+    const home = os3.homedir();
     this.dbPath = dbPath ?? path2.join(home, ".hawk", "lancedb");
   }
   async init() {
@@ -3126,7 +3245,7 @@ var LanceDBAdapter = class {
         const sampleRow = this._makeRow({
           id: "__init__",
           text: "__init__",
-          vector: new Float32Array(0),
+          vector: new Float32Array(DEFAULT_EMBEDDING_DIM),
           category: "fact",
           scope: "system",
           importance: 0,
@@ -3135,19 +3254,37 @@ var LanceDBAdapter = class {
           created_at: Date.now(),
           access_count: 0,
           last_accessed_at: Date.now(),
+          deleted_at: null,
+          reliability: 0.5,
+          verification_count: 0,
+          last_verified_at: null,
+          locked: false,
+          correction_history: "[]",
+          session_id: null,
+          updated_at: Date.now(),
+          scope_mem: "personal",
+          importance_override: 1,
+          cold_start_until: null,
           metadata: "{}",
           source_type: "text",
-          name: "",
-          description: "",
+          source: "",
           drift_note: null,
           drift_detected_at: null,
-          last_used_at: 0,
+          last_used_at: null,
           usefulness_score: 0.5,
-          recall_count: 0
+          recall_count: 0,
+          name: "__init__",
+          description: "__init__"
         });
         const table = makeArrowTable([sampleRow]);
         this.table = await this.db.createTable(TABLE_NAME, table);
         await this.table.delete(`id = '__init__'`);
+        try {
+          const { Index } = await import("@lancedb/lancedb");
+          await this.table.createIndex("text", Index.fts());
+        } catch (err) {
+          console.warn(`[hawk-bridge] FTS index creation failed (non-fatal): ${err?.message}`);
+        }
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
         try {
@@ -3170,6 +3307,7 @@ var LanceDBAdapter = class {
             { name: "description", type: { type: "utf8" } },
             { name: "drift_note", type: { type: "utf8" } },
             { name: "drift_detected_at", type: { type: "int64" } },
+            { name: "source", type: { type: "utf8" } },
             { name: "last_used_at", type: { type: "int64" } },
             { name: "usefulness_score", type: { type: "float" } },
             { name: "recall_count", type: { type: "int32" } }
@@ -3200,23 +3338,31 @@ var LanceDBAdapter = class {
       created_at: BigInt(data.created_at),
       access_count: data.access_count,
       last_accessed_at: BigInt(data.last_accessed_at),
-      deleted_at: data.deleted_at !== null ? BigInt(data.deleted_at) : null,
+      // Note: BigInt(null) throws, so use BigInt(0) as placeholder for null timestamps
+      deleted_at: BigInt(data.deleted_at ?? 0),
       reliability: data.reliability,
       verification_count: data.verification_count,
-      last_verified_at: data.last_verified_at !== null ? BigInt(data.last_verified_at) : null,
+      last_verified_at: BigInt(data.last_verified_at ?? 0),
       locked: data.locked ? 1 : 0,
       correction_history: data.correction_history,
-      session_id: data.session_id ?? null,
-      updated_at: BigInt(data.updated_at),
-      scope_mem: data.scope_mem,
+      // Use empty string for null session_id to avoid schema inference failure in makeArrowTable
+      session_id: data.session_id ?? "",
+      // Use ?? 0 to handle undefined (init sample row doesn't set this field)
+      updated_at: BigInt(data.updated_at ?? 0),
+      // Default to 'personal' if not provided (init sample row doesn't set scope_mem)
+      scope_mem: data.scope_mem || "personal",
       importance_override: data.importance_override,
-      cold_start_until: data.cold_start_until !== null ? BigInt(data.cold_start_until) : null,
+      // Use BigInt(0) for null cold_start_until (LanceDB makeArrowTable can't infer null BigInt)
+      cold_start_until: BigInt(data.cold_start_until ?? 0),
       metadata: data.metadata,
       source_type: data.source_type,
-      drift_note: data.drift_note ?? null,
-      drift_detected_at: data.drift_detected_at !== null ? BigInt(data.drift_detected_at) : null,
-      last_used_at: data.last_used_at != null ? BigInt(data.last_used_at) : null,
-      usefulness_score: data.usefulness_score ?? null,
+      source: data.source,
+      // Use empty string for null drift_note (LanceDB makeArrowTable can't infer null)
+      drift_note: data.drift_note ?? "",
+      drift_detected_at: BigInt(data.drift_detected_at ?? 0),
+      last_used_at: BigInt(data.last_used_at ?? 0),
+      // Use 0.0 for null usefulness_score
+      usefulness_score: data.usefulness_score ?? 0,
       recall_count: data.recall_count ?? 0
     };
   }
@@ -3338,6 +3484,7 @@ var LanceDBAdapter = class {
       description: r.description ?? "",
       driftNote: r.drift_note ?? null,
       driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
+      source: r.source ?? "",
       last_used_at: Number(r.last_used_at ?? 0),
       usefulness_score: r.usefulness_score ?? 0.5,
       recall_count: r.recall_count ?? 0
@@ -3372,6 +3519,11 @@ var LanceDBAdapter = class {
       importanceOverride: r.importance_override ?? 1,
       coldStartUntil: r.cold_start_until !== null ? Number(r.cold_start_until) : null,
       matchReason,
+      name: r.name ?? "",
+      description: r.description ?? "",
+      driftNote: r.drift_note ?? null,
+      driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
+      source: r.source ?? "",
       last_used_at: r.last_used_at !== null ? Number(r.last_used_at) : null,
       usefulness_score: r.usefulness_score ?? null,
       recall_count: r.recall_count ?? 0
@@ -3411,6 +3563,7 @@ var LanceDBAdapter = class {
       cold_start_until: coldStartUntil,
       metadata: JSON.stringify(entry.metadata || {}),
       source_type: entry.source_type || "text",
+      source: entry.source || "",
       drift_note: entry.driftNote || null,
       drift_detected_at: entry.driftDetectedAt || null,
       last_used_at: entry.last_used_at ?? null,
@@ -3474,16 +3627,16 @@ var LanceDBAdapter = class {
     return { count, sizeMB, path: this.dbPath };
   }
   async _dirSize(dirPath) {
-    const fs2 = await import("fs/promises");
+    const fs22 = await import("fs/promises");
     let total = 0;
     try {
-      const entries = await fs2.readdir(dirPath, { withFileTypes: true });
+      const entries = await fs22.readdir(dirPath, { withFileTypes: true });
       for (const entry of entries) {
         const full = path2.join(dirPath, entry.name);
         if (entry.isDirectory()) {
           total += await this._dirSize(full);
         } else {
-          const stat = await fs2.stat(full);
+          const stat = await fs22.stat(full);
           total += stat.size;
         }
       }
@@ -3690,6 +3843,30 @@ var LanceDBAdapter = class {
     return deleted;
   }
   // ─── Additional HawkDB-compatible methods ────────────────────────────────────
+  async ftsSearch(query, topK, scope, sourceTypes) {
+    if (!this.table) await this.init();
+    let results = await this.table.search(query, "fts").limit(topK * 4).toArray();
+    results = results.filter((r) => r.deleted_at === null);
+    if (scope) results = results.filter((r) => r.scope === scope);
+    if (sourceTypes && sourceTypes.length > 0) {
+      results = results.filter((r) => {
+        const type2 = r.source_type || "text";
+        return sourceTypes.includes(type2);
+      });
+    }
+    const now = Date.now();
+    results = results.filter((r) => {
+      const expiresAt = Number(r.expires_at || 0);
+      return expiresAt === 0 || expiresAt > now;
+    });
+    const retrieved = [];
+    for (const row of results) {
+      const score = row._relevance ?? 0;
+      retrieved.push(this._rowToRetrieved(row, score));
+      if (retrieved.length >= topK) break;
+    }
+    return retrieved;
+  }
   async search(queryVector, topK, minScore, scope, sourceTypes) {
     if (!this.table) await this.init();
     let results = await this.table.search(queryVector).limit(topK * 4).toArray();
@@ -3756,6 +3933,7 @@ var LanceDBAdapter = class {
           updatedAt: Number(r.updated_at ?? Date.now()),
           metadata: JSON.parse(r.metadata || "{}"),
           source_type: r.source_type || "text",
+          source: r.source ?? "",
           name: r.name ?? "",
           description: r.description ?? "",
           driftNote: r.drift_note ?? null,
@@ -3935,111 +4113,13 @@ async function getMemoryStore() {
 }
 
 // src/retriever.ts
-var HybridRetriever = class _HybridRetriever {
+var HybridRetriever = class {
   db;
   embedder;
-  bm25 = null;
-  // rank_bm25.BM25Okapi
-  corpus = [];
-  corpusIds = [];
   noisePrototypes = [];
-  bm25Dirty = false;
-  // set true when new memories are stored
-  bm25BuildPromise = null;
-  // prevents concurrent rebuilds
-  lastIndexedMemoryCount = 0;
-  // for incremental tracking
-  pendingTexts = [];
-  // texts added since last full rebuild
-  pendingIds = [];
   constructor(db, embedder) {
     this.db = db;
     this.embedder = embedder;
-  }
-  /** Call this after store() to invalidate the BM25 index — next search() will rebuild incrementally */
-  markDirty() {
-    this.bm25Dirty = true;
-  }
-  // ---------- BM25 Setup ----------
-  /** Rebuild threshold: only full-rebuild if more than 10 new memories since last build */
-  static BM25_REBUILD_THRESHOLD = 10;
-  async _ensureBm25Index() {
-    if (!this.bm25Dirty && this.bm25) return;
-    if (this.bm25BuildPromise) return this.bm25BuildPromise;
-    this.bm25BuildPromise = this._buildBm25Index();
-    await this.bm25BuildPromise;
-    this.bm25BuildPromise = null;
-    this.bm25Dirty = false;
-  }
-  /**
-   * Incremental BM25: only full-rebuild if new memories exceed threshold.
-   * Otherwise just add to pending corpus and merge at search time.
-   */
-  async _ensureBm25IndexIncremental() {
-    if (!this.bm25Dirty && this.bm25) return;
-    if (this.bm25BuildPromise) return this.bm25BuildPromise;
-    this.bm25BuildPromise = this._buildBm25IndexIncremental();
-    await this.bm25BuildPromise;
-    this.bm25BuildPromise = null;
-    this.bm25Dirty = false;
-  }
-  async _buildBm25Index() {
-    try {
-      const { BM25Okapi } = await import("rank_bm25");
-      const allMemories = await this.db.getAllTexts();
-      if (!allMemories.length) return;
-      this.corpusIds = allMemories.map((m) => m.id);
-      this.corpus = allMemories.map((m) => m.text.toLowerCase());
-      this.lastIndexedMemoryCount = allMemories.length;
-      this.pendingTexts = [];
-      this.pendingIds = [];
-      this.bm25 = new BM25Okapi(this.corpus);
-    } catch {
-      console.warn("[hawk-bridge] rank_bm25 not available, BM25 disabled");
-    }
-  }
-  /**
-   * Incremental BM25: check if new memories exceed threshold.
-   * If few: accumulate in pending, merge at search time.
-   * If many: full rebuild.
-   */
-  async _buildBm25IndexIncremental() {
-    try {
-      const { BM25Okapi } = await import("rank_bm25");
-      const allMemories = await this.db.getAllTexts();
-      if (!allMemories.length) return;
-      const total = allMemories.length;
-      const newCount = total - this.lastIndexedMemoryCount;
-      if (newCount <= 0 || newCount > _HybridRetriever.BM25_REBUILD_THRESHOLD) {
-        this.corpusIds = allMemories.map((m) => m.id);
-        this.corpus = allMemories.map((m) => m.text.toLowerCase());
-        this.lastIndexedMemoryCount = total;
-        this.pendingTexts = [];
-        this.pendingIds = [];
-        this.bm25 = new BM25Okapi(this.corpus);
-      } else {
-        const newMemories = allMemories.slice(-newCount);
-        for (const m of newMemories) {
-          this.pendingIds.push(m.id);
-          this.pendingTexts.push(m.text.toLowerCase());
-        }
-        this.lastIndexedMemoryCount = total;
-        const fullCorpus = [...this.corpus, ...this.pendingTexts];
-        const fullIds = [...this.corpusIds, ...this.pendingIds];
-        this.corpus = fullCorpus;
-        this.corpusIds = fullIds;
-        this.pendingTexts = [];
-        this.pendingIds = [];
-        this.bm25 = new BM25Okapi(fullCorpus);
-      }
-    } catch {
-      console.warn("[hawk-bridge] rank_bm25 not available, BM25 disabled");
-    }
-  }
-  bm25Score(query) {
-    if (!this.bm25) return this.corpus.map(() => 0);
-    const tokens = query.toLowerCase().split(/\s+/);
-    return this.bm25.getScores(tokens);
   }
   // ---------- Noise Prototype Setup ----------
   async buildNoisePrototypes() {
@@ -4081,28 +4161,26 @@ var HybridRetriever = class _HybridRetriever {
     return false;
   }
   // ---------- RRF Fusion ----------
-  rrfFusion(vectorResults, bm25Results) {
+  rrfFusion(vectorResults, ftsResults) {
     const rrfMap = /* @__PURE__ */ new Map();
     for (let rank = 0; rank < vectorResults.length; rank++) {
       const item = vectorResults[rank];
       const score = 1 / (RRF_K + rank + 1);
-      const existing = rrfMap.get(item.id) || { rrfScore: 0, vectorScore: 0, bm25Score: 0 };
+      const existing = rrfMap.get(item.id) || { rrfScore: 0, vectorScore: 0, ftsScore: 0 };
       rrfMap.set(item.id, {
         rrfScore: existing.rrfScore + score * RRF_VECTOR_WEIGHT,
-        // vector weight
         vectorScore: item.score,
-        bm25Score: existing.bm25Score
+        ftsScore: existing.ftsScore
       });
     }
-    for (let rank = 0; rank < bm25Results.length; rank++) {
-      const item = bm25Results[rank];
+    for (let rank = 0; rank < ftsResults.length; rank++) {
+      const item = ftsResults[rank];
       const score = 1 / (RRF_K + rank + 1);
-      const existing = rrfMap.get(item.id) || { rrfScore: 0, vectorScore: 0, bm25Score: 0 };
+      const existing = rrfMap.get(item.id) || { rrfScore: 0, vectorScore: 0, ftsScore: 0 };
       rrfMap.set(item.id, {
         rrfScore: existing.rrfScore + score * (1 - RRF_VECTOR_WEIGHT),
-        // BM25 weight
         vectorScore: existing.vectorScore,
-        bm25Score: item.score
+        ftsScore: item.score
       });
     }
     return Array.from(rrfMap.entries()).map(([id, v]) => ({ id, ...v }));
@@ -4111,7 +4189,6 @@ var HybridRetriever = class _HybridRetriever {
   async rerank(query, candidates, topN) {
     if (candidates.length <= 2) return candidates.map((c) => ({ id: c.id, text: c.text, rerankScore: c.score }));
     const providers = [
-      // 1. Jina AI Reranker
       async () => {
         const apiKey = process.env.JINA_RERANKER_API_KEY;
         if (!apiKey) return null;
@@ -4133,7 +4210,6 @@ var HybridRetriever = class _HybridRetriever {
           rerankScore: r.relevance_score
         }));
       },
-      // 2. Cohere Rerank
       async () => {
         const apiKey = process.env.COHERE_API_KEY || process.env.COHERE_RERANK_API_KEY;
         if (!apiKey) return null;
@@ -4156,7 +4232,6 @@ var HybridRetriever = class _HybridRetriever {
           return { id: mem.id, text: mem.text, rerankScore: r.relevance_score };
         });
       },
-      // 3. Mixedbread AI (free tier available)
       async () => {
         const apiKey = process.env.MIXTBREAD_API_KEY || process.env.MIXEDBREAD_API_KEY;
         if (!apiKey) return null;
@@ -4177,62 +4252,30 @@ var HybridRetriever = class _HybridRetriever {
           const mem = idMap.get(r.index);
           return { id: mem.id, text: mem.text, rerankScore: r.relevance_score };
         });
-      },
-      // 4. Generic OpenAI-compatible rerank endpoint
-      async () => {
-        const baseURL = process.env.RERANK_BASE_URL;
-        const apiKey = process.env.RERANK_API_KEY || process.env.OPENAI_API_KEY;
-        const model = process.env.RERANK_MODEL || "";
-        if (!baseURL || !apiKey || !model) return null;
-        const resp = await fetch(`${baseURL}/rerank`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-          body: JSON.stringify({ model, query, documents: candidates.map((c) => c.text), top_n: Math.min(topN * 2, candidates.length) })
-        });
-        if (!resp.ok) return null;
-        const data = await resp.json();
-        const idMap = new Map(candidates.map((c, i) => [i, c]));
-        return data.results.map((r) => {
-          const mem = idMap.get(r.index);
-          return { id: mem.id, text: mem.text, rerankScore: r.relevance_score };
-        });
       }
     ];
-    for (const providerFn of providers) {
+    for (const tryProvider of providers) {
       try {
-        const result = await providerFn();
-        if (result && result.length > 0) return result;
+        const result = await tryProvider();
+        if (result) return result;
       } catch {
       }
     }
-    try {
-      const queryVec = await this.embedder.embedQuery(query);
-      const docVecs = await this.embedder.embed(candidates.map((c) => c.text));
-      const scored = candidates.map((c, i) => ({
-        id: c.id,
-        text: c.text,
-        rerankScore: cosineSimilarity(queryVec, docVecs[i])
-      }));
-      return scored.sort((a, b) => b.rerankScore - a.rerankScore).slice(0, topN * 2);
-    } catch (e) {
-      console.warn("[hawk-bridge] rerank failed, using RRF scores:", e);
-      return candidates.slice(0, topN).map((c) => ({ id: c.id, text: c.text, rerankScore: c.score }));
-    }
+    return candidates.map((c) => ({ id: c.id, text: c.text, rerankScore: c.score }));
   }
   // ---------- Main Search Pipeline ----------
-  async search(query, topK = 5, scope, sourceTypes) {
-    topK = Math.min(Math.max(1, topK), 100);
-    await this._ensureBm25IndexIncremental();
-    if (!this.noisePrototypes.length) await this.buildNoisePrototypes();
+  async search(query, topK, scope, sourceTypes) {
     const hasEmbedding = hasEmbeddingProvider();
     if (hasEmbedding) {
       try {
         const queryVector = await this.embedder.embedQuery(query);
-        const vectorResults = await this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, 0, scope, sourceTypes);
+        const [vectorResults, ftsResults] = await Promise.all([
+          this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, 0, scope, sourceTypes),
+          this.db.ftsSearch(query, topK * VECTOR_SEARCH_MULTIPLIER, scope, sourceTypes)
+        ]);
         const vectorRanked = vectorResults.map((r, i) => ({ id: r.id, score: 1 - i * 0.01, text: r.text })).sort((a, b) => b.score - a.score);
-        const bm25Scores2 = this.bm25Score(query);
-        const bm25Ranked2 = this.corpusIds.map((id, i) => ({ id, score: bm25Scores2[i], text: this.corpus[i] })).filter((item) => item.score > 0).sort((a, b) => b.score - a.score).slice(0, topK * BM25_SEARCH_MULTIPLIER);
-        const fused = this.rrfFusion(vectorRanked, bm25Ranked2);
+        const ftsRanked = ftsResults.map((r, i) => ({ id: r.id, score: r.score, text: r.text })).sort((a, b) => b.score - a.score).slice(0, topK * VECTOR_SEARCH_MULTIPLIER);
+        const fused = this.rrfFusion(vectorRanked, ftsRanked);
         const fusedIds = fused.map((f) => f.id);
         const fetched = await this.db.getByIds(fusedIds);
         const noiseFiltered = [];
@@ -4249,58 +4292,62 @@ var HybridRetriever = class _HybridRetriever {
         }));
         const reranked = await this.rerank(query, candidates, topK);
         const idToRerank = new Map(reranked.map((r) => [r.id, r.rerankScore]));
-        const results2 = [];
+        const results = [];
         for (const item of noiseFiltered) {
           const rerankScore = idToRerank.get(item.id);
           if (rerankScore === void 0) continue;
           const memory = fetched.get(item.id);
           if (!memory) continue;
-          results2.push({
+          results.push({
             id: item.id,
             text: memory.text,
             score: rerankScore,
             category: memory.category,
             metadata: memory.metadata
           });
-          if (results2.length >= topK) break;
+          if (results.length >= topK) break;
         }
-        return results2;
+        return results;
       } catch (err) {
-        console.warn("[hawk-bridge] Vector search failed, falling back to BM25-only:", err);
+        console.warn("[hawk-bridge] Vector search failed, falling back to FTS-only:", err);
       }
     }
-    console.log("[hawk-bridge] Running in BM25-only mode (no embedding API)");
-    const bm25Scores = this.bm25Score(query);
-    const bm25Ranked = this.corpusIds.map((id, i) => ({ id, score: bm25Scores[i], text: this.corpus[i] })).filter((item) => item.score > 0).sort((a, b) => b.score - a.score).slice(0, topK * 3);
-    const bm25Ids = bm25Ranked.map((b) => b.id);
-    const fetchedBm25 = await this.db.getByIds(bm25Ids);
-    const idToScore = new Map(bm25Ranked.map((item) => [item.id, item.score]));
-    const results = [];
-    for (const item of bm25Ranked) {
-      const score = idToScore.get(item.id);
-      if (score === void 0) continue;
-      const memory = fetchedBm25.get(item.id);
-      if (!memory) continue;
-      results.push({
-        id: item.id,
-        text: memory.text,
-        score,
-        category: memory.category,
-        metadata: memory.metadata
-      });
-      if (results.length >= topK) break;
+    console.log("[hawk-bridge] Running in FTS-only mode (LanceDB native full-text search)");
+    try {
+      const ftsResults = await this.db.ftsSearch(query, topK * 3, scope, sourceTypes);
+      const idToScore = new Map(ftsResults.map((r) => [r.id, r.score]));
+      const ftsIds = ftsResults.map((r) => r.id);
+      const fetched = await this.db.getByIds(ftsIds);
+      const results = [];
+      for (const id of ftsIds) {
+        const score = idToScore.get(id);
+        if (score === void 0) continue;
+        const memory = fetched.get(id);
+        if (!memory) continue;
+        results.push({
+          id,
+          text: memory.text,
+          score,
+          category: memory.category,
+          metadata: memory.metadata
+        });
+        if (results.length >= topK) break;
+      }
+      return results;
+    } catch (err) {
+      console.error("[hawk-bridge] FTS search failed:", err);
+      return [];
     }
-    return results;
   }
 };
 function cosineSimilarity(a, b) {
   let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < a.length; i++) {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
     dot += a[i] * b[i];
     normA += a[i] * a[i];
     normB += b[i] * b[i];
   }
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-10);
 }
 
 // src/hooks/hawk-recall/handler.ts
@@ -4551,9 +4598,36 @@ function sanitize(text) {
   for (const [p, repl] of SANITIZE) r = r.replace(p, repl);
   return r;
 }
+var DRIFT_VERIFY_QUEUE = path3.join(os.homedir(), ".hawk", "drift-verify-queue.jsonl");
+function checkDriftVerifyQueue() {
+  try {
+    if (!fs2.existsSync(DRIFT_VERIFY_QUEUE)) return [];
+    const lines = fs2.readFileSync(DRIFT_VERIFY_QUEUE, "utf-8").trim().split("\n").filter(Boolean);
+    return lines.map((l) => {
+      try {
+        return JSON.parse(l);
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
 var recallHandler = async (event) => {
   if (event.type !== "agent" || event.action !== "bootstrap") return;
   try {
+    const pending = checkDriftVerifyQueue();
+    if (pending.length > 0) {
+      const lines = [`\u26A0\uFE0F ** hawk \u5F85\u9A8C\u8BC1\u8FC7\u671F\u8BB0\u5FC6 (${pending.length}\u6761) **`];
+      for (const item of pending.slice(0, 10)) {
+        lines.push(`\u{1F550} [${item.memory_id}] ${(item.text || "").slice(0, 60)}`);
+      }
+      if (pending.length > 10) lines.push(`...\u8FD8\u6709 ${pending.length - 10} \u6761`);
+      lines.push(`
+\u63D0\u793A: \u4F7F\u7528 hawk\u8FC7\u671F \u67E5\u770B\u8BE6\u60C5\uFF0Chawk\u786E\u8BA4 N \u5BF9 \u9A8C\u8BC1\u8BB0\u5FC6`);
+      event.messages?.push("\n" + lines.join("\n") + "\n");
+    }
     const config = await getConfig();
     const { topK, injectEmoji, minScore } = config.recall;
     const sessionEntry = event.context?.sessionEntry;
@@ -4859,9 +4933,9 @@ ${lines.join("\n")}
         correctionHistory: m2.correctionHistory
       }));
       try {
-        const { writeFileSync, mkdirSync, existsSync: existsSync2 } = __require("fs");
+        const { writeFileSync, mkdirSync, existsSync: existsSync3 } = __require("fs");
         const dir = path3.dirname(filepath);
-        if (!existsSync2(dir)) mkdirSync(dir, { recursive: true });
+        if (!existsSync3(dir)) mkdirSync(dir, { recursive: true });
         writeFileSync(filepath, JSON.stringify({ exported_at: (/* @__PURE__ */ new Date()).toISOString(), count: exported.length, memories: exported }, null, 2));
         event.messages.push(`
 ${injectEmoji} \u2705 \u5DF2\u5BFC\u51FA ${exported.length} \u6761\u8BB0\u5FC6\u5230
@@ -4909,14 +4983,14 @@ ${injectEmoji} \u8FD8\u6CA1\u6709\u4EFB\u4F55\u8BB0\u5FC6\u3002
     if (m) {
       const filepath = m[1].trim();
       try {
-        const { readFileSync: readFileSync2, existsSync: existsSync2 } = __require("fs");
-        if (!existsSync2(filepath)) {
+        const { readFileSync: readFileSync3, existsSync: existsSync3 } = __require("fs");
+        if (!existsSync3(filepath)) {
           event.messages.push(`
 ${injectEmoji} \u274C \u6587\u4EF6\u4E0D\u5B58\u5728: ${filepath}
 `);
           return;
         }
-        const raw = JSON.parse(readFileSync2(filepath, "utf-8"));
+        const raw = JSON.parse(readFileSync3(filepath, "utf-8"));
         const memories2 = raw.memories || [];
         if (!memories2.length) {
           event.messages.push(`
@@ -5428,7 +5502,23 @@ ${tips}
       }
       return;
     }
-    const sorted = [...useable].sort((a, b) => compositeScore(b) - compositeScore(a));
+    const withEvolution = useable.map((m2) => {
+      const src = m2.metadata?.source || "";
+      let score = compositeScore(m2);
+      if (src === "evolution-success") {
+        score = Math.min(1, score + EVOLUTION_SUCCESS * 0.3);
+      } else if (src === "evolution-failure") {
+        score = score * 0.5;
+      }
+      return { ...m2, _evolutionScore: score };
+    });
+    const sorted = [...withEvolution].sort((a, b) => {
+      const aEvol = a.metadata?.source === "evolution-success";
+      const bEvol = b.metadata?.source === "evolution-success";
+      if (aEvol && !bEvol) return -1;
+      if (!aEvol && bEvol) return 1;
+      return b._evolutionScore - a._evolutionScore;
+    });
     const result = [];
     let totalChars = 0;
     for (const m2 of sorted) {

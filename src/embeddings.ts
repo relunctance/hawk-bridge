@@ -299,12 +299,10 @@ export class Embedder {
   private async embedOllama(texts: string[]): Promise<number[][]> {
     const baseURL = (this.config.baseURL || process.env.OLLAMA_BASE_URL || 'http://localhost:11434').replace(/\/$/, '');
     const model = this.config.model || process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
-    // Use /v1/embeddings (OpenAI-compatible) — works for both Ollama (v1.50+) and Xinference
-    // OLLAMA_EMBED_PATH can override with /api/embed for older Ollama instances
     const embedPath = process.env.OLLAMA_EMBED_PATH || '/embeddings';
-    // baseURL may end with /v1 or /v1/ — normalize to avoid double slashes
     const normalizedBase = baseURL.replace(/\/$/, '');
-    const resp = await fetchWithTimeout(`${normalizedBase}${embedPath}`, {
+    const url = `${normalizedBase}${embedPath}`;
+    const resp = await fetchWithTimeout(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, input: texts }),

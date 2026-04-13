@@ -3,16 +3,73 @@ import * as path2 from "path";
 import * as os2 from "os";
 
 // src/embeddings.ts
+import http from "http";
+import https from "https";
+import { URL } from "url";
+import { HttpsProxyAgent } from "https-proxy-agent";
 var FETCH_TIMEOUT_MS = 15e3;
-async function fetchWithTimeout(url, init) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const resp = await fetch(url, { ...init, signal: controller.signal });
-    return resp;
-  } finally {
-    clearTimeout(timer);
+var _activeProxyUrl = process.env.HAWK_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || "";
+var _proxyAgent = null;
+function setProxyUrl(url) {
+  _activeProxyUrl = url;
+  _proxyAgent = null;
+}
+function getProxyUrl() {
+  return process.env.HAWK_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || _activeProxyUrl;
+}
+function getProxyAgent() {
+  const proxyUrl = getProxyUrl();
+  if (!proxyUrl) return void 0;
+  if (!_proxyAgent) {
+    _proxyAgent = new HttpsProxyAgent(proxyUrl);
   }
+  return _proxyAgent;
+}
+async function fetchWithTimeout(url, init) {
+  const parsedUrl = new URL(url);
+  const isHttps = parsedUrl.protocol === "https:";
+  const agent = getProxyAgent();
+  const body = init?.body || null;
+  return new Promise((resolve, reject) => {
+    const headers = {
+      ...init?.headers || {}
+    };
+    if (body) {
+      headers["Content-Length"] = Buffer.byteLength(body);
+    }
+    const options = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || (isHttps ? 443 : 80),
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: init?.method || "GET",
+      headers,
+      ...agent ? { agent } : {}
+    };
+    const timer = setTimeout(() => {
+      req.destroy(new Error("Fetch timeout"));
+    }, FETCH_TIMEOUT_MS);
+    const mod = isHttps ? https : http;
+    const req = mod.request(options, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {
+        clearTimeout(timer);
+        const responseBody = Buffer.concat(chunks);
+        const response = new Response(responseBody, {
+          status: res.statusCode || 0,
+          statusText: res.statusMessage || "",
+          headers: new Headers(res.headers)
+        });
+        resolve(response);
+      });
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    if (body) {
+      req.write(body);
+    }
+    req.end();
+  });
 }
 var Embedder = class _Embedder {
   config;
@@ -22,6 +79,9 @@ var Embedder = class _Embedder {
   // 24h
   constructor(config) {
     this.config = config;
+    if (config.proxy) {
+      setProxyUrl(config.proxy);
+    }
   }
   normalizeForCache(text) {
     return text.toLowerCase().replace(/\s+/g, " ").trim();
@@ -143,7 +203,11 @@ var Embedder = class _Embedder {
     const { OpenAI } = await import("openai");
     const client = new OpenAI({
       apiKey: this.config.apiKey || process.env.OPENAI_API_KEY,
-      timeout: FETCH_TIMEOUT_MS
+      baseURL: this.config.baseURL || void 0,
+      timeout: FETCH_TIMEOUT_MS,
+      // @ts-ignore — Node-specific http agent for proxy
+      httpAgent: getProxyAgent(),
+      httpsAgent: getProxyAgent()
     });
     const model = this.config.model || "text-embedding-3-small";
     const resp = await client.embeddings.create({ model, input: texts });
@@ -188,7 +252,10 @@ var Embedder = class _Embedder {
   async embedOllama(texts) {
     const baseURL = (this.config.baseURL || process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
     const model = this.config.model || process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
-    const resp = await fetchWithTimeout(`${baseURL}/api/embed`, {
+    const embedPath = process.env.OLLAMA_EMBED_PATH || "/embeddings";
+    const normalizedBase = baseURL.replace(/\/$/, "");
+    const url = `${normalizedBase}${embedPath}`;
+    const resp = await fetchWithTimeout(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, input: texts })
@@ -198,12 +265,16 @@ var Embedder = class _Embedder {
       throw new Error(`Ollama embedding error: ${resp.status} ${err}`);
     }
     const data = await resp.json();
+    if (Array.isArray(data.data)) {
+      const sorted = data.data.sort((a, b) => a.index - b.index);
+      return sorted.map((item) => item.embedding);
+    }
     if (Array.isArray(data.embeddings) && Array.isArray(data.embeddings[0])) {
       return data.embeddings;
     } else if (Array.isArray(data.embeddings)) {
       return [data.embeddings];
     }
-    throw new Error(`Unexpected Ollama response: ${JSON.stringify(data)}`);
+    throw new Error(`Unexpected embedding response: ${JSON.stringify(data)}`);
   }
 };
 
@@ -2822,6 +2893,9 @@ var RELIABILITY_THRESHOLD_HIGH = parseFloat(process.env.HAWK_RELIABILITY_THRESHO
 var RELIABILITY_THRESHOLD_MEDIUM = parseFloat(process.env.HAWK_RELIABILITY_THRESHOLD_MEDIUM || "0.4");
 var FORGET_GRACE_DAYS = parseInt(process.env.HAWK_FORGET_GRACE_DAYS || "30", 10);
 var DRIFT_THRESHOLD_DAYS = parseInt(process.env.HAWK_DRIFT_THRESHOLD_DAYS || "7", 10);
+var DRIFT_REVERIFY_DAYS = parseInt(process.env.HAWK_DRIFT_REVERIFY_DAYS || "14", 10);
+var EVOLUTION_SUCCESS = parseFloat(process.env.HAWK_EVOLUTION_SUCCESS || "0.95");
+var EVOLUTION_FAILURE = parseFloat(process.env.HAWK_EVOLUTION_FAILURE || "0.25");
 var RECENCY_GRACE_DAYS = parseInt(process.env.HAWK_RECENCY_GRACE_DAYS || "30", 10);
 var RECENCY_DECAY_RATE = parseFloat(process.env.HAWK_RECENCY_DECAY_RATE || "0.95");
 var RECENCY_FACTOR_FLOOR = parseFloat(process.env.HAWK_RECENCY_FACTOR_FLOOR || "0.3");
@@ -2940,7 +3014,8 @@ var DEFAULT_CONFIG = {
     apiKey: "",
     model: "text-embedding-v1",
     baseURL: "https://dashscope.aliyuncs.com/api/v1",
-    dimensions: 1024
+    dimensions: 1024,
+    proxy: ""
   },
   llm: {
     provider: "groq",
@@ -2975,6 +3050,18 @@ function resolveEnvVars(raw) {
     return process.env[varName] ?? "";
   });
 }
+function snakeToCamel(obj) {
+  if (Array.isArray(obj)) return obj.map(snakeToCamel);
+  if (obj !== null && typeof obj === "object") {
+    return Object.fromEntries(
+      Object.entries(obj).map(([k, v]) => [
+        k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()),
+        snakeToCamel(v)
+      ])
+    );
+  }
+  return obj;
+}
 function loadYamlConfig() {
   const yamlPath = path.join(HAWK_CONFIG_DIR, "config.yaml");
   const legacyPath = path.join(HAWK_CONFIG_DIR, "config.json");
@@ -2989,7 +3076,31 @@ function loadYamlConfig() {
   } else if (fs.existsSync(legacyPath)) {
     try {
       const raw = fs.readFileSync(legacyPath, "utf-8");
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      const camel = snakeToCamel(parsed);
+      const embeddingKeys = [
+        "embeddingModel",
+        "embeddingDimensions",
+        "baseUrl",
+        "proxy",
+        "openaiApiKey",
+        "apiKey",
+        "model",
+        "dimensions",
+        "provider"
+      ];
+      const embedding = {};
+      for (const key of embeddingKeys) {
+        if (camel[key] !== void 0) {
+          const embeddingField = key === "embeddingModel" ? "model" : key === "embeddingDimensions" ? "dimensions" : key === "openaiApiKey" ? "apiKey" : key;
+          embedding[embeddingField] = camel[key];
+          delete camel[key];
+        }
+      }
+      if (Object.keys(embedding).length > 0) {
+        camel.embedding = embedding;
+      }
+      return camel;
     } catch (e) {
       console.warn("[hawk-bridge] Failed to load legacy config.json:", e);
     }
@@ -3009,42 +3120,47 @@ async function getConfig() {
       if (Object.keys(envOverrides).length > 0) {
         config = deepMerge(config, envOverrides);
       }
-      const openclawkEmbed = getAgentModelKey("minimax");
-      if (openclawkEmbed?.apiKey) {
-        config.embedding.provider = "minimax";
-        config.embedding.apiKey = openclawkEmbed.apiKey;
-        config.embedding.baseURL = openclawkEmbed.baseUrl || "https://api.minimaxi.com/v1";
-        config.embedding.model = "text-embedding-v2";
-        config.embedding.dimensions = 1024;
-      } else if (process.env.OLLAMA_BASE_URL) {
-        config.embedding.provider = "ollama";
-        config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
-        config.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
-        config.embedding.dimensions = 768;
-      } else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
-        config.embedding.provider = "qianwen";
-        config.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || "";
-        config.embedding.baseURL = "https://dashscope.aliyuncs.com/api/v1";
-        config.embedding.model = "text-embedding-v1";
-        config.embedding.dimensions = 1024;
-      } else if (process.env.JINA_API_KEY) {
-        config.embedding.provider = "jina";
-        config.embedding.apiKey = process.env.JINA_API_KEY;
-        config.embedding.baseURL = "";
-        config.embedding.model = "jina-embeddings-v5-small";
-        config.embedding.dimensions = 1024;
-      } else if (process.env.OPENAI_API_KEY) {
-        config.embedding.provider = "openai";
-        config.embedding.apiKey = process.env.OPENAI_API_KEY;
-        config.embedding.baseURL = "";
-        config.embedding.model = "text-embedding-3-small";
-        config.embedding.dimensions = 1536;
-      } else if (process.env.COHERE_API_KEY) {
-        config.embedding.provider = "cohere";
-        config.embedding.apiKey = process.env.COHERE_API_KEY;
-        config.embedding.baseURL = "";
-        config.embedding.model = "embed-english-v3.0";
-        config.embedding.dimensions = 1024;
+      const hasExplicitEmbedConfig = process.env.HAWK_EMBED_PROVIDER || process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_MODEL;
+      if (!hasExplicitEmbedConfig) {
+        if (process.env.OLLAMA_BASE_URL) {
+          config.embedding.provider = "ollama";
+          config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
+          config.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
+          config.embedding.dimensions = 768;
+        } else {
+          const openclawkEmbed = getAgentModelKey("minimax");
+          if (openclawkEmbed?.apiKey) {
+            config.embedding.provider = "minimax";
+            config.embedding.apiKey = openclawkEmbed.apiKey;
+            config.embedding.baseURL = openclawkEmbed.baseUrl || "https://api.minimaxi.com/v1";
+            config.embedding.model = "text-embedding-v2";
+            config.embedding.dimensions = 1024;
+          } else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
+            config.embedding.provider = "qianwen";
+            config.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || "";
+            config.embedding.baseURL = "https://dashscope.aliyuncs.com/api/v1";
+            config.embedding.model = "text-embedding-v1";
+            config.embedding.dimensions = 1024;
+          } else if (process.env.JINA_API_KEY) {
+            config.embedding.provider = "jina";
+            config.embedding.apiKey = process.env.JINA_API_KEY;
+            config.embedding.baseURL = "";
+            config.embedding.model = "jina-embeddings-v5-small";
+            config.embedding.dimensions = 1024;
+          } else if (process.env.OPENAI_API_KEY) {
+            config.embedding.provider = "openai";
+            config.embedding.apiKey = process.env.OPENAI_API_KEY;
+            config.embedding.baseURL = "";
+            config.embedding.model = "text-embedding-3-small";
+            config.embedding.dimensions = 1536;
+          } else if (process.env.COHERE_API_KEY) {
+            config.embedding.provider = "cohere";
+            config.embedding.apiKey = process.env.COHERE_API_KEY;
+            config.embedding.baseURL = "";
+            config.embedding.model = "embed-english-v3.0";
+            config.embedding.dimensions = 1024;
+          }
+        }
       }
       if (!config.llm.model || !config.llm.apiKey) {
         const openclawkKey = getAgentModelKey("minimax");
@@ -3083,7 +3199,7 @@ var LanceDBAdapter = class {
         const sampleRow = this._makeRow({
           id: "__init__",
           text: "__init__",
-          vector: new Float32Array(0),
+          vector: new Float32Array(DEFAULT_EMBEDDING_DIM),
           category: "fact",
           scope: "system",
           importance: 0,
@@ -3092,19 +3208,37 @@ var LanceDBAdapter = class {
           created_at: Date.now(),
           access_count: 0,
           last_accessed_at: Date.now(),
+          deleted_at: null,
+          reliability: 0.5,
+          verification_count: 0,
+          last_verified_at: null,
+          locked: false,
+          correction_history: "[]",
+          session_id: null,
+          updated_at: Date.now(),
+          scope_mem: "personal",
+          importance_override: 1,
+          cold_start_until: null,
           metadata: "{}",
           source_type: "text",
-          name: "",
-          description: "",
+          source: "",
           drift_note: null,
           drift_detected_at: null,
-          last_used_at: 0,
+          last_used_at: null,
           usefulness_score: 0.5,
-          recall_count: 0
+          recall_count: 0,
+          name: "__init__",
+          description: "__init__"
         });
         const table = makeArrowTable([sampleRow]);
         this.table = await this.db.createTable(TABLE_NAME, table);
         await this.table.delete(`id = '__init__'`);
+        try {
+          const { Index } = await import("@lancedb/lancedb");
+          await this.table.createIndex("text", Index.fts());
+        } catch (err) {
+          console.warn(`[hawk-bridge] FTS index creation failed (non-fatal): ${err?.message}`);
+        }
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
         try {
@@ -3127,6 +3261,7 @@ var LanceDBAdapter = class {
             { name: "description", type: { type: "utf8" } },
             { name: "drift_note", type: { type: "utf8" } },
             { name: "drift_detected_at", type: { type: "int64" } },
+            { name: "source", type: { type: "utf8" } },
             { name: "last_used_at", type: { type: "int64" } },
             { name: "usefulness_score", type: { type: "float" } },
             { name: "recall_count", type: { type: "int32" } }
@@ -3157,23 +3292,31 @@ var LanceDBAdapter = class {
       created_at: BigInt(data.created_at),
       access_count: data.access_count,
       last_accessed_at: BigInt(data.last_accessed_at),
-      deleted_at: data.deleted_at !== null ? BigInt(data.deleted_at) : null,
+      // Note: BigInt(null) throws, so use BigInt(0) as placeholder for null timestamps
+      deleted_at: BigInt(data.deleted_at ?? 0),
       reliability: data.reliability,
       verification_count: data.verification_count,
-      last_verified_at: data.last_verified_at !== null ? BigInt(data.last_verified_at) : null,
+      last_verified_at: BigInt(data.last_verified_at ?? 0),
       locked: data.locked ? 1 : 0,
       correction_history: data.correction_history,
-      session_id: data.session_id ?? null,
-      updated_at: BigInt(data.updated_at),
-      scope_mem: data.scope_mem,
+      // Use empty string for null session_id to avoid schema inference failure in makeArrowTable
+      session_id: data.session_id ?? "",
+      // Use ?? 0 to handle undefined (init sample row doesn't set this field)
+      updated_at: BigInt(data.updated_at ?? 0),
+      // Default to 'personal' if not provided (init sample row doesn't set scope_mem)
+      scope_mem: data.scope_mem || "personal",
       importance_override: data.importance_override,
-      cold_start_until: data.cold_start_until !== null ? BigInt(data.cold_start_until) : null,
+      // Use BigInt(0) for null cold_start_until (LanceDB makeArrowTable can't infer null BigInt)
+      cold_start_until: BigInt(data.cold_start_until ?? 0),
       metadata: data.metadata,
       source_type: data.source_type,
-      drift_note: data.drift_note ?? null,
-      drift_detected_at: data.drift_detected_at !== null ? BigInt(data.drift_detected_at) : null,
-      last_used_at: data.last_used_at != null ? BigInt(data.last_used_at) : null,
-      usefulness_score: data.usefulness_score ?? null,
+      source: data.source,
+      // Use empty string for null drift_note (LanceDB makeArrowTable can't infer null)
+      drift_note: data.drift_note ?? "",
+      drift_detected_at: BigInt(data.drift_detected_at ?? 0),
+      last_used_at: BigInt(data.last_used_at ?? 0),
+      // Use 0.0 for null usefulness_score
+      usefulness_score: data.usefulness_score ?? 0,
       recall_count: data.recall_count ?? 0
     };
   }
@@ -3295,6 +3438,7 @@ var LanceDBAdapter = class {
       description: r.description ?? "",
       driftNote: r.drift_note ?? null,
       driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
+      source: r.source ?? "",
       last_used_at: Number(r.last_used_at ?? 0),
       usefulness_score: r.usefulness_score ?? 0.5,
       recall_count: r.recall_count ?? 0
@@ -3329,6 +3473,11 @@ var LanceDBAdapter = class {
       importanceOverride: r.importance_override ?? 1,
       coldStartUntil: r.cold_start_until !== null ? Number(r.cold_start_until) : null,
       matchReason,
+      name: r.name ?? "",
+      description: r.description ?? "",
+      driftNote: r.drift_note ?? null,
+      driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
+      source: r.source ?? "",
       last_used_at: r.last_used_at !== null ? Number(r.last_used_at) : null,
       usefulness_score: r.usefulness_score ?? null,
       recall_count: r.recall_count ?? 0
@@ -3368,6 +3517,7 @@ var LanceDBAdapter = class {
       cold_start_until: coldStartUntil,
       metadata: JSON.stringify(entry.metadata || {}),
       source_type: entry.source_type || "text",
+      source: entry.source || "",
       drift_note: entry.driftNote || null,
       drift_detected_at: entry.driftDetectedAt || null,
       last_used_at: entry.last_used_at ?? null,
@@ -3647,6 +3797,30 @@ var LanceDBAdapter = class {
     return deleted;
   }
   // ─── Additional HawkDB-compatible methods ────────────────────────────────────
+  async ftsSearch(query, topK, scope, sourceTypes) {
+    if (!this.table) await this.init();
+    let results = await this.table.search(query, "fts").limit(topK * 4).toArray();
+    results = results.filter((r) => r.deleted_at === null);
+    if (scope) results = results.filter((r) => r.scope === scope);
+    if (sourceTypes && sourceTypes.length > 0) {
+      results = results.filter((r) => {
+        const type2 = r.source_type || "text";
+        return sourceTypes.includes(type2);
+      });
+    }
+    const now = Date.now();
+    results = results.filter((r) => {
+      const expiresAt = Number(r.expires_at || 0);
+      return expiresAt === 0 || expiresAt > now;
+    });
+    const retrieved = [];
+    for (const row of results) {
+      const score = row._relevance ?? 0;
+      retrieved.push(this._rowToRetrieved(row, score));
+      if (retrieved.length >= topK) break;
+    }
+    return retrieved;
+  }
   async search(queryVector, topK, minScore, scope, sourceTypes) {
     if (!this.table) await this.init();
     let results = await this.table.search(queryVector).limit(topK * 4).toArray();
@@ -3713,6 +3887,7 @@ var LanceDBAdapter = class {
           updatedAt: Number(r.updated_at ?? Date.now()),
           metadata: JSON.parse(r.metadata || "{}"),
           source_type: r.source_type || "text",
+          source: r.source ?? "",
           name: r.name ?? "",
           description: r.description ?? "",
           driftNote: r.drift_note ?? null,

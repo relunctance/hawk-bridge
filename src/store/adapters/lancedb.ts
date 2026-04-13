@@ -42,7 +42,7 @@ export class LanceDBAdapter implements MemoryStore {
         const sampleRow = this._makeRow({
           id: '__init__',
           text: '__init__',
-          vector: new Float32Array(0),
+          vector: new Float32Array(DEFAULT_EMBEDDING_DIM),
           category: 'fact',
           scope: 'system',
           importance: 0,
