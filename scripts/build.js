@@ -8,7 +8,7 @@ const EXTERNALS = [
   'openclaw', 'https-proxy-agent', 'lancedb', '@lancedb/*',
   'openai', 'rank_bm25', 'crypto',
   'pino', 'prom-client', 'pino-std-serializers',
-  'node:os', 'node:fs', 'node:path', 'node:crypto', 'node:stream', 'node:util', 'node:async_hooks',
+  'node:os', 'os', 'node:fs', 'node:path', 'node:crypto', 'node:stream', 'node:util', 'node:async_hooks',
 ];
 
 const builds = [

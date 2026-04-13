@@ -425,17 +425,17 @@ import { spawn, exec as execSync } from "child_process";
 import { promisify } from "util";
 import * as fs2 from "fs";
 import * as path4 from "path";
-import * as os4 from "os";
+import * as os3 from "os";
 
 // src/store/adapters/lancedb.ts
 init_embeddings();
 import * as path2 from "path";
-import * as os3 from "os";
+import * as os2 from "os";
 
 // src/config.ts
 import * as fs from "fs";
 import * as path from "path";
-import * as os2 from "os";
+import * as os from "os";
 
 // node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
@@ -3229,9 +3229,9 @@ function deepMerge(base, override) {
 }
 
 // src/config.ts
-var OPENCLAW_CONFIG_PATH = path.join(os2.homedir(), ".openclaw", "openclaw.json");
-var OPENCLAW_AGENT_MODELS = path.join(os2.homedir(), ".openclaw", "agents", "main", "agent", "models.json");
-var HAWK_CONFIG_DIR = path.join(os2.homedir(), ".hawk");
+var OPENCLAW_CONFIG_PATH = path.join(os.homedir(), ".openclaw", "openclaw.json");
+var OPENCLAW_AGENT_MODELS = path.join(os.homedir(), ".openclaw", "agents", "main", "agent", "models.json");
+var HAWK_CONFIG_DIR = path.join(os.homedir(), ".hawk");
 var cachedOpenClawConfig = null;
 var cachedAgentModels = null;
 function loadOpenClawConfig() {
@@ -3468,7 +3468,7 @@ var LanceDBAdapter = class {
   embedder = null;
   config;
   constructor(dbPath) {
-    const home = os3.homedir();
+    const home = os2.homedir();
     this.dbPath = dbPath ?? path2.join(home, ".hawk", "lancedb");
   }
   async init() {
@@ -4441,6 +4441,7 @@ init_embeddings();
 
 // src/hooks/hawk-recall/handler.ts
 import * as path3 from "path";
+import { homedir as homedir3 } from "os";
 init_embeddings();
 init_logger();
 init_metrics();
@@ -4449,7 +4450,7 @@ var bm25DirtyGlobal = false;
 function markBm25Dirty() {
   bm25DirtyGlobal = true;
 }
-var DRIFT_VERIFY_QUEUE = path3.join(os.homedir(), ".hawk", "drift-verify-queue.jsonl");
+var DRIFT_VERIFY_QUEUE = path3.join(homedir3(), ".hawk", "drift-verify-queue.jsonl");
 
 // src/hooks/hawk-capture/handler.ts
 init_logger();
@@ -4470,7 +4471,7 @@ async function getEmbedder() {
   }
   return embedder;
 }
-var AUDIT_LOG_PATH = path4.join(os4.homedir(), ".hawk", "audit.log");
+var AUDIT_LOG_PATH = path4.join(os3.homedir(), ".hawk", "audit.log");
 async function withRetry(fn, maxAttempts = 3, delayMs = 1e3) {
   let lastErr;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -4692,7 +4693,7 @@ async function handleSaturation(text, threshold = 0.7) {
   }
   return false;
 }
-var SESSIONS_JSON_PATH = path4.join(os4.homedir(), ".openclaw", "agents", "main", "sessions", "sessions.json");
+var SESSIONS_JSON_PATH = path4.join(os3.homedir(), ".openclaw", "agents", "main", "sessions", "sessions.json");
 async function handleSessionCompaction(event) {
   try {
     const config = await getConfig();
@@ -4714,7 +4715,7 @@ async function handleSessionCompaction(event) {
       return;
     }
     const scriptPath = path4.join(
-      os4.homedir(),
+      os3.homedir(),
       ".openclaw",
       "workspace",
       "hawk-bridge",

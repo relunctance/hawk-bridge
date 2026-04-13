@@ -52,7 +52,7 @@ const DREAM_CONFIG = {
 };
 
 // Drift verify queue — memories requiring forced re-verify after extended drift
-const DRIFT_VERIFY_QUEUE = path.join(os.homedir(), '.hawk', 'drift-verify-queue.jsonl');
+const DRIFT_VERIFY_QUEUE = path.join(homedir(), '.hawk', 'drift-verify-queue.jsonl');
 
 // ─── Consolidation Lock (prevents concurrent dream runs) ────────────────────
 // Lock file: ~/.hawk/.consolidate-lock
