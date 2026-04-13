@@ -499,16 +499,21 @@ async function handleSessionCompaction(event: HookEvent): Promise<void> {
 }
 
 const captureHandler = async (event: HookEvent) => {
+  // DEBUG: log all events to trace hook invocations
+  logger.debug({ type: event.type, action: event.action, sessionKey: event.sessionKey }, 'hawk-capture: event received');
+
   // Handle session:compact:after — captures AI replies that bypassed message:sent
   if (event.type === 'session:compact:after') {
     await handleSessionCompaction(event);
     return;
   }
 
-  if (event.type !== 'message') return;
+  // Determine message direction
   const isOutbound = event.action === 'sent';
-  const isInbound = event.action === 'received';
-  if (!isOutbound && !isInbound) return;
+  const isInbound = event.action === 'received' || event.type === 'message:preprocessed';
+
+  // Skip non-message events and non-inbound/outbound messages
+  if (event.type !== 'message' && !isInbound) return;
 
   // Outbound messages require success flag; inbound don't have that field
   if (isOutbound && !event.context?.success) return;

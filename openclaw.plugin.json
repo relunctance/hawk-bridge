@@ -16,6 +16,7 @@
       "events": [
         "message:sent",
         "message:received",
+        "message:preprocessed",
         "session:compact:after"
       ],
       "description": "Auto-extract and store memories from both inbound user messages and outbound agent responses"

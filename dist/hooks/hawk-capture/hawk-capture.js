@@ -4789,14 +4789,14 @@ async function handleSessionCompaction(event) {
   }
 }
 var captureHandler = async (event) => {
+  logger.debug({ type: event.type, action: event.action, sessionKey: event.sessionKey }, "hawk-capture: event received");
   if (event.type === "session:compact:after") {
     await handleSessionCompaction(event);
     return;
   }
-  if (event.type !== "message") return;
   const isOutbound = event.action === "sent";
-  const isInbound = event.action === "received";
-  if (!isOutbound && !isInbound) return;
+  const isInbound = event.action === "received" || event.type === "message:preprocessed";
+  if (event.type !== "message" && !isInbound) return;
   if (isOutbound && !event.context?.success) return;
   try {
     const config = await getConfig();
