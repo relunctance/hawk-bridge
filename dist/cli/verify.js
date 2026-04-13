@@ -3126,7 +3126,7 @@ async function getConfig() {
           config.embedding.provider = "ollama";
           config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
           config.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
-          config.embedding.dimensions = 768;
+          config.embedding.dimensions = parseInt(process.env.HAWK_EMBEDDING_DIM || "768", 10);
         } else {
           const openclawkEmbed = getAgentModelKey("minimax");
           if (openclawkEmbed?.apiKey) {

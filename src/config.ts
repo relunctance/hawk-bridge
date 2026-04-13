@@ -225,11 +225,12 @@ export async function getConfig(): Promise<HawkConfig> {
       const hasExplicitEmbedConfig = process.env.HAWK_EMBED_PROVIDER || process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_MODEL;
       if (!hasExplicitEmbedConfig) {
         // OLLAMA_BASE_URL is checked first — it overrides config file values (e.g. config.json's Jina settings)
+        // OLLAMA_BASE_URL always wins when set, regardless of HAWK_EMBED_* env vars
         if (process.env.OLLAMA_BASE_URL) {
           config.embedding.provider = 'ollama';
           config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
           config.embedding.model = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
-          config.embedding.dimensions = 768;
+          config.embedding.dimensions = parseInt(process.env.HAWK_EMBEDDING_DIM || '768', 10);
         } else {
           const openclawkEmbed = getAgentModelKey('minimax');
           if (openclawkEmbed?.apiKey) {
