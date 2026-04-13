@@ -9,6 +9,8 @@
  *   HAWK_EMBEDDING_DIM=1024 node dist/cli/write.js --reinit
  */
 
+import * as path from 'path';
+import * as os from 'os';
 import { getMemoryStore } from '../store/factory.js';
 import type { MemoryEntry } from '../types.js';
 import { randomUUID } from 'crypto';
@@ -26,12 +28,18 @@ function hasFlag(flag: string): boolean {
 
 // ── Re-init (dimension migration) ────────────────────────────────────────────
 async function reinit() {
+  const fs = await import('fs/promises');
   const store = await getMemoryStore();
   await store.init();
 
-  // 1. Read ALL existing records (keep all fields; vector will be regenerated)
-  const memories = await (store as any).getAllMemories();
+  // 1. Export ALL existing records to backup before dropping
+  const memories = await (store as any).exportAll();
+  const timestamp = Date.now();
+  const backupPath = path.join(os.homedir(), '.hawk', `migrate-backup-${timestamp}.json`);
+  await fs.mkdir(path.join(os.homedir(), '.hawk'), { recursive: true });
+  await fs.writeFile(backupPath, JSON.stringify({ memories, exportedAt: new Date().toISOString() }, null, 2));
   console.log(`[hawk migrate] Found ${memories.length} records to migrate`);
+  console.log(`[hawk migrate] Backup written to ${backupPath}`);
 
   // 2. Drop old table so init() re-creates with current DEFAULT_EMBEDDING_DIM
   await store.reset();
@@ -78,6 +86,49 @@ async function reinit() {
       }
     }
     process.stdout.write(`[hawk migrate] Progress: ${Math.min(i + BATCH, memories.length)}/${memories.length}\r`);
+  }
+
+  // 4. Verify new vectors are non-zero (check first 3)
+  const verifyCount = Math.min(3, migrated);
+  let verifyFailed = false;
+  for (let k = 0; k < verifyCount; k++) {
+    // Re-fetch a few entries to check vectors
+    const all = await (store as any).getAllMemories();
+    if (all.length > 0) {
+      const sample = all[k % all.length];
+      const nonZero = sample.vector && sample.vector.some((v: number) => v !== 0);
+      if (!nonZero) {
+        console.warn(`[hawk migrate] WARNING: Memory ${sample.id} has zero vector`);
+        verifyFailed = true;
+      }
+    }
+  }
+
+  if (verifyFailed) {
+    // Restore from backup
+    console.error(`[hawk migrate] VERIFICATION FAILED — restoring from backup`);
+    try {
+      const raw = await fs.readFile(backupPath, 'utf-8');
+      const backup = JSON.parse(raw);
+      await store.reset();
+      await store.init();
+      for (const mem of backup.memories) {
+        await store.store(mem);
+      }
+      console.log(`[hawk migrate] Restored ${backup.memories.length} records from backup`);
+    } catch (restoredErr: any) {
+      console.error(`[hawk migrate] RESTORE FAILED: ${restoredErr.message}`);
+    }
+    throw new Error(`Migration verification failed — restored from backup at ${backupPath}`);
+  }
+
+  // 5. Success: delete backup file
+  console.log(`[hawk migrate] Verification passed (${verifyCount} samples checked)`);
+  try {
+    await fs.unlink(backupPath);
+    console.log(`[hawk migrate] Backup file deleted`);
+  } catch {
+    console.warn(`[hawk migrate] Could not delete backup file (non-critical)`);
   }
 
   console.log(`\n[hawk migrate] Done — ${migrated} migrated, ${errors} errors`);

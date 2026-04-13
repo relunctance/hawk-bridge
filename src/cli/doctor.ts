@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * hawk-doctor: Diagnostic tool to verify hawk-bridge installation
- * Run: node dist/cli/doctor.js
+ * Run: node dist/cli/doctor.js [--test-connection]
  */
 
 import * as fs from 'fs';
@@ -10,6 +10,7 @@ import * as os from 'os';
 import { execSync } from 'child_process';
 import { getConfig } from '../config.js';
 import { Embedder } from '../embeddings.js';
+import { logger } from '../logger.js';
 
 interface Check {
   name: string;
@@ -23,14 +24,24 @@ function check(name: string, fn: () => { status: Check['status']; message: strin
   try {
     const result = fn();
     checks.push({ name, ...result });
+    logger.debug({ name, status: result.status }, result.message);
   } catch (e: any) {
     checks.push({ name, status: 'fail', message: `Error: ${e.message}` });
+    logger.debug({ name, status: 'fail', err: e.message }, 'Check failed');
   }
 }
 
 async function runDoctor() {
   const args = process.argv.slice(2);
-  const testEmbed = args.includes('--test-embed') || args.includes('-e');
+  const testConnection = args.includes('--test-connection') || args.includes('--test-embed') || args.includes('-e');
+  const configHistory = args.includes('--config-history');
+
+  // Handle --config-history flag
+  if (configHistory) {
+    const { printConfigHistory } = await import('../config.js');
+    printConfigHistory();
+    return;
+  }
 
   console.log('\n🦅 hawk-bridge 诊断工具\n' + '═'.repeat(50) + '\n');
 
@@ -47,12 +58,10 @@ async function runDoctor() {
   // 2. LanceDB check
   check('LanceDB', () => {
     try {
-      // Check by examining node_modules
       const lancedbPath = path.join(process.cwd(), 'node_modules', '@lancedb', 'lancedb', 'dist', 'index.js');
       if (fs.existsSync(lancedbPath)) {
         return { status: 'pass', message: '@lancedb/lancedb installed' };
       }
-      // Alternative: check package.json
       const pkgJson = path.join(process.cwd(), 'node_modules', '@lancedb', 'lancedb', 'package.json');
       if (fs.existsSync(pkgJson)) {
         return { status: 'pass', message: '@lancedb/lancedb installed (package.json found)' };
@@ -76,7 +85,7 @@ async function runDoctor() {
     }
   });
 
-  // 4. Config parse check (sync - just check yaml loading)
+  // 4. Config parse check
   check('配置解析', () => {
     try {
       const yamlPath = path.join(os.homedir(), '.hawk', 'config.yaml');
@@ -146,23 +155,28 @@ async function runDoctor() {
     return { status: 'info', message: 'openclaw.plugin.json 未找到（仅开发检查）' };
   });
 
-  // Summary
-  // Embedder connectivity test (async, only when --test-embed)
-  if (testEmbed) {
+  // 9. Embedder connectivity test (async, only when --test-connection)
+  if (testConnection) {
     console.log('\n正在测试 Embedder 连通性...\n');
     try {
       const config: any = await getConfig();
       const embedder = new Embedder(config.embedding);
       const start = Date.now();
-      const vectors = await embedder.embed(['hello']);
+      const vectors = await embedder.embed(['health check probe']);
       const latency = Date.now() - start;
       if (vectors && vectors.length > 0 && vectors[0].length > 0) {
         console.log(`✅ Embedder 连通性: 成功 (${latency}ms, ${vectors[0].length}维向量)\n`);
+        console.log(`   Provider: ${config.embedding.provider}`);
+        console.log(`   Model: ${config.embedding.model}`);
+        console.log(`   Dimensions: ${config.embedding.dimensions}\n`);
+        logger.info({ latency, dimensions: vectors[0].length, provider: config.embedding.provider, model: config.embedding.model }, 'Embedding connectivity test passed');
       } else {
         console.log(`⚠️ Embedder 连通性: 返回结果异常\n`);
+        logger.warn({ vectors }, 'Embedding connectivity returned unexpected result');
       }
     } catch (e: any) {
       console.log(`❌ Embedder 连通性: 失败 — ${e.message}\n`);
+      logger.error({ err: e.message }, 'Embedding connectivity test failed');
     }
   }
 

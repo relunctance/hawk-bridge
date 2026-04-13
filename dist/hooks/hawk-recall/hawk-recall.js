@@ -14,10 +14,68 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
+// src/logger.ts
+import pino from "pino";
+var logger;
+var init_logger = __esm({
+  "src/logger.ts"() {
+    "use strict";
+    logger = pino({
+      level: process.env.HAWK_LOG_LEVEL || "info",
+      formatters: {
+        level: (label) => ({ level: label })
+      },
+      timestamp: pino.stdTimeFunctions.isoTime
+    });
+  }
+});
+
+// src/metrics.ts
+import { Registry, Counter, Histogram, Gauge } from "prom-client";
+var register, httpRequestsTotal, httpRequestDuration, embeddingLatency, memoryCount, memoryErrors;
+var init_metrics = __esm({
+  "src/metrics.ts"() {
+    "use strict";
+    register = new Registry();
+    httpRequestsTotal = new Counter({
+      name: "hawk_http_requests_total",
+      help: "Total number of HTTP requests",
+      labelNames: ["method", "path", "status"],
+      registers: [register]
+    });
+    httpRequestDuration = new Histogram({
+      name: "hawk_http_request_duration_seconds",
+      help: "HTTP request duration in seconds",
+      labelNames: ["method", "path"],
+      buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2],
+      registers: [register]
+    });
+    embeddingLatency = new Histogram({
+      name: "hawk_embedding_duration_seconds",
+      help: "Embedding latency in seconds",
+      labelNames: ["provider"],
+      buckets: [0.1, 0.25, 0.5, 1, 2, 5],
+      registers: [register]
+    });
+    memoryCount = new Gauge({
+      name: "hawk_memory_count",
+      help: "Number of memories in the store",
+      registers: [register]
+    });
+    memoryErrors = new Counter({
+      name: "hawk_errors_total",
+      help: "Total number of memory errors",
+      labelNames: ["type"],
+      registers: [register]
+    });
+  }
+});
+
 // src/embeddings.ts
 var embeddings_exports = {};
 __export(embeddings_exports, {
   Embedder: () => Embedder,
+  fetchWithRetry: () => fetchWithRetry,
   formatRecallForContext: () => formatRecallForContext,
   getProxyUrl: () => getProxyUrl,
   setProxyUrl: () => setProxyUrl
@@ -26,6 +84,30 @@ import http from "http";
 import https from "https";
 import { URL } from "url";
 import { HttpsProxyAgent } from "https-proxy-agent";
+async function fetchWithRetry(url, options = {}, retries = 3) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const response = await fetchWithTimeout(url, options, options.timeout ?? FETCH_TIMEOUT_MS);
+      return response;
+    } catch (err) {
+      lastError = err;
+      const isNetworkError = err?.message?.includes("timeout") || err?.message?.includes("ECONNREFUSED") || err?.message?.includes("ENOTFOUND") || err?.message?.includes("socket hang up") || err?.code === "ECONNREFUSED" || err?.code === "ENOTFOUND" || err?.code === "ETIMEDOUT";
+      if (isNetworkError && attempt < retries) {
+        const delay = 500 * Math.pow(2, attempt - 1);
+        logger.warn({ attempt, retries, delayMs: delay, url, error: err.message }, "fetchWithRetry: retrying after network error");
+        await new Promise((res) => setTimeout(res, delay));
+      } else if (attempt < retries && err?.message?.includes("status code 5")) {
+        const delay = 500 * Math.pow(2, attempt - 1);
+        logger.warn({ attempt, retries, delayMs: delay, url, error: err.message }, "fetchWithRetry: retrying after 5xx error");
+        await new Promise((res) => setTimeout(res, delay));
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw lastError;
+}
 function setProxyUrl(url) {
   _activeProxyUrl = url;
   _proxyAgent = null;
@@ -41,11 +123,12 @@ function getProxyAgent() {
   }
   return _proxyAgent;
 }
-async function fetchWithTimeout(url, init) {
+async function fetchWithTimeout(url, init, timeoutMs) {
   const parsedUrl = new URL(url);
   const isHttps = parsedUrl.protocol === "https:";
   const agent = getProxyAgent();
   const body = init?.body || null;
+  const timeout = timeoutMs ?? FETCH_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
     const headers = {
       ...init?.headers || {}
@@ -63,7 +146,7 @@ async function fetchWithTimeout(url, init) {
     };
     const timer = setTimeout(() => {
       req.destroy(new Error("Fetch timeout"));
-    }, FETCH_TIMEOUT_MS);
+    }, timeout);
     const mod = isHttps ? https : http;
     const req = mod.request(options, (res) => {
       const chunks = [];
@@ -99,6 +182,8 @@ var FETCH_TIMEOUT_MS, _activeProxyUrl, _proxyAgent, Embedder;
 var init_embeddings = __esm({
   "src/embeddings.ts"() {
     "use strict";
+    init_logger();
+    init_metrics();
     FETCH_TIMEOUT_MS = 15e3;
     _activeProxyUrl = process.env.HAWK_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || "";
     _proxyAgent = null;
@@ -175,137 +260,187 @@ var init_embeddings = __esm({
       }
       // ---- Qianwen (阿里云 DashScope) — OpenAI-compatible, 国内首选 ----
       async embedQianwen(texts) {
-        const apiKey = this.config.apiKey || process.env.QWEN_API_KEY || "";
-        const baseURL = this.config.baseURL || "https://dashscope.aliyuncs.com/api/v1";
-        const resp = await fetchWithTimeout(
-          `${baseURL}/services/embeddings/text-embedding/text-embedding`,
-          {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${apiKey}`,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              model: this.config.model || "text-embedding-v1",
-              input: { text: texts }
-            })
+        const start = Date.now();
+        try {
+          const apiKey = this.config.apiKey || process.env.QWEN_API_KEY || "";
+          const baseURL = this.config.baseURL || "https://dashscope.aliyuncs.com/api/v1";
+          const resp = await fetchWithRetry(
+            `${baseURL}/services/embeddings/text-embedding/text-embedding`,
+            {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${apiKey}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                model: this.config.model || "text-embedding-v1",
+                input: { text: texts }
+              })
+            }
+          );
+          if (!resp.ok) {
+            const err = await resp.text();
+            throw new Error(`Qianwen embedding error: ${resp.status} ${err}`);
           }
-        );
-        if (!resp.ok) {
-          const err = await resp.text();
-          throw new Error(`Qianwen embedding error: ${resp.status} ${err}`);
+          const data = await resp.json();
+          if (!data.output?.embeddings?.length) {
+            throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
+          }
+          const result = data.output.embeddings.map((e) => e.embedding);
+          embeddingLatency.observe({ provider: "qianwen" }, (Date.now() - start) / 1e3);
+          return result;
+        } catch (err) {
+          embeddingLatency.observe({ provider: "qianwen" }, (Date.now() - start) / 1e3);
+          throw err;
         }
-        const data = await resp.json();
-        if (!data.output?.embeddings?.length) {
-          throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
-        }
-        return data.output.embeddings.map((e) => e.embedding);
       }
       // ---- OpenAI-Compatible (generic endpoint — user provides baseURL + apiKey) ----
       async embedOpenAICompat(texts) {
-        const baseURL = this.config.baseURL;
-        const apiKey = this.config.apiKey;
-        if (!baseURL || !apiKey) {
-          throw new Error("openai-compat provider requires both baseURL and apiKey in config");
+        const start = Date.now();
+        try {
+          const baseURL = this.config.baseURL;
+          const apiKey = this.config.apiKey;
+          if (!baseURL || !apiKey) {
+            throw new Error("openai-compat provider requires both baseURL and apiKey in config");
+          }
+          const resp = await fetchWithRetry(`${baseURL}/embeddings`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+              model: this.config.model || "text-embedding-3-small",
+              input: texts
+            })
+          });
+          if (!resp.ok) {
+            const err = await resp.text();
+            throw new Error(`OpenAI-compatible embedding error: ${resp.status} ${err}`);
+          }
+          const data = await resp.json();
+          if (!data.data?.length) {
+            throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
+          }
+          const result = data.data.map((item) => item.embedding);
+          embeddingLatency.observe({ provider: "openai-compat" }, (Date.now() - start) / 1e3);
+          return result;
+        } catch (err) {
+          embeddingLatency.observe({ provider: "openai-compat" }, (Date.now() - start) / 1e3);
+          throw err;
         }
-        const resp = await fetchWithTimeout(`${baseURL}/embeddings`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${apiKey}`
-          },
-          body: JSON.stringify({
-            model: this.config.model || "text-embedding-3-small",
-            input: texts
-          })
-        });
-        if (!resp.ok) {
-          const err = await resp.text();
-          throw new Error(`OpenAI-compatible embedding error: ${resp.status} ${err}`);
-        }
-        const data = await resp.json();
-        if (!data.data?.length) {
-          throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
-        }
-        return data.data.map((item) => item.embedding);
       }
       // ---- OpenAI ----
       async embedOpenAI(texts) {
-        const { OpenAI } = await import("openai");
-        const client = new OpenAI({
-          apiKey: this.config.apiKey || process.env.OPENAI_API_KEY,
-          baseURL: this.config.baseURL || void 0,
-          timeout: FETCH_TIMEOUT_MS,
-          // @ts-ignore — Node-specific http agent for proxy
-          httpAgent: getProxyAgent(),
-          httpsAgent: getProxyAgent()
-        });
-        const model = this.config.model || "text-embedding-3-small";
-        const resp = await client.embeddings.create({ model, input: texts });
-        return resp.data.map((item) => item.embedding);
+        const start = Date.now();
+        try {
+          const { OpenAI } = await import("openai");
+          const client = new OpenAI({
+            apiKey: this.config.apiKey || process.env.OPENAI_API_KEY,
+            baseURL: this.config.baseURL || void 0,
+            timeout: FETCH_TIMEOUT_MS,
+            // @ts-ignore — Node-specific http agent for proxy
+            httpAgent: getProxyAgent(),
+            httpsAgent: getProxyAgent()
+          });
+          const model = this.config.model || "text-embedding-3-small";
+          const resp = await client.embeddings.create({ model, input: texts });
+          const result = resp.data.map((item) => item.embedding);
+          embeddingLatency.observe({ provider: "openai" }, (Date.now() - start) / 1e3);
+          return result;
+        } catch (err) {
+          embeddingLatency.observe({ provider: "openai" }, (Date.now() - start) / 1e3);
+          throw err;
+        }
       }
       // ---- Jina AI (free tier) ----
       async embedJina(texts) {
-        const apiKey = this.config.apiKey || process.env.JINA_API_KEY || "";
-        const model = this.config.model || "jina-embeddings-v5-small";
-        const resp = await fetchWithTimeout("https://api.jina.ai/v1/embeddings", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...apiKey ? { "Authorization": `Bearer ${apiKey}` } : {}
-          },
-          body: JSON.stringify({ model, input: texts })
-        });
-        if (!resp.ok) throw new Error(`Jina error: ${resp.status}`);
-        const data = await resp.json();
-        return data.data.map((item) => item.embedding);
+        const start = Date.now();
+        try {
+          const apiKey = this.config.apiKey || process.env.JINA_API_KEY || "";
+          const model = this.config.model || "jina-embeddings-v5-small";
+          const resp = await fetchWithRetry("https://api.jina.ai/v1/embeddings", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...apiKey ? { "Authorization": `Bearer ${apiKey}` } : {}
+            },
+            body: JSON.stringify({ model, input: texts })
+          });
+          if (!resp.ok) throw new Error(`Jina error: ${resp.status}`);
+          const data = await resp.json();
+          const result = data.data.map((item) => item.embedding);
+          embeddingLatency.observe({ provider: "jina" }, (Date.now() - start) / 1e3);
+          return result;
+        } catch (err) {
+          embeddingLatency.observe({ provider: "jina" }, (Date.now() - start) / 1e3);
+          throw err;
+        }
       }
       // ---- Cohere (free tier) ----
       async embedCohere(texts) {
-        const apiKey = this.config.apiKey || process.env.COHERE_API_KEY || "";
-        const resp = await fetchWithTimeout("https://api.cohere.ai/v1/embed", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${apiKey}`
-          },
-          body: JSON.stringify({
-            model: "embed-english-v3.0",
-            texts,
-            input_type: "search_document"
-          })
-        });
-        if (!resp.ok) throw new Error(`Cohere error: ${resp.status}`);
-        const data = await resp.json();
-        return data.embeddings;
+        const start = Date.now();
+        try {
+          const apiKey = this.config.apiKey || process.env.COHERE_API_KEY || "";
+          const resp = await fetchWithRetry("https://api.cohere.ai/v1/embed", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+              model: "embed-english-v3.0",
+              texts,
+              input_type: "search_document"
+            })
+          });
+          if (!resp.ok) throw new Error(`Cohere error: ${resp.status}`);
+          const data = await resp.json();
+          const result = data.embeddings;
+          embeddingLatency.observe({ provider: "cohere" }, (Date.now() - start) / 1e3);
+          return result;
+        } catch (err) {
+          embeddingLatency.observe({ provider: "cohere" }, (Date.now() - start) / 1e3);
+          throw err;
+        }
       }
       // ---- Ollama (local free) ----
       async embedOllama(texts) {
-        const baseURL = (this.config.baseURL || process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
-        const model = this.config.model || process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
-        const embedPath = process.env.OLLAMA_EMBED_PATH || "/embeddings";
-        const normalizedBase = baseURL.replace(/\/$/, "");
-        const url = `${normalizedBase}${embedPath}`;
-        const resp = await fetchWithTimeout(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model, input: texts })
-        });
-        if (!resp.ok) {
-          const err = await resp.text();
-          throw new Error(`Ollama embedding error: ${resp.status} ${err}`);
+        const start = Date.now();
+        try {
+          const baseURL = (this.config.baseURL || process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
+          const model = this.config.model || process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
+          const embedPath = process.env.OLLAMA_EMBED_PATH || "/embeddings";
+          const normalizedBase = baseURL.replace(/\/$/, "");
+          const url = `${normalizedBase}${embedPath}`;
+          const resp = await fetchWithRetry(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model, input: texts })
+          });
+          if (!resp.ok) {
+            const err = await resp.text();
+            throw new Error(`Ollama embedding error: ${resp.status} ${err}`);
+          }
+          const data = await resp.json();
+          if (Array.isArray(data.data)) {
+            const sorted = data.data.sort((a, b) => a.index - b.index);
+            const result = sorted.map((item) => item.embedding);
+            embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
+            return result;
+          }
+          if (Array.isArray(data.embeddings) && Array.isArray(data.embeddings[0])) {
+            embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
+            return data.embeddings;
+          } else if (Array.isArray(data.embeddings)) {
+            embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
+            return [data.embeddings];
+          }
+          throw new Error(`Unexpected embedding response: ${JSON.stringify(data)}`);
+        } catch (err) {
+          embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
+          throw err;
         }
-        const data = await resp.json();
-        if (Array.isArray(data.data)) {
-          const sorted = data.data.sort((a, b) => a.index - b.index);
-          return sorted.map((item) => item.embedding);
-        }
-        if (Array.isArray(data.embeddings) && Array.isArray(data.embeddings[0])) {
-          return data.embeddings;
-        } else if (Array.isArray(data.embeddings)) {
-          return [data.embeddings];
-        }
-        throw new Error(`Unexpected embedding response: ${JSON.stringify(data)}`);
       }
     };
   }
@@ -2912,6 +3047,9 @@ var safeLoad = renamed("safeLoad", "load");
 var safeLoadAll = renamed("safeLoadAll", "loadAll");
 var safeDump = renamed("safeDump", "dump");
 
+// src/config.ts
+import * as crypto from "crypto";
+
 // src/constants.ts
 var BM25_K1 = parseFloat(process.env.HAWK_BM25_K1 || "1.5");
 var BM25_B = parseFloat(process.env.HAWK_BM25_B || "0.75");
@@ -2921,7 +3059,7 @@ var NOISE_SIMILARITY_THRESHOLD = parseFloat(process.env.HAWK_NOISE_THRESHOLD || 
 var VECTOR_SEARCH_MULTIPLIER = parseInt(process.env.HAWK_VECTOR_SEARCH_MULTIPLIER || "4", 10);
 var BM25_SEARCH_MULTIPLIER = parseInt(process.env.HAWK_BM25_SEARCH_MULTIPLIER || "4", 10);
 var RERANK_CANDIDATE_MULTIPLIER = parseInt(process.env.HAWK_RERANK_CANDIDATE_MULTIPLIER || "3", 10);
-var BM25_QUERY_LIMIT = parseInt(process.env.HAWK_BM25_QUERY_LIMIT || "10000", 10);
+var BM25_QUERY_LIMIT = parseInt(process.env.HAWK_BM25_QUERY_LIMIT || "1000", 10);
 var DEFAULT_EMBEDDING_DIM = parseInt(process.env.HAWK_EMBEDDING_DIM || "384", 10);
 var DEFAULT_MIN_SCORE = parseFloat(process.env.HAWK_MIN_SCORE || "0.6");
 var MAX_CHUNK_SIZE = parseInt(process.env.HAWK_MAX_CHUNK_SIZE || "2000", 10);
@@ -3215,6 +3353,7 @@ async function getConfig() {
           config.llm.provider = config.llm.provider || "minimax";
         }
       }
+      await recordConfigHistory(config);
       return config;
     })();
   }
@@ -3223,14 +3362,74 @@ async function getConfig() {
 function hasEmbeddingProvider() {
   return !!(process.env.OLLAMA_BASE_URL || process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.JINA_API_KEY || process.env.OPENAI_API_KEY || process.env.COHERE_API_KEY);
 }
+var HAWK_CONFIG_VERSION = process.env.HAWK_CONFIG_VERSION || "1";
+async function recordConfigHistory(config) {
+  try {
+    const historyPath = path.join(HAWK_CONFIG_DIR, "config-history.jsonl");
+    const envSnapshot = {};
+    const relevantKeys = [
+      "OLLAMA_BASE_URL",
+      "OLLAMA_EMBED_MODEL",
+      "OLLAMA_EMBED_PATH",
+      "HAWK_EMBED_PROVIDER",
+      "HAWK_EMBED_MODEL",
+      "HAWK_EMBEDDING_DIM",
+      "HAWK_PROXY",
+      "HTTPS_PROXY",
+      "https_proxy",
+      "HAWK_CONFIG_VERSION",
+      "HAWK_LANG",
+      "HAWK_BM25_QUERY_LIMIT",
+      "HAWK_MIN_SCORE",
+      "HAWK_RERANK",
+      "HAWK_RERANK_MODEL"
+    ];
+    for (const key of relevantKeys) {
+      const val = process.env[key];
+      if (val !== void 0) {
+        envSnapshot[key] = val;
+      }
+    }
+    envSnapshot["__resolved_provider"] = config.embedding.provider;
+    envSnapshot["__resolved_dim"] = String(config.embedding.dimensions);
+    const entry = {
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      version: HAWK_CONFIG_VERSION,
+      env: envSnapshot,
+      hash: crypto.createHash("md5").update(JSON.stringify(envSnapshot)).digest("hex")
+    };
+    let entries = [];
+    if (fs.existsSync(historyPath)) {
+      const raw = fs.readFileSync(historyPath, "utf-8");
+      entries = raw.trim().split("\n").filter(Boolean).map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      }).filter((e) => e !== null);
+    }
+    entries.push(entry);
+    if (entries.length > 100) {
+      entries = entries.slice(-100);
+    }
+    const dir = path.dirname(historyPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(historyPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+  } catch {
+  }
+}
 
 // src/store/adapters/lancedb.ts
+init_logger();
+init_embeddings();
 var TABLE_NAME = "hawk_memories";
 var LanceDBAdapter = class {
   db = null;
   table = null;
   dbPath;
   embedder = null;
+  config;
   constructor(dbPath) {
     const home = os3.homedir();
     this.dbPath = dbPath ?? path2.join(home, ".hawk", "lancedb");
@@ -3283,7 +3482,7 @@ var LanceDBAdapter = class {
           const { Index } = await import("@lancedb/lancedb");
           await this.table.createIndex("text", Index.fts());
         } catch (err) {
-          console.warn(`[hawk-bridge] FTS index creation failed (non-fatal): ${err?.message}`);
+          logger.warn({ err: err?.message }, "FTS index creation failed (non-fatal)");
         }
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
@@ -3316,7 +3515,7 @@ var LanceDBAdapter = class {
         }
       }
     } catch (err) {
-      console.error("[hawk-bridge] LanceDB init failed:", err);
+      logger.error({ err }, "LanceDB init failed");
       throw err;
     }
   }
@@ -3336,7 +3535,7 @@ var LanceDBAdapter = class {
     const tableNames = await this.db.tableNames();
     if (tableNames.includes(TABLE_NAME)) {
       await this.db.dropTable(TABLE_NAME);
-      console.log(`[hawk-bridge] Dropped table '${TABLE_NAME}'`);
+      logger.info({ table: TABLE_NAME }, "Dropped table");
     }
     this.table = null;
   }
@@ -3669,6 +3868,39 @@ var LanceDBAdapter = class {
       return owner === null || owner === agentId;
     }).map((r) => this._rowToMemory(r));
   }
+  /**
+   * Export all memories as plain MemoryEntry objects (not LanceDB rows).
+   * Uses cursor-based pagination to handle large datasets.
+   * Used for backup before re-initialization.
+   */
+  async exportAll() {
+    if (!this.table) await this.init();
+    const all = [];
+    let cursor = null;
+    do {
+      const { memories, nextCursor } = await this.getAllMemoriesPaginated(void 0, cursor ?? void 0);
+      all.push(...memories);
+      cursor = nextCursor;
+    } while (cursor !== null);
+    return all;
+  }
+  /**
+   * Paginated getAllMemories — returns { memories, nextCursor }.
+   * Fetches in batches of 1000.
+   */
+  async getAllMemoriesPaginated(agentId, cursor) {
+    if (!this.table) await this.init();
+    const BATCH = 1e3;
+    const offset = cursor ? parseInt(cursor, 10) : 0;
+    const rows = await this.table.query().limit(BATCH).offset(offset).toArray();
+    const filtered = rows.filter((r) => r.deleted_at === null).filter((r) => {
+      if (!agentId) return true;
+      const owner = r.metadata?.owner_agent ?? r.metadata?.ownerAgent ?? null;
+      return owner === null || owner === agentId;
+    }).map((r) => this._rowToMemory(r));
+    const nextCursor = rows.length === BATCH ? String(offset + BATCH) : null;
+    return { memories: filtered, nextCursor };
+  }
   async listRecent(limit = 10) {
     if (!this.table) await this.init();
     const rows = await this.table.query().limit(limit * 2).toArray();
@@ -3883,7 +4115,7 @@ var LanceDBAdapter = class {
     }
     return retrieved;
   }
-  async search(queryVector, topK, minScore, scope, sourceTypes) {
+  async search(queryVector, topK, minScore, scope, sourceTypes, queryText) {
     if (!this.table) await this.init();
     let results = await this.table.search(queryVector).limit(topK * 4).toArray();
     results = results.filter((r) => r.deleted_at === null);
@@ -3909,7 +4141,46 @@ var LanceDBAdapter = class {
     for (const r of retrieved) {
       await this.incrementAccess(r.id);
     }
-    return retrieved;
+    const reranked = await this.rerankResults(queryText || "", retrieved);
+    return reranked;
+  }
+  // ─── Reranking (cross-encoder) ────────────────────────────────────────────────
+  /**
+   * Rerank results using a cross-encoder if HAWK_RERANK=true and HAWK_RERANK_MODEL is set.
+   * Calls Ollama base URL + /v1/rerank endpoint with {query, texts}.
+   */
+  async rerankResults(query, results) {
+    const rerankEnabled = process.env.HAWK_RERANK === "true";
+    const rerankModel = process.env.HAWK_RERANK_MODEL;
+    if (!rerankEnabled || !rerankModel || !query) return results;
+    try {
+      const baseURL = (this.config?.embedding?.baseURL || process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
+      const texts = results.map((r) => r.text);
+      const resp = await fetchWithRetry(`${baseURL}/v1/rerank`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, texts, model: rerankModel })
+      });
+      if (!resp.ok) {
+        logger.warn({ status: resp.status }, "Rerank endpoint returned error, skipping rerank");
+        return results;
+      }
+      const data = await resp.json();
+      if (!Array.isArray(data.results)) {
+        logger.warn({ data }, "Unexpected rerank response format, skipping");
+        return results;
+      }
+      const scoreMap = /* @__PURE__ */ new Map();
+      for (const item of data.results) {
+        scoreMap.set(item.index, item.relevance_score ?? 0);
+      }
+      const reranked = results.map((r, idx) => ({ r, score: scoreMap.get(idx) ?? 0 })).sort((a, b) => b.score - a.score).map(({ r }) => r);
+      logger.debug({ reranked: reranked.length }, "Reranking applied");
+      return reranked;
+    } catch (err) {
+      logger.warn({ err }, "Reranking failed, returning original results");
+      return results;
+    }
   }
   async count() {
     if (!this.table) await this.init();
@@ -3969,7 +4240,7 @@ var LanceDBAdapter = class {
       const memory = await this.getById(id);
       if (!memory) return false;
       if (memory.locked) {
-        console.log(`[hawk-bridge] Cannot forget locked memory: ${id}`);
+        logger.warn({ memoryId: id }, "Cannot forget locked memory");
         return false;
       }
       await this.table.update(
@@ -4072,7 +4343,7 @@ var LanceDBAdapter = class {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch (e) {
-      console.warn("[hawk-bridge] rateMemory update failed:", e);
+      logger.warn({ err: e }, "rateMemory update failed");
       return;
     }
     if (rating === "harmful") {
@@ -4089,7 +4360,7 @@ var LanceDBAdapter = class {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch (e) {
-      console.warn("[hawk-bridge] demoteMemory failed:", e);
+      logger.warn({ err: e, memoryId: id }, "demoteMemory failed");
     }
   }
   async incrementImportance(id, delta) {
@@ -4103,7 +4374,7 @@ var LanceDBAdapter = class {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch (e) {
-      console.warn("[hawk-bridge] incrementImportance failed:", e);
+      logger.warn({ err: e, memoryId: id }, "incrementImportance failed");
     }
   }
 };
@@ -4368,6 +4639,8 @@ function cosineSimilarity(a, b) {
 
 // src/hooks/hawk-recall/handler.ts
 init_embeddings();
+init_logger();
+init_metrics();
 var LANG = process.env.HAWK_LANG || "zh";
 var INJECTION_LIMIT = 5;
 var MAX_INJECTION_CHARS = 2e3;
@@ -4466,7 +4739,7 @@ ${body}` }
     const ids = JSON.parse(match[0]);
     return ids.slice(0, topN);
   } catch (e) {
-    console.warn("[hawk-recall] dualSelect failed:", e);
+    logger.warn({ err: e }, "dualSelect failed");
     return [];
   }
 }
@@ -4949,10 +5222,10 @@ ${lines.join("\n")}
         correctionHistory: m2.correctionHistory
       }));
       try {
-        const { writeFileSync, mkdirSync, existsSync: existsSync3 } = __require("fs");
+        const { writeFileSync: writeFileSync2, mkdirSync: mkdirSync2, existsSync: existsSync3 } = __require("fs");
         const dir = path3.dirname(filepath);
-        if (!existsSync3(dir)) mkdirSync(dir, { recursive: true });
-        writeFileSync(filepath, JSON.stringify({ exported_at: (/* @__PURE__ */ new Date()).toISOString(), count: exported.length, memories: exported }, null, 2));
+        if (!existsSync3(dir)) mkdirSync2(dir, { recursive: true });
+        writeFileSync2(filepath, JSON.stringify({ exported_at: (/* @__PURE__ */ new Date()).toISOString(), count: exported.length, memories: exported }, null, 2));
         event.messages.push(`
 ${injectEmoji} \u2705 \u5DF2\u5BFC\u51FA ${exported.length} \u6761\u8BB0\u5FC6\u5230
 ${filepath}
@@ -5568,7 +5841,8 @@ ${formatRecallResults(withReasons, injectEmoji)}
       }
     }
   } catch (err) {
-    console.error("[hawk-recall] Error:", err);
+    logger.error({ err }, "hawk-recall handler error");
+    memoryErrors.inc({ type: "recall_handler" });
   }
 };
 function getAgentId(ctx) {

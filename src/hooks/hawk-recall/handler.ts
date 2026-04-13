@@ -18,6 +18,8 @@ import { t } from '../../i18n/index.js';
 const LANG = (process.env.HAWK_LANG as 'zh' | 'en') || 'zh';
 import { getEmbedder } from '../../embeddings.js';
 import { RELIABILITY_THRESHOLD_HIGH, DRIFT_THRESHOLD_DAYS, EVOLUTION_SUCCESS, EVOLUTION_FAILURE } from '../../constants.js';
+import { logger } from '../../logger.js';
+import { register, httpRequestsTotal, httpRequestDuration, memoryErrors } from '../../metrics.js';
 
 // Recall injection control
 const INJECTION_LIMIT = 5;          // 最多注入 5 条记忆
@@ -148,7 +150,7 @@ async function dualSelect(
     const ids = JSON.parse(match[0]) as string[];
     return ids.slice(0, topN);
   } catch (e) {
-    console.warn('[hawk-recall] dualSelect failed:', e);
+    logger.warn({ err: e }, 'dualSelect failed');
     return [];
   }
 }
@@ -1139,7 +1141,8 @@ const recallHandler = async (event: HookEvent) => {
     }
 
   } catch (err) {
-    console.error('[hawk-recall] Error:', err);
+    logger.error({ err }, 'hawk-recall handler error');
+    memoryErrors.inc({ type: 'recall_handler' });
   }
 };
 

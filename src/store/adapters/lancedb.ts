@@ -17,6 +17,9 @@ import {
   RECENCY_HALF_LIFE_MS, WEIGHT_BASE, WEIGHT_USEFULNESS, WEIGHT_RECENCY, ACCESS_BONUS_MAX,
 } from '../../constants.js';
 import type { MemoryStore } from '../interface.js';
+import { logger } from '../../logger.js';
+import { memoryErrors } from '../../metrics.js';
+import { fetchWithRetry } from '../../embeddings.js';
 
 const TABLE_NAME = 'hawk_memories';
 
@@ -25,6 +28,7 @@ export class LanceDBAdapter implements MemoryStore {
   private table: any = null;
   private dbPath: string;
   private embedder: Embedder | null = null;
+  private config?: HawkConfig;
 
   constructor(dbPath?: string) {
     const home = os.homedir();
@@ -82,7 +86,7 @@ export class LanceDBAdapter implements MemoryStore {
           const { Index } = await import('@lancedb/lancedb');
           await this.table.createIndex('text', Index.fts());
         } catch (err: any) {
-          console.warn(`[hawk-bridge] FTS index creation failed (non-fatal): ${err?.message}`);
+          logger.warn({ err: err?.message }, 'FTS index creation failed (non-fatal)');
         }
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
@@ -116,7 +120,7 @@ export class LanceDBAdapter implements MemoryStore {
         }
       }
     } catch (err) {
-      console.error('[hawk-bridge] LanceDB init failed:', err);
+      logger.error({ err }, 'LanceDB init failed');
       throw err;
     }
   }
@@ -140,7 +144,7 @@ export class LanceDBAdapter implements MemoryStore {
     const tableNames = await this.db.tableNames();
     if (tableNames.includes(TABLE_NAME)) {
       await this.db.dropTable(TABLE_NAME);
-      console.log(`[hawk-bridge] Dropped table '${TABLE_NAME}'`);
+      logger.info({ table: TABLE_NAME }, 'Dropped table');
     }
     this.table = null;
   }
@@ -553,6 +557,44 @@ export class LanceDBAdapter implements MemoryStore {
       .map((r: any) => this._rowToMemory(r));
   }
 
+  /**
+   * Export all memories as plain MemoryEntry objects (not LanceDB rows).
+   * Uses cursor-based pagination to handle large datasets.
+   * Used for backup before re-initialization.
+   */
+  async exportAll(): Promise<MemoryEntry[]> {
+    if (!this.table) await this.init();
+    const all: MemoryEntry[] = [];
+    let cursor: string | null = null;
+    do {
+      const { memories, nextCursor } = await this.getAllMemoriesPaginated(undefined, cursor ?? undefined);
+      all.push(...memories);
+      cursor = nextCursor;
+    } while (cursor !== null);
+    return all;
+  }
+
+  /**
+   * Paginated getAllMemories — returns { memories, nextCursor }.
+   * Fetches in batches of 1000.
+   */
+  async getAllMemoriesPaginated(agentId?: string | null, cursor?: string): Promise<{ memories: MemoryEntry[]; nextCursor: string | null }> {
+    if (!this.table) await this.init();
+    const BATCH = 1000;
+    const offset = cursor ? parseInt(cursor, 10) : 0;
+    const rows = await this.table.query().limit(BATCH).offset(offset).toArray();
+    const filtered = rows
+      .filter((r: any) => r.deleted_at === null)
+      .filter((r: any) => {
+        if (!agentId) return true;
+        const owner = (r.metadata?.owner_agent ?? r.metadata?.ownerAgent) ?? null;
+        return owner === null || owner === agentId;
+      })
+      .map((r: any) => this._rowToMemory(r));
+    const nextCursor = rows.length === BATCH ? String(offset + BATCH) : null;
+    return { memories: filtered, nextCursor };
+  }
+
   async listRecent(limit: number = 10): Promise<MemoryEntry[]> {
     if (!this.table) await this.init();
     const rows = await this.table.query().limit(limit * 2).toArray();
@@ -810,7 +852,8 @@ export class LanceDBAdapter implements MemoryStore {
     topK: number,
     minScore: number,
     scope?: string,
-    sourceTypes?: SourceType[]
+    sourceTypes?: SourceType[],
+    queryText?: string,
   ): Promise<RetrievedMemory[]> {
     if (!this.table) await this.init();
 
@@ -847,7 +890,61 @@ export class LanceDBAdapter implements MemoryStore {
       await this.incrementAccess(r.id);
     }
 
-    return retrieved;
+    // Apply reranking if configured
+    const reranked = await this.rerankResults(queryText || '', retrieved);
+    return reranked;
+  }
+
+  // ─── Reranking (cross-encoder) ────────────────────────────────────────────────
+
+  /**
+   * Rerank results using a cross-encoder if HAWK_RERANK=true and HAWK_RERANK_MODEL is set.
+   * Calls Ollama base URL + /v1/rerank endpoint with {query, texts}.
+   */
+  private async rerankResults(
+    query: string,
+    results: RetrievedMemory[],
+  ): Promise<RetrievedMemory[]> {
+    const rerankEnabled = process.env.HAWK_RERANK === 'true';
+    const rerankModel = process.env.HAWK_RERANK_MODEL;
+    if (!rerankEnabled || !rerankModel || !query) return results;
+
+    try {
+      const baseURL = (this.config?.embedding?.baseURL ||
+        process.env.OLLAMA_BASE_URL ||
+        'http://localhost:11434').replace(/\/$/, '');
+      const texts = results.map(r => r.text);
+      const resp = await fetchWithRetry(`${baseURL}/v1/rerank`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, texts, model: rerankModel }),
+      });
+      if (!resp.ok) {
+        logger.warn({ status: resp.status }, 'Rerank endpoint returned error, skipping rerank');
+        return results;
+      }
+      const data = await resp.json() as any;
+      // Expected: { results: [{ index, relevance_score }, ...] }
+      if (!Array.isArray(data.results)) {
+        logger.warn({ data }, 'Unexpected rerank response format, skipping');
+        return results;
+      }
+      // Build score map
+      const scoreMap = new Map<number, number>();
+      for (const item of data.results) {
+        scoreMap.set(item.index, item.relevance_score ?? 0);
+      }
+      // Re-sort results by rerank score
+      const reranked = results
+        .map((r, idx) => ({ r, score: scoreMap.get(idx) ?? 0 }))
+        .sort((a, b) => b.score - a.score)
+        .map(({ r }) => r);
+      logger.debug({ reranked: reranked.length }, 'Reranking applied');
+      return reranked;
+    } catch (err) {
+      logger.warn({ err }, 'Reranking failed, returning original results');
+      return results;
+    }
   }
 
   async count(): Promise<number> {
@@ -914,7 +1011,7 @@ export class LanceDBAdapter implements MemoryStore {
       const memory = await this.getById(id);
       if (!memory) return false;
       if (memory.locked) {
-        console.log(`[hawk-bridge] Cannot forget locked memory: ${id}`);
+        logger.warn({ memoryId: id }, 'Cannot forget locked memory');
         return false;
       }
       await this.table.update(
@@ -1030,7 +1127,7 @@ export class LanceDBAdapter implements MemoryStore {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch (e) {
-      console.warn('[hawk-bridge] rateMemory update failed:', e);
+      logger.warn({ err: e }, 'rateMemory update failed');
       return;
     }
 
@@ -1050,7 +1147,7 @@ export class LanceDBAdapter implements MemoryStore {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch (e) {
-      console.warn('[hawk-bridge] demoteMemory failed:', e);
+      logger.warn({ err: e, memoryId: id }, 'demoteMemory failed');
     }
   }
 
@@ -1065,7 +1162,7 @@ export class LanceDBAdapter implements MemoryStore {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch (e) {
-      console.warn('[hawk-bridge] incrementImportance failed:', e);
+      logger.warn({ err: e, memoryId: id }, 'incrementImportance failed');
     }
   }
 

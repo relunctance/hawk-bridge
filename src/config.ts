@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as yaml from 'js-yaml';
+import * as crypto from 'crypto';
 import { DEFAULT_MIN_SCORE } from './constants.js';
 import { getEnvOverrides, deepMerge } from './config/env.js';
 import type { HawkConfig } from './types.js';
@@ -280,6 +281,9 @@ export async function getConfig(): Promise<HawkConfig> {
         }
       }
 
+      // Record config version history (non-blocking, non-critical)
+      await recordConfigHistory(config);
+
       return config;
     })();
   }
@@ -295,4 +299,110 @@ export function hasEmbeddingProvider(): boolean {
     process.env.OPENAI_API_KEY ||
     process.env.COHERE_API_KEY
   );
+}
+
+// ─── Config Versioning ────────────────────────────────────────────────────────────
+
+const HAWK_CONFIG_VERSION = process.env.HAWK_CONFIG_VERSION || '1';
+
+interface ConfigHistoryEntry {
+  timestamp: string;
+  version: string;
+  env: Record<string, string>;
+  hash: string;
+}
+
+/**
+ * Record a config snapshot to ~/.hawk/config-history.jsonl.
+ * Keeps last 100 entries, prunes older.
+ */
+async function recordConfigHistory(config: HawkConfig): Promise<void> {
+  try {
+    const historyPath = path.join(HAWK_CONFIG_DIR, 'config-history.jsonl');
+
+    // Collect non-sensitive env vars
+    const envSnapshot: Record<string, string> = {};
+    const relevantKeys = [
+      'OLLAMA_BASE_URL', 'OLLAMA_EMBED_MODEL', 'OLLAMA_EMBED_PATH',
+      'HAWK_EMBED_PROVIDER', 'HAWK_EMBED_MODEL', 'HAWK_EMBEDDING_DIM',
+      'HAWK_PROXY', 'HTTPS_PROXY', 'https_proxy',
+      'HAWK_CONFIG_VERSION', 'HAWK_LANG',
+      'HAWK_BM25_QUERY_LIMIT', 'HAWK_MIN_SCORE',
+      'HAWK_RERANK', 'HAWK_RERANK_MODEL',
+    ];
+    for (const key of relevantKeys) {
+      const val = process.env[key];
+      if (val !== undefined) {
+        envSnapshot[key] = val;
+      }
+    }
+    // Add effective provider/dim from resolved config
+    envSnapshot['__resolved_provider'] = config.embedding.provider;
+    envSnapshot['__resolved_dim'] = String(config.embedding.dimensions);
+
+    const entry: ConfigHistoryEntry = {
+      timestamp: new Date().toISOString(),
+      version: HAWK_CONFIG_VERSION,
+      env: envSnapshot,
+      hash: crypto.createHash('md5').update(JSON.stringify(envSnapshot)).digest('hex'),
+    };
+
+    // Read existing entries
+    let entries: ConfigHistoryEntry[] = [];
+    if (fs.existsSync(historyPath)) {
+      const raw = fs.readFileSync(historyPath, 'utf-8');
+      entries = raw.trim().split('\n')
+        .filter(Boolean)
+        .map(line => {
+          try { return JSON.parse(line) as ConfigHistoryEntry; }
+          catch { return null; }
+        })
+        .filter((e): e is ConfigHistoryEntry => e !== null);
+    }
+
+    // Append new entry
+    entries.push(entry);
+
+    // Prune to last 100
+    if (entries.length > 100) {
+      entries = entries.slice(-100);
+    }
+
+    // Write back
+    const dir = path.dirname(historyPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(historyPath, entries.map(e => JSON.stringify(e)).join('\n') + '\n');
+  } catch {
+    // Non-critical — never fail config load due to history write failure
+  }
+}
+
+/** Print recent config history entries */
+export function printConfigHistory(limit: number = 20): void {
+  const historyPath = path.join(HAWK_CONFIG_DIR, 'config-history.jsonl');
+  if (!fs.existsSync(historyPath)) {
+    console.log('No config history found.');
+    return;
+  }
+  try {
+    const raw = fs.readFileSync(historyPath, 'utf-8');
+    const lines = raw.trim().split('\n').filter(Boolean);
+    const entries = lines.map(line => {
+      try { return JSON.parse(line) as ConfigHistoryEntry; }
+      catch { return null; }
+    }).filter((e): e is ConfigHistoryEntry => e !== null);
+
+    const recent = entries.slice(-limit);
+    console.log('\n🦅 hawk config-history (last ' + recent.length + ' entries)\n' + '─'.repeat(60));
+    for (const e of recent.reverse()) {
+      const date = new Date(e.timestamp).toLocaleString('zh-CN');
+      const provider = e.env['__resolved_provider'] || '-';
+      const dim = e.env['__resolved_dim'] || '-';
+      const hash = e.hash.slice(0, 8);
+      console.log(`${date}  v${e.version}  provider=${provider}  dim=${dim}  hash=${hash}`);
+    }
+    console.log('─'.repeat(60) + '\n');
+  } catch (err: any) {
+    console.error('Failed to read config history:', err.message);
+  }
 }

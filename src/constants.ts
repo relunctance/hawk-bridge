@@ -75,7 +75,7 @@ export const RERANK_CANDIDATE_MULTIPLIER = parseInt(process.env.HAWK_RERANK_CAND
  * Prevents runaway queries on huge databases.
  * Range: 100–50000. Default 10000.
  */
-export const BM25_QUERY_LIMIT = parseInt(process.env.HAWK_BM25_QUERY_LIMIT || '10000', 10);
+export const BM25_QUERY_LIMIT = parseInt(process.env.HAWK_BM25_QUERY_LIMIT || '1000', 10);
 
 /**
  * Default embedding dimension fallback when LanceDB vector is empty.

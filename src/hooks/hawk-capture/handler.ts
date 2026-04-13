@@ -19,6 +19,8 @@ import {
 } from '../../constants.js';
 // Shared: invalidate BM25 index when new memories are stored
 import { markBm25Dirty } from '../hawk-recall/handler.js';
+import { logger } from '../../logger.js';
+import { memoryErrors } from '../../metrics.js';
 
 const exec = promisify((require('child_process').exec));
 
@@ -53,10 +55,10 @@ async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 3, delayMs = 100
     } catch (err) {
       lastErr = err;
       if (attempt < maxAttempts) {
-        console.warn(`[hawk-capture] Attempt ${attempt} failed, retrying in ${delayMs * attempt}ms...`);
+        logger.warn({ attempt, maxAttempts, delayMs: delayMs * attempt, err: err.message }, 'Capture attempt failed, retrying');
         await new Promise(res => setTimeout(res, delayMs * attempt));
       } else {
-        console.error(`[hawk-capture] All ${maxAttempts} attempts failed: ${err.message}`);
+        logger.error({ err: err.message }, 'All capture attempts failed');
       }
     }
   }
@@ -78,8 +80,7 @@ function audit(action: 'capture' | 'skip' | 'reject', reason: string, text: stri
     }
     fs.appendFileSync(AUDIT_LOG_PATH, entry);
   } catch (err: any) {
-    // Log to stderr so we can see failures
-    console.error(`[hawk-capture:audit] Failed to write audit log: ${err?.message}`);
+    logger.error({ err: err?.message }, 'Failed to write audit log');
   }
 }
 
@@ -597,13 +598,14 @@ const captureHandler = async (event: HookEvent) => {
     }
 
     if (storedCount > 0) {
-      console.log(`[hawk-capture] Stored ${storedCount} memories`);
+      logger.info({ storedCount }, 'Stored memories');
       audit('capture', 'stored', `Stored ${storedCount} memories`);
       markBm25Dirty();
     }
 
   } catch (err) {
-    console.error('[hawk-capture] Error:', err);
+    logger.error({ err }, 'hawk-capture handler error');
+    memoryErrors.inc({ type: 'capture_handler' });
   }
 };
 
@@ -625,7 +627,7 @@ function callExtractor(conversationText: string, config: any): Promise<any[]> {
     let stderr = '';
 
     const timer = setTimeout(() => {
-      console.warn('[hawk-capture] subprocess timeout, killing...');
+      logger.warn('Subprocess timeout, killing');
       proc.kill('SIGTERM');
     }, 30000);
 
@@ -635,7 +637,7 @@ function callExtractor(conversationText: string, config: any): Promise<any[]> {
     proc.on('close', (code) => {
       clearTimeout(timer);
       if (code !== 0) {
-        console.error('[hawk-capture] extractor error:', code, stderr ? `stderr: ${stderr}` : '');
+        logger.error({ code, stderr }, 'Extractor subprocess error');
         resolve([]);
         return;
       }
@@ -644,18 +646,18 @@ function callExtractor(conversationText: string, config: any): Promise<any[]> {
         if (Array.isArray(result)) {
           resolve(result);
         } else {
-          console.warn('[hawk-capture] unexpected extractor output, discarding');
+          logger.warn({ output: stdout.slice(0, 200) }, 'Unexpected extractor output, discarding');
           resolve([]);
         }
       } catch {
-        console.warn('[hawk-capture] JSON parse failed, discarding output');
+        logger.warn('Extractor JSON parse failed, discarding output');
         resolve([]);
       }
     });
 
     proc.on('error', (err) => {
       clearTimeout(timer);
-      console.error('[hawk-capture] subprocess error:', err.message);
+      logger.error({ err: err.message }, 'Subprocess error');
       resolve([]);
     });
   });

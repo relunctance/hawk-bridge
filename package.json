@@ -10,6 +10,8 @@
     "https-proxy-agent": "^9.0.0",
     "js-yaml": "^4.1.1",
     "openai": "^6.21.0",
+    "pino": "^10.3.1",
+    "prom-client": "^15.1.3",
     "proxy-agent": "^8.0.1"
   },
   "devDependencies": {
@@ -29,7 +31,7 @@
     ]
   },
   "scripts": {
-    "build": "node -e \"const e=require('esbuild');Promise.all([e.build({entryPoints:['src/index.ts'],bundle:true,outfile:'dist/index.js',platform:'node',format:'esm',external:['openclaw','https-proxy-agent','lancedb','@lancedb/*','openai','rank_bm25','crypto']}),e.build({entryPoints:['src/hooks/hawk-recall/handler.ts'],bundle:true,outfile:'dist/hooks/hawk-recall/hawk-recall.js',platform:'node',format:'esm',external:['openclaw','https-proxy-agent','lancedb','@lancedb/*','openai','rank_bm25','crypto']}),e.build({entryPoints:['src/hooks/hawk-capture/handler.ts'],bundle:true,outfile:'dist/hooks/hawk-capture/hawk-capture.js',platform:'node',format:'esm',external:['openclaw','https-proxy-agent','lancedb','@lancedb/*','openai','rank_bm25','crypto']}),e.build({entryPoints:['src/hooks/hawk-decay/handler.ts'],bundle:true,outfile:'dist/hooks/hawk-decay/hawk-decay.js',platform:'node',format:'esm',external:['openclaw','https-proxy-agent','lancedb','@lancedb/*','openai','rank_bm25','crypto']}),e.build({entryPoints:['src/cli/decay.ts'],bundle:true,outfile:'dist/cli/decay.js',platform:'node',format:'esm',external:['openclaw','https-proxy-agent','lancedb','@lancedb/*','openai','rank_bm25','crypto']}),e.build({entryPoints:['src/cli/verify.ts'],bundle:true,outfile:'dist/cli/verify.js',platform:'node',format:'esm',external:['openclaw','https-proxy-agent','lancedb','@lancedb/*','openai','rank_bm25','crypto']}),e.build({entryPoints:['src/seed.ts'],bundle:true,outfile:'dist/seed.js',platform:'node',format:'esm',external:['openclaw','https-proxy-agent','lancedb','@lancedb/*','openai','rank_bm25','crypto']}),e.build({entryPoints:['src/cli/write.ts'],bundle:true,outfile:'dist/cli/write.js',platform:'node',format:'esm',external:['openclaw','https-proxy-agent','lancedb','@lancedb/*','openai','rank_bm25','crypto']}),e.build({entryPoints:['src/cli/read-source.ts'],bundle:true,outfile:'dist/cli/read-source.js',platform:'node',format:'esm',external:['openclaw','https-proxy-agent','lancedb','@lancedb/*','openai','rank_bm25','crypto']}),e.build({entryPoints:['src/cli/doctor.ts'],bundle:true,outfile:'dist/cli/doctor.js',platform:'node',format:'esm',external:['openclaw','https-proxy-agent','lancedb','@lancedb/*','openai','rank_bm25','crypto']})]).then(()=>{require('fs').cpSync('src/hooks/hawk-recall/HOOK.md','dist/hooks/hawk-recall/HOOK.md');require('fs').cpSync('src/hooks/hawk-capture/HOOK.md','dist/hooks/hawk-capture/HOOK.md');require('fs').cpSync('src/hooks/hawk-decay/HOOK.md','dist/hooks/hawk-decay/HOOK.md');console.log('Built successfully')}).catch(e=>{console.error(e.message);process.exit(1)})\"",
+    "build": "node scripts/build.js",
     "seed": "node dist/seed.js",
     "decay": "node dist/cli/decay.js",
     "verify": "node dist/cli/verify.js",
