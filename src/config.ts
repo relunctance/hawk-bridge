@@ -221,45 +221,48 @@ export async function getConfig(): Promise<HawkConfig> {
       }
 
       // 4. Auto-detect embedding provider — only if user did NOT explicitly set HAWK_EMBED_*
-      //    Explicit env vars take priority over auto-detection (so OpenClaw minimax key doesn't override)
+      //    HAWK_EMBED_* env vars take absolute priority over auto-detection
       const hasExplicitEmbedConfig = process.env.HAWK_EMBED_PROVIDER || process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_MODEL;
       if (!hasExplicitEmbedConfig) {
-        const openclawkEmbed = getAgentModelKey('minimax');
-        if (openclawkEmbed?.apiKey) {
-          config.embedding.provider = 'minimax';
-          config.embedding.apiKey  = openclawkEmbed.apiKey;
-          config.embedding.baseURL = openclawkEmbed.baseUrl || 'https://api.minimaxi.com/v1';
-          config.embedding.model  = 'text-embedding-v2';
-          config.embedding.dimensions = 1024;
-        } else if (process.env.OLLAMA_BASE_URL) {
+        // OLLAMA_BASE_URL is checked first — it overrides config file values (e.g. config.json's Jina settings)
+        if (process.env.OLLAMA_BASE_URL) {
           config.embedding.provider = 'ollama';
           config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
           config.embedding.model = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
           config.embedding.dimensions = 768;
-        } else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
-          config.embedding.provider = 'qianwen';
-          config.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '';
-          config.embedding.baseURL = 'https://dashscope.aliyuncs.com/api/v1';
-          config.embedding.model = 'text-embedding-v1';
-          config.embedding.dimensions = 1024;
-        } else if (process.env.JINA_API_KEY) {
-          config.embedding.provider = 'jina';
-          config.embedding.apiKey = process.env.JINA_API_KEY;
-          config.embedding.baseURL = '';
-          config.embedding.model = 'jina-embeddings-v5-small';
-          config.embedding.dimensions = 1024;
-        } else if (process.env.OPENAI_API_KEY) {
-          config.embedding.provider = 'openai';
-          config.embedding.apiKey = process.env.OPENAI_API_KEY;
-          config.embedding.baseURL = '';
-          config.embedding.model = 'text-embedding-3-small';
-          config.embedding.dimensions = 1536;
-        } else if (process.env.COHERE_API_KEY) {
-          config.embedding.provider = 'cohere';
-          config.embedding.apiKey = process.env.COHERE_API_KEY;
-          config.embedding.baseURL = '';
-          config.embedding.model = 'embed-english-v3.0';
-          config.embedding.dimensions = 1024;
+        } else {
+          const openclawkEmbed = getAgentModelKey('minimax');
+          if (openclawkEmbed?.apiKey) {
+            config.embedding.provider = 'minimax';
+            config.embedding.apiKey  = openclawkEmbed.apiKey;
+            config.embedding.baseURL = openclawkEmbed.baseUrl || 'https://api.minimaxi.com/v1';
+            config.embedding.model  = 'text-embedding-v2';
+            config.embedding.dimensions = 1024;
+          } else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
+            config.embedding.provider = 'qianwen';
+            config.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '';
+            config.embedding.baseURL = 'https://dashscope.aliyuncs.com/api/v1';
+            config.embedding.model = 'text-embedding-v1';
+            config.embedding.dimensions = 1024;
+          } else if (process.env.JINA_API_KEY) {
+            config.embedding.provider = 'jina';
+            config.embedding.apiKey = process.env.JINA_API_KEY;
+            config.embedding.baseURL = '';
+            config.embedding.model = 'jina-embeddings-v5-small';
+            config.embedding.dimensions = 1024;
+          } else if (process.env.OPENAI_API_KEY) {
+            config.embedding.provider = 'openai';
+            config.embedding.apiKey = process.env.OPENAI_API_KEY;
+            config.embedding.baseURL = '';
+            config.embedding.model = 'text-embedding-3-small';
+            config.embedding.dimensions = 1536;
+          } else if (process.env.COHERE_API_KEY) {
+            config.embedding.provider = 'cohere';
+            config.embedding.apiKey = process.env.COHERE_API_KEY;
+            config.embedding.baseURL = '';
+            config.embedding.model = 'embed-english-v3.0';
+            config.embedding.dimensions = 1024;
+          }
         }
       }
 

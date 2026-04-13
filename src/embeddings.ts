@@ -299,7 +299,12 @@ export class Embedder {
   private async embedOllama(texts: string[]): Promise<number[][]> {
     const baseURL = (this.config.baseURL || process.env.OLLAMA_BASE_URL || 'http://localhost:11434').replace(/\/$/, '');
     const model = this.config.model || process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
-    const resp = await fetchWithTimeout(`${baseURL}/api/embed`, {
+    // Use /v1/embeddings (OpenAI-compatible) — works for both Ollama (v1.50+) and Xinference
+    // OLLAMA_EMBED_PATH can override with /api/embed for older Ollama instances
+    const embedPath = process.env.OLLAMA_EMBED_PATH || '/embeddings';
+    // baseURL may end with /v1 or /v1/ — normalize to avoid double slashes
+    const normalizedBase = baseURL.replace(/\/$/, '');
+    const resp = await fetchWithTimeout(`${normalizedBase}${embedPath}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, input: texts }),
@@ -309,12 +314,18 @@ export class Embedder {
       throw new Error(`Ollama embedding error: ${resp.status} ${err}`);
     }
     const data = await resp.json() as any;
+    // OpenAI-compatible response: { data: [{ embedding: [...], index: 0 }, ...] }
+    if (Array.isArray(data.data)) {
+      const sorted = data.data.sort((a: any, b: any) => a.index - b.index);
+      return sorted.map((item: any) => item.embedding);
+    }
+    // Ollama native response: { embeddings: [[...]] }
     if (Array.isArray(data.embeddings) && Array.isArray(data.embeddings[0])) {
       return data.embeddings;
     } else if (Array.isArray(data.embeddings)) {
       return [data.embeddings];
     }
-    throw new Error(`Unexpected Ollama response: ${JSON.stringify(data)}`);
+    throw new Error(`Unexpected embedding response: ${JSON.stringify(data)}`);
   }
 }
 
