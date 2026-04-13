@@ -1603,3 +1603,35 @@ hawk-admin health --tenant {id}
 | 企业级路线（v2.x） | 多租户 SaaS / 企业内部署 | 极高 |
 
 **建议**：hawk-bridge 当前聚焦 v1.x 闭环能力，企业级需求作为独立路线图。
+
+---
+
+## 📋 搁置功能 (Deferred)
+
+> 2026-04-13 确认搁置，等待后续实现
+
+### 多模态记忆 ⏸️
+- **状态**: 搁置
+- **原因**: 当前优先级较低，暂无明确需求场景
+- **描述**: 支持图片、音频、视频等多模态记忆的摄入和检索
+- **相关文件**: 待定
+
+---
+
+## 📝 更新日志
+
+### 2026-04-13 v1.1.1
+
+**修复**:
+- **LanceDB FTS 索引**: 新建表时自动创建 `text` 列的 FTS 索引 (`Index.fts()`)，BM25 搜索不再报错
+- **rank_bm25 依赖移除**: 改用 LanceDB 原生 FTS，不再依赖未安装的 `rank_bm25` npm 包
+- **audit.log 目录创建**: 修复 `~/.hawk/` 目录不存在时 audit log 写入失败的问题（先创建目录）
+- **audit.log 错误可见性**: audit 写入失败时输出 `console.error` 便于排查
+- **CLI 构建**: `write.ts`、`read-source.ts`、`doctor.ts` 加入 `npm run build`，`npm scripts` 增加 `write`、`read-source`、`doctor`
+- **retriever 重构**: `HybridRetriever` 完全移除 rank_bm25，改为 `db.ftsSearch()` 调用 LanceDB FTS
+  - 有 embedding 时: `vector search + FTS → RRF fusion → rerank`
+  - 无 embedding 时: 纯 FTS search（LanceDB 原生，无需外部库）
+
+**搁置**:
+- 多模态记忆（图片/音频/视频摄入）
+
