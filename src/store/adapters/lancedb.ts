@@ -51,16 +51,27 @@ export class LanceDBAdapter implements MemoryStore {
           created_at: Date.now(),
           access_count: 0,
           last_accessed_at: Date.now(),
+          deleted_at: null,
+          reliability: 0.5,
+          verification_count: 0,
+          last_verified_at: null,
+          locked: false,
+          correction_history: '[]',
+          session_id: null,
+          updated_at: Date.now(),
+          scope_mem: 'personal',
+          importance_override: 1.0,
+          cold_start_until: null,
           metadata: '{}',
           source_type: 'text',
           source: '',
-          name: '',
-          description: '',
           drift_note: null,
           drift_detected_at: null,
-          last_used_at: 0,
+          last_used_at: null,
           usefulness_score: 0.5,
           recall_count: 0,
+          name: '__init__',
+          description: '__init__',
         });
         const table = makeArrowTable([sampleRow]);
         this.table = await this.db.createTable(TABLE_NAME, table);
@@ -163,24 +174,31 @@ export class LanceDBAdapter implements MemoryStore {
       created_at: BigInt(data.created_at),
       access_count: data.access_count,
       last_accessed_at: BigInt(data.last_accessed_at),
-      deleted_at: data.deleted_at !== null ? BigInt(data.deleted_at) : null,
+      // Note: BigInt(null) throws, so use BigInt(0) as placeholder for null timestamps
+      deleted_at: BigInt(data.deleted_at ?? 0),
       reliability: data.reliability,
       verification_count: data.verification_count,
-      last_verified_at: data.last_verified_at !== null ? BigInt(data.last_verified_at) : null,
+      last_verified_at: BigInt(data.last_verified_at ?? 0),
       locked: data.locked ? 1 : 0,
       correction_history: data.correction_history,
-      session_id: data.session_id ?? null,
-      updated_at: BigInt(data.updated_at),
-      scope_mem: data.scope_mem,
+      // Use empty string for null session_id to avoid schema inference failure in makeArrowTable
+      session_id: data.session_id ?? '',
+      // Use ?? 0 to handle undefined (init sample row doesn't set this field)
+      updated_at: BigInt(data.updated_at ?? 0),
+      // Default to 'personal' if not provided (init sample row doesn't set scope_mem)
+      scope_mem: data.scope_mem || 'personal',
       importance_override: data.importance_override,
-      cold_start_until: data.cold_start_until !== null ? BigInt(data.cold_start_until) : null,
+      // Use BigInt(0) for null cold_start_until (LanceDB makeArrowTable can't infer null BigInt)
+      cold_start_until: BigInt(data.cold_start_until ?? 0),
       metadata: data.metadata,
       source_type: data.source_type,
       source: data.source,
-      drift_note: data.drift_note ?? null,
-      drift_detected_at: data.drift_detected_at !== null ? BigInt(data.drift_detected_at) : null,
-      last_used_at: data.last_used_at != null ? BigInt(data.last_used_at) : null,
-      usefulness_score: data.usefulness_score ?? null,
+      // Use empty string for null drift_note (LanceDB makeArrowTable can't infer null)
+      drift_note: data.drift_note ?? '',
+      drift_detected_at: BigInt(data.drift_detected_at ?? 0),
+      last_used_at: BigInt(data.last_used_at ?? 0),
+      // Use 0.0 for null usefulness_score
+      usefulness_score: data.usefulness_score ?? 0.0,
       recall_count: data.recall_count ?? 0,
     };
   }

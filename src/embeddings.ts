@@ -1,20 +1,97 @@
 // Embeddings module — handles vectorization
 // Supports: OpenAI, Qianwen (阿里云), Jina AI, Cohere, Ollama, OpenAI-Compatible
 
+import http from 'http';
+import https from 'https';
+import { URL } from 'url';
 import { HawkConfig } from './types.js';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 const FETCH_TIMEOUT_MS = 15000;
 
-/** Fetch with AbortController timeout — prevents hanging on network issues */
-async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const resp = await fetch(url, { ...init, signal: controller.signal });
-    return resp;
-  } finally {
-    clearTimeout(timer);
+/**
+ * Module-level proxy URL — set by Embedder constructor from config.proxy.
+ * Also falls back to HAWK_PROXY / HTTPS_PROXY / https_proxy env vars.
+ * This lets standalone functions (fetchWithTimeout) use the same proxy as the Embedder.
+ */
+let _activeProxyUrl: string = process.env.HAWK_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || '';
+let _proxyAgent: HttpsProxyAgent<string> | null = null;
+
+/**
+ * Update the active proxy URL (called by Embedder on init).
+ * Setting to '' clears and forces re-read from env vars on next call.
+ */
+export function setProxyUrl(url: string): void {
+  _activeProxyUrl = url;
+  _proxyAgent = null; // force re-create with new URL
+}
+
+/** Get the active proxy URL (env var takes precedence if set) */
+export function getProxyUrl(): string {
+  return process.env.HAWK_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || _activeProxyUrl;
+}
+
+/** Lazily-created proxy agent — reads from config.proxy (via _activeProxyUrl) or env vars */
+function getProxyAgent(): HttpsProxyAgent<string> | undefined {
+  const proxyUrl = getProxyUrl();
+  if (!proxyUrl) return undefined;
+  if (!_proxyAgent) {
+    _proxyAgent = new HttpsProxyAgent(proxyUrl);
   }
+  return _proxyAgent;
+}
+
+/** Fetch with AbortController timeout + proxy agent (uses https.request for proper CONNECT tunneling) */
+async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  const parsedUrl = new URL(url);
+  const isHttps = parsedUrl.protocol === 'https:';
+  const agent = getProxyAgent();
+  const body = init?.body || null;
+
+  return new Promise((resolve, reject) => {
+    const headers: http.OutgoingHttpHeaders = {
+      ...(init?.headers as http.OutgoingHttpHeaders || {}),
+    };
+    if (body) {
+      headers['Content-Length'] = Buffer.byteLength(body);
+    }
+
+    const options: http.RequestOptions = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || (isHttps ? 443 : 80),
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: init?.method || 'GET',
+      headers,
+      ...(agent ? { agent } : {}),
+    };
+
+    const timer = setTimeout(() => {
+      req.destroy(new Error('Fetch timeout'));
+    }, FETCH_TIMEOUT_MS);
+
+    const mod = isHttps ? https : http;
+    const req = mod.request(options, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => {
+        clearTimeout(timer);
+        const responseBody = Buffer.concat(chunks);
+        const response = new Response(responseBody, {
+          status: res.statusCode || 0,
+          statusText: res.statusMessage || '',
+          headers: new Headers(res.headers as Record<string, string>),
+        });
+        resolve(response);
+      });
+      res.on('error', reject);
+    });
+
+    req.on('error', reject);
+    if (body) {
+      req.write(body);
+    }
+    req.end();
+  });
 }
 
 export class Embedder {
@@ -25,6 +102,10 @@ export class Embedder {
 
   constructor(config: HawkConfig['embedding']) {
     this.config = config;
+    // If config specifies a proxy, activate it (overrides env var until env var is set)
+    if (config.proxy) {
+      setProxyUrl(config.proxy);
+    }
   }
 
   private normalizeForCache(text: string): string {
@@ -166,7 +247,11 @@ export class Embedder {
     const { OpenAI } = await import('openai');
     const client = new OpenAI({
       apiKey: this.config.apiKey || process.env.OPENAI_API_KEY,
+      baseURL: this.config.baseURL || undefined,
       timeout: FETCH_TIMEOUT_MS,
+      // @ts-ignore — Node-specific http agent for proxy
+      httpAgent: getProxyAgent(),
+      httpsAgent: getProxyAgent(),
     });
     const model = this.config.model || 'text-embedding-3-small';
     const resp = await client.embeddings.create({ model, input: texts });

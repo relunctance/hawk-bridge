@@ -50,6 +50,8 @@ export interface HawkConfig {
     model: string;
     baseURL: string;
     dimensions: number;
+    /** HTTP(S) proxy URL, e.g. "http://192.168.1.109:10808" — also read from HAWK_PROXY env var */
+    proxy?: string;
   };
   llm: {
     provider: string;

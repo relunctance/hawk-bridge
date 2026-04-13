@@ -104,6 +104,7 @@ const DEFAULT_CONFIG: HawkConfig = {
     model: 'text-embedding-v1',
     baseURL: 'https://dashscope.aliyuncs.com/api/v1',
     dimensions: 1024,
+    proxy: '',
   },
   llm: {
     provider: 'groq',
@@ -140,6 +141,20 @@ function resolveEnvVars(raw: string): string {
   });
 }
 
+/** Recursively convert snake_case keys to camelCase (for legacy JSON config compatibility) */
+function snakeToCamel(obj: any): any {
+  if (Array.isArray(obj)) return obj.map(snakeToCamel);
+  if (obj !== null && typeof obj === 'object') {
+    return Object.fromEntries(
+      Object.entries(obj).map(([k, v]) => [
+        k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()),
+        snakeToCamel(v),
+      ])
+    );
+  }
+  return obj;
+}
+
 function loadYamlConfig(): Record<string, any> {
   const yamlPath = path.join(HAWK_CONFIG_DIR, 'config.yaml');
   const legacyPath = path.join(HAWK_CONFIG_DIR, 'config.json');
@@ -155,7 +170,29 @@ function loadYamlConfig(): Record<string, any> {
   } else if (fs.existsSync(legacyPath)) {
     try {
       const raw = fs.readFileSync(legacyPath, 'utf-8');
-      return JSON.parse(raw) as Record<string, any>;
+      const parsed = JSON.parse(raw) as Record<string, any>;
+      // Legacy config.json uses snake_case; convert to camelCase to match HawkConfig type
+      const camel = snakeToCamel(parsed) as Record<string, any>;
+      // Promote top-level embedding keys (embeddingModel, baseUrl, etc.) into embedding object
+      // so deepMerge works correctly with DEFAULT_CONFIG.embedding
+      const embeddingKeys = ['embeddingModel', 'embeddingDimensions', 'baseUrl', 'proxy',
+        'openaiApiKey', 'apiKey', 'model', 'dimensions', 'provider'];
+      const embedding: Record<string, any> = {};
+      for (const key of embeddingKeys) {
+        if (camel[key] !== undefined) {
+          // Map camelCase → HawkConfig embedding field names
+          const embeddingField = key === 'embeddingModel' ? 'model'
+            : key === 'embeddingDimensions' ? 'dimensions'
+            : key === 'openaiApiKey' ? 'apiKey'
+            : key;
+          (embedding as any)[embeddingField] = camel[key];
+          delete camel[key];
+        }
+      }
+      if (Object.keys(embedding).length > 0) {
+        camel.embedding = embedding;
+      }
+      return camel;
     } catch (e) {
       console.warn('[hawk-bridge] Failed to load legacy config.json:', e);
     }
@@ -183,43 +220,47 @@ export async function getConfig(): Promise<HawkConfig> {
         config = deepMerge(config, envOverrides);
       }
 
-      // 4. Auto-detect embedding provider — OpenClaw minimax first (zero-config), then legacy env vars
-      const openclawkEmbed = getAgentModelKey('minimax');
-      if (openclawkEmbed?.apiKey) {
-        config.embedding.provider = 'minimax';
-        config.embedding.apiKey  = openclawkEmbed.apiKey;
-        config.embedding.baseURL = openclawkEmbed.baseUrl || 'https://api.minimaxi.com/v1';
-        config.embedding.model  = 'text-embedding-v2';
-        config.embedding.dimensions = 1024;
-      } else if (process.env.OLLAMA_BASE_URL) {
-        config.embedding.provider = 'ollama';
-        config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
-        config.embedding.model = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
-        config.embedding.dimensions = 768;
-      } else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
-        config.embedding.provider = 'qianwen';
-        config.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '';
-        config.embedding.baseURL = 'https://dashscope.aliyuncs.com/api/v1';
-        config.embedding.model = 'text-embedding-v1';
-        config.embedding.dimensions = 1024;
-      } else if (process.env.JINA_API_KEY) {
-        config.embedding.provider = 'jina';
-        config.embedding.apiKey = process.env.JINA_API_KEY;
-        config.embedding.baseURL = '';
-        config.embedding.model = 'jina-embeddings-v5-small';
-        config.embedding.dimensions = 1024;
-      } else if (process.env.OPENAI_API_KEY) {
-        config.embedding.provider = 'openai';
-        config.embedding.apiKey = process.env.OPENAI_API_KEY;
-        config.embedding.baseURL = '';
-        config.embedding.model = 'text-embedding-3-small';
-        config.embedding.dimensions = 1536;
-      } else if (process.env.COHERE_API_KEY) {
-        config.embedding.provider = 'cohere';
-        config.embedding.apiKey = process.env.COHERE_API_KEY;
-        config.embedding.baseURL = '';
-        config.embedding.model = 'embed-english-v3.0';
-        config.embedding.dimensions = 1024;
+      // 4. Auto-detect embedding provider — only if user did NOT explicitly set HAWK_EMBED_*
+      //    Explicit env vars take priority over auto-detection (so OpenClaw minimax key doesn't override)
+      const hasExplicitEmbedConfig = process.env.HAWK_EMBED_PROVIDER || process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_MODEL;
+      if (!hasExplicitEmbedConfig) {
+        const openclawkEmbed = getAgentModelKey('minimax');
+        if (openclawkEmbed?.apiKey) {
+          config.embedding.provider = 'minimax';
+          config.embedding.apiKey  = openclawkEmbed.apiKey;
+          config.embedding.baseURL = openclawkEmbed.baseUrl || 'https://api.minimaxi.com/v1';
+          config.embedding.model  = 'text-embedding-v2';
+          config.embedding.dimensions = 1024;
+        } else if (process.env.OLLAMA_BASE_URL) {
+          config.embedding.provider = 'ollama';
+          config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
+          config.embedding.model = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
+          config.embedding.dimensions = 768;
+        } else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
+          config.embedding.provider = 'qianwen';
+          config.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '';
+          config.embedding.baseURL = 'https://dashscope.aliyuncs.com/api/v1';
+          config.embedding.model = 'text-embedding-v1';
+          config.embedding.dimensions = 1024;
+        } else if (process.env.JINA_API_KEY) {
+          config.embedding.provider = 'jina';
+          config.embedding.apiKey = process.env.JINA_API_KEY;
+          config.embedding.baseURL = '';
+          config.embedding.model = 'jina-embeddings-v5-small';
+          config.embedding.dimensions = 1024;
+        } else if (process.env.OPENAI_API_KEY) {
+          config.embedding.provider = 'openai';
+          config.embedding.apiKey = process.env.OPENAI_API_KEY;
+          config.embedding.baseURL = '';
+          config.embedding.model = 'text-embedding-3-small';
+          config.embedding.dimensions = 1536;
+        } else if (process.env.COHERE_API_KEY) {
+          config.embedding.provider = 'cohere';
+          config.embedding.apiKey = process.env.COHERE_API_KEY;
+          config.embedding.baseURL = '';
+          config.embedding.model = 'embed-english-v3.0';
+          config.embedding.dimensions = 1024;
+        }
       }
 
       // 5. Default LLM to OpenClaw's configured model (if not set in yaml or env)
