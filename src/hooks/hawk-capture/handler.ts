@@ -71,9 +71,15 @@ function audit(action: 'capture' | 'skip' | 'reject', reason: string, text: stri
     text: text.slice(0, 200),  // truncate for log safety
   }) + '\n';
   try {
+    // Ensure directory exists first
+    const dir = path.dirname(AUDIT_LOG_PATH);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
     fs.appendFileSync(AUDIT_LOG_PATH, entry);
-  } catch {
-    // Non-critical
+  } catch (err: any) {
+    // Log to stderr so we can see failures
+    console.error(`[hawk-capture:audit] Failed to write audit log: ${err?.message}`);
   }
 }
 

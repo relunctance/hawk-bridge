@@ -65,6 +65,14 @@ export class LanceDBAdapter implements MemoryStore {
         const table = makeArrowTable([sampleRow]);
         this.table = await this.db.createTable(TABLE_NAME, table);
         await this.table.delete(`id = '__init__'`);
+
+        // Create FTS index on text column for full-text search
+        try {
+          const { Index } = await import('@lancedb/lancedb');
+          await this.table.createIndex('text', Index.fts());
+        } catch (err: any) {
+          console.warn(`[hawk-bridge] FTS index creation failed (non-fatal): ${err?.message}`);
+        }
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
         try {
@@ -720,6 +728,46 @@ export class LanceDBAdapter implements MemoryStore {
   }
 
   // ─── Additional HawkDB-compatible methods ────────────────────────────────────
+
+  async ftsSearch(
+    query: string,
+    topK: number,
+    scope?: string,
+    sourceTypes?: SourceType[]
+  ): Promise<RetrievedMemory[]> {
+    if (!this.table) await this.init();
+
+    let results = await this.table
+      .search(query, 'fts')
+      .limit(topK * 4)
+      .toArray();
+
+    results = results.filter((r: any) => r.deleted_at === null);
+
+    if (scope) results = results.filter((r: any) => r.scope === scope);
+    if (sourceTypes && sourceTypes.length > 0) {
+      results = results.filter((r: any) => {
+        const type = r.source_type || 'text';
+        return sourceTypes.includes(type);
+      });
+    }
+
+    const now = Date.now();
+    results = results.filter((r: any) => {
+      const expiresAt = Number(r.expires_at || 0);
+      return expiresAt === 0 || expiresAt > now;
+    });
+
+    // LanceDB FTS returns _relevance score (higher = more relevant)
+    const retrieved: RetrievedMemory[] = [];
+    for (const row of results) {
+      const score = row._relevance ?? 0;
+      retrieved.push(this._rowToRetrieved(row, score));
+      if (retrieved.length >= topK) break;
+    }
+
+    return retrieved;
+  }
 
   async search(
     queryVector: number[],
