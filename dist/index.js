@@ -6263,8 +6263,28 @@ async function handleSessionCompaction(event) {
     memoryErrors.inc({ type: "compaction_handler" });
   }
 }
-var captureHandler = async (event) => {
+var captureHandler = async (event, ctx) => {
   logger.debug({ type: event.type, action: event.action, sessionKey: event.sessionKey }, "hawk-capture: event received");
+  const isTypedHookEvent = !event.type && !event.action && "content" in event;
+  if (isTypedHookEvent) {
+    const typedEvent = event;
+    const typedCtx = ctx;
+    const channelId = typedCtx?.channelId || "feishu";
+    const conversationId = typedCtx?.conversationId || typedEvent.from || "";
+    const sessionKey = `agent:main:${channelId}:direct:${conversationId}`;
+    event.sessionKey = sessionKey;
+    event.type = "message";
+    event.action = "received";
+    event.context = {
+      from: typedEvent.from || typedEvent.metadata?.senderId || "",
+      content: typedEvent.content,
+      timestamp: typedEvent.timestamp,
+      metadata: typedEvent.metadata || {},
+      channelId: typedCtx?.channelId,
+      accountId: typedCtx?.accountId,
+      conversationId: typedCtx?.conversationId
+    };
+  }
   if (event.type === "session:compact:after") {
     await handleSessionCompaction(event);
     return;
@@ -6311,13 +6331,13 @@ var captureHandler = async (event) => {
       if (seenUrls.has(url)) continue;
       seenUrls.add(url);
       const ctxStart = Math.max(0, urlMatch.index - 80);
-      const ctx = content.slice(ctxStart, urlMatch.index).replace(/\n/g, " ").trim();
+      const ctx2 = content.slice(ctxStart, urlMatch.index).replace(/\n/g, " ").trim();
       urlMemories.push({
         text: `\u5206\u4EAB\u94FE\u63A5: ${url}`,
         category: "fact",
         importance: 0.7,
         abstract: `\u94FE\u63A5\u5206\u4EAB: ${url}`,
-        overview: ctx || `\u5206\u4EAB\u7684\u94FE\u63A5: ${url}`
+        overview: ctx2 || `\u5206\u4EAB\u7684\u94FE\u63A5: ${url}`
       });
     }
     let enrichedContent = content;
@@ -6585,8 +6605,12 @@ function register3(api) {
     description: "Inject relevant hawk memories before agent starts"
   });
   api.registerHook(["message:sent"], handler_default2, {
-    name: "hawk-capture",
-    description: "Auto-extract and store memories after agent responds"
+    name: "hawk-capture-sent",
+    description: "Auto-extract memories from agent outbound messages"
+  });
+  api.on("message_received", handler_default2, {
+    name: "hawk-capture-received",
+    description: "Auto-extract memories from user inbound messages"
   });
   api.registerHook(["gateway:startup"], async (event) => {
     if (global.__hawk_metrics_server_started) return;

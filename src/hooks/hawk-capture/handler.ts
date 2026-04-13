@@ -8,6 +8,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import type { HookEvent } from '../../../../../.npm-global/lib/node_modules/openclaw/dist/v10/types/hooks.js';
+import type { PluginHookMessageContext } from '../../../../../.npm-global/lib/node_modules/openclaw/dist/plugin-sdk/src/plugins/hooks.d.ts';
+type HookContext = PluginHookMessageContext;
 import { getMemoryStore } from '../../store/factory.js';
 import type { MemoryStore } from '../../store/interface.js';
 import { Embedder } from '../../embeddings.js';
@@ -498,9 +500,37 @@ async function handleSessionCompaction(event: HookEvent): Promise<void> {
   }
 }
 
-const captureHandler = async (event: HookEvent) => {
-  // DEBUG: log all events to trace hook invocations
+const captureHandler = async (event: HookEvent, ctx?: HookContext) => {
   logger.debug({ type: event.type, action: event.action, sessionKey: event.sessionKey }, 'hawk-capture: event received');
+
+  // ─── Normalize typed plugin hook events to internal hook event format ───
+  // Typed hook events (message_received, message_sent) have a different structure:
+  //   { from, content, timestamp, metadata } + ctx: { channelId, accountId, conversationId }
+  // Internal hook events have:
+  //   { type, action, sessionKey, context: { from, content, metadata, success, ... } }
+  const isTypedHookEvent = !event.type && !event.action && 'content' in event;
+  if (isTypedHookEvent) {
+    // Normalize typed hook event to look like internal hook event
+    const typedEvent = event as unknown as { from: string; content: string; timestamp?: number; metadata?: Record<string, any> };
+    const typedCtx = ctx as unknown as { channelId?: string; accountId?: string; conversationId?: string };
+    // Build sessionKey from ctx (format: agent:<agentId>:<channel>:<type>:<peerId>)
+    const channelId = typedCtx?.channelId || 'feishu';
+    const conversationId = typedCtx?.conversationId || typedEvent.from || '';
+    const sessionKey = `agent:main:${channelId}:direct:${conversationId}`;
+    (event as any).sessionKey = sessionKey;
+    (event as any).type = 'message';
+    // Detect direction: typed message_received = inbound
+    (event as any).action = 'received';
+    (event as any).context = {
+      from: typedEvent.from || typedEvent.metadata?.senderId || '',
+      content: typedEvent.content,
+      timestamp: typedEvent.timestamp,
+      metadata: typedEvent.metadata || {},
+      channelId: typedCtx?.channelId,
+      accountId: typedCtx?.accountId,
+      conversationId: typedCtx?.conversationId,
+    };
+  }
 
   // Handle session:compact:after — captures AI replies that bypassed message:sent
   if (event.type === 'session:compact:after') {

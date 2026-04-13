@@ -121,9 +121,18 @@ function register(api: any) {
     name: 'hawk-recall',
     description: 'Inject relevant hawk memories before agent starts',
   });
+
+  // Internal hook: message:sent (outbound agent responses)
   api.registerHook(['message:sent'], captureHandler, {
-    name: 'hawk-capture',
-    description: 'Auto-extract and store memories after agent responds',
+    name: 'hawk-capture-sent',
+    description: 'Auto-extract memories from agent outbound messages',
+  });
+
+  // Typed plugin hook: message_received (inbound user messages)
+  // This is the hook that dispatchReplyFromConfig actually calls
+  api.on('message_received', captureHandler, {
+    name: 'hawk-capture-received',
+    description: 'Auto-extract memories from user inbound messages',
   });
 
   // Start metrics/health server on gateway startup
