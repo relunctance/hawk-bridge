@@ -80,7 +80,7 @@ async function reinit() {
     process.stdout.write(`[hawk migrate] Progress: ${Math.min(i + BATCH, memories.length)}/${memories.length}\r`);
   }
 
-  console.log(`\n[h hawk migrate] Done — ${migrated} migrated, ${errors} errors`);
+  console.log(`\n[hawk migrate] Done — ${migrated} migrated, ${errors} errors`);
   return { migrated, errors };
 }
 

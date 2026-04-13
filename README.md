@@ -283,6 +283,10 @@ node dist/cli/write.js --text "team decision: use Redis for caching" --category 
 
 # Read memories by source (e.g. evolution-success, user-feedback)
 node dist/cli/read-source.js --source evolution-success --source evolution-failure --limit 20
+
+# Migrate to a new embedding dimension (e.g. 384 → 1024 when switching embedder)
+# This drops the old table, re-creates with current HAWK_EMBEDDING_DIM, and re-embeds all records
+HAWK_EMBEDDING_DIM=1024 OLLAMA_BASE_URL=http://localhost:9997/v1 OLLAMA_EMBED_MODEL=bge-m3 node dist/cli/write.js --reinit
 ```
 
 ### 🔍 Query Memories (Natural Language)
