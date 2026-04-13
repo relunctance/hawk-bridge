@@ -28,6 +28,7 @@ export interface MemoryStore {
   incrementAccess(id: string): Promise<void>;
 
   // Maintenance
+  reset(): Promise<void>;  // Drop table & re-init — for dimension migration
   decay(): Promise<{ updated: number; deleted: number }>;
   purgeForgotten(graceDays?: number): Promise<number>;
 

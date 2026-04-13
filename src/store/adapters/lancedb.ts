@@ -127,6 +127,24 @@ export class LanceDBAdapter implements MemoryStore {
     this.table = null;
   }
 
+  /**
+   * Drop the table and clear the instance so the next operation will re-init
+   * with the current DEFAULT_EMBEDDING_DIM. Used for dimension migration:
+   *   HAWK_EMBEDDING_DIM=1024 hawk write --reinit
+   */
+  async reset(): Promise<void> {
+    if (!this.db) {
+      // DB not connected yet — nothing to reset
+      return;
+    }
+    const tableNames = await this.db.tableNames();
+    if (tableNames.includes(TABLE_NAME)) {
+      await this.db.dropTable(TABLE_NAME);
+      console.log(`[hawk-bridge] Dropped table '${TABLE_NAME}'`);
+    }
+    this.table = null;
+  }
+
   private _makeRow(data: {
     id: string;
     text: string;

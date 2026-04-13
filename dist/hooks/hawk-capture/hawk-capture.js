@@ -3303,6 +3303,22 @@ var LanceDBAdapter = class {
     this.db = null;
     this.table = null;
   }
+  /**
+   * Drop the table and clear the instance so the next operation will re-init
+   * with the current DEFAULT_EMBEDDING_DIM. Used for dimension migration:
+   *   HAWK_EMBEDDING_DIM=1024 hawk write --reinit
+   */
+  async reset() {
+    if (!this.db) {
+      return;
+    }
+    const tableNames = await this.db.tableNames();
+    if (tableNames.includes(TABLE_NAME)) {
+      await this.db.dropTable(TABLE_NAME);
+      console.log(`[hawk-bridge] Dropped table '${TABLE_NAME}'`);
+    }
+    this.table = null;
+  }
   _makeRow(data) {
     const vec = data.vector.length > 0 ? Array.from(data.vector) : new Array(DEFAULT_EMBEDDING_DIM).fill(0);
     return {
