@@ -138,6 +138,9 @@ const DEFAULT_CONFIG: HawkConfig = {
     minScore: DEFAULT_MIN_SCORE,
     injectEmoji: '🦅',
   },
+  logging: {
+    level: 'info',
+  },
   audit: {
     enabled: true,
   },

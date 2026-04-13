@@ -24,7 +24,7 @@ const DEPRECATED_VARS: Array<{ var: string; message: string }> = [
   { var: 'HAWK_MIN_SCORE', message: 'Use HAWK__RECALL__MIN_SCORE instead' },
   { var: 'HAWK_RERANK', message: 'Use HAWK__RECALL__RERANK_ENABLED instead' },
   { var: 'HAWK_RERANK_MODEL', message: 'Use HAWK__RECALL__RERANK_MODEL instead' },
-  { var: 'HAWK_LOG_LEVEL', message: 'Use HAWK__LOGGING__LEVEL instead' },
+  { var: 'HAWK_LOG_LEVEL', message: 'Use HAWK__LOGGING__LEVEL instead (or use HAWK__LOGGING__LEVEL directly — handled by logger, not config)' },
 ];
 
 let deprecationWarningsPrinted = false;

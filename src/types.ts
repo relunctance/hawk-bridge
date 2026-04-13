@@ -66,6 +66,9 @@ export interface HawkConfig {
     rerankEnabled?: boolean;
     rerankModel?: string;
   };
+  logging: {
+    level: string;   // 'debug' | 'info' | 'warn' | 'error'
+  };
   audit: {
     enabled: boolean;
   };
