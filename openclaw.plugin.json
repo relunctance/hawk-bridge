@@ -14,9 +14,10 @@
     {
       "name": "hawk-capture",
       "events": [
-        "message:sent"
+        "message:sent",
+        "message:received"
       ],
-      "description": "Auto-extract and store memories after agent responds"
+      "description": "Auto-extract and store memories from both inbound user messages and outbound agent responses"
     },
     {
       "name": "hawk-decay",

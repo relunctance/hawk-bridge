@@ -385,14 +385,23 @@ async function handleSaturation(text: string, threshold: number = 0.70): Promise
 // ─── Main Capture Handler ──────────────────────────────────────────────────────
 
 const captureHandler = async (event: HookEvent) => {
-  if (event.type !== 'message' || event.action !== 'sent') return;
-  if (!event.context?.success) return;
+  if (event.type !== 'message') return;
+  const isOutbound = event.action === 'sent';
+  const isInbound = event.action === 'received';
+  if (!isOutbound && !isInbound) return;
+
+  // Outbound messages require success flag; inbound don't have that field
+  if (isOutbound && !event.context?.success) return;
 
   try {
     const config = await getConfig();
     if (!config.capture.enabled) return;
 
     const { maxChunks, importanceThreshold, ttlMs } = config.capture;
+
+    // Determine source type for the memory entry
+    const sourceType = isInbound ? 'user-message' : 'hawk-capture';
+    const senderId = event.context?.metadata?.senderId || event.context?.from || '';
 
     const content = event.context?.content;
     if (typeof content !== 'string' || content.length < 50) return;
@@ -587,7 +596,8 @@ const captureHandler = async (event: HookEvent) => {
             l1_overview: m.overview,
             name: (m as any).name || '',
             description: (m as any).description || '',
-            source: 'hawk-capture',
+            source_type: sourceType,
+            sender_id: senderId,
           },
         }, sessionId);
         storedCount++;

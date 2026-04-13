@@ -4699,12 +4699,17 @@ async function handleSaturation(text, threshold = 0.7) {
   return false;
 }
 var captureHandler = async (event) => {
-  if (event.type !== "message" || event.action !== "sent") return;
-  if (!event.context?.success) return;
+  if (event.type !== "message") return;
+  const isOutbound = event.action === "sent";
+  const isInbound = event.action === "received";
+  if (!isOutbound && !isInbound) return;
+  if (isOutbound && !event.context?.success) return;
   try {
     const config = await getConfig();
     if (!config.capture.enabled) return;
     const { maxChunks, importanceThreshold, ttlMs } = config.capture;
+    const sourceType = isInbound ? "user-message" : "hawk-capture";
+    const senderId = event.context?.metadata?.senderId || event.context?.from || "";
     const content = event.context?.content;
     if (typeof content !== "string" || content.length < 50) return;
     const trimmedContent = content.trim();
@@ -4844,7 +4849,8 @@ var captureHandler = async (event) => {
             l1_overview: m.overview,
             name: m.name || "",
             description: m.description || "",
-            source: "hawk-capture"
+            source_type: sourceType,
+            sender_id: senderId
           }
         }, sessionId);
         storedCount++;
