@@ -5927,7 +5927,7 @@ async function getSortedMemories(db2, agentId) {
 var handler_default = recallHandler;
 
 // src/hooks/hawk-capture/handler.ts
-import { spawn } from "child_process";
+import { spawn, exec as execSync } from "child_process";
 import { promisify } from "util";
 import * as fs3 from "fs";
 import * as path4 from "path";
@@ -5935,7 +5935,7 @@ import * as os4 from "os";
 init_embeddings();
 init_logger();
 init_metrics();
-var exec = promisify(__require("child_process").exec);
+var exec = promisify(execSync);
 var db = null;
 var embedder = null;
 async function getDB() {

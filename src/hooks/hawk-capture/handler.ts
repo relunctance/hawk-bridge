@@ -2,7 +2,7 @@
 // Triggered on: message:sent
 // Action: After agent responds, extract meaningful content → store in LanceDB
 
-import { spawn } from 'child_process';
+import { spawn, exec as execSync } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -22,7 +22,7 @@ import { markBm25Dirty } from '../hawk-recall/handler.js';
 import { logger } from '../../logger.js';
 import { memoryErrors } from '../../metrics.js';
 
-const exec = promisify((require('child_process').exec));
+const exec = promisify(execSync);
 
 let db: MemoryStore | null = null;
 let embedder: Embedder | null = null;

@@ -1,10 +1,4 @@
 var __getOwnPropNames = Object.getOwnPropertyNames;
-var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
-  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
-}) : x)(function(x) {
-  if (typeof require !== "undefined") return require.apply(this, arguments);
-  throw Error('Dynamic require of "' + x + '" is not supported');
-});
 var __esm = (fn, res) => function __init() {
   return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
 };
@@ -427,7 +421,7 @@ var init_embeddings = __esm({
 });
 
 // src/hooks/hawk-capture/handler.ts
-import { spawn } from "child_process";
+import { spawn, exec as execSync } from "child_process";
 import { promisify } from "util";
 import * as fs2 from "fs";
 import * as path4 from "path";
@@ -4460,7 +4454,7 @@ var DRIFT_VERIFY_QUEUE = path3.join(os.homedir(), ".hawk", "drift-verify-queue.j
 // src/hooks/hawk-capture/handler.ts
 init_logger();
 init_metrics();
-var exec = promisify(__require("child_process").exec);
+var exec = promisify(execSync);
 var db = null;
 var embedder = null;
 async function getDB() {
