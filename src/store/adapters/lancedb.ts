@@ -905,8 +905,8 @@ export class LanceDBAdapter implements MemoryStore {
     query: string,
     results: RetrievedMemory[],
   ): Promise<RetrievedMemory[]> {
-    const rerankEnabled = process.env.HAWK_RERANK === 'true';
-    const rerankModel = process.env.HAWK_RERANK_MODEL;
+    const rerankEnabled = this.config?.recall?.rerankEnabled ?? process.env.HAWK_RERANK === 'true';
+    const rerankModel = this.config?.recall?.rerankModel ?? process.env.HAWK_RERANK_MODEL;
     if (!rerankEnabled || !rerankModel || !query) return results;
 
     try {

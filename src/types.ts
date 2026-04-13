@@ -63,6 +63,8 @@ export interface HawkConfig {
     topK: number;
     minScore: number;
     injectEmoji: string;
+    rerankEnabled?: boolean;
+    rerankModel?: string;
   };
   audit: {
     enabled: boolean;

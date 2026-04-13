@@ -3100,30 +3100,143 @@ var WEIGHT_RECENCY = parseFloat(process.env.HAWK_WEIGHT_RECENCY || "0.2");
 var ACCESS_BONUS_MAX = parseFloat(process.env.HAWK_ACCESS_BONUS_MAX || "0.1");
 
 // src/config/env.ts
-function getEnvOverrides() {
-  const overrides = {};
-  if (process.env.HAWK_DB_PROVIDER) {
-    overrides.db = { provider: process.env.HAWK_DB_PROVIDER };
+var DEPRECATED_VARS = [
+  { var: "OLLAMA_BASE_URL", message: "Use HAWK__EMBEDDING__BASE_URL instead" },
+  { var: "OLLAMA_EMBED_MODEL", message: "Use HAWK__EMBEDDING__MODEL instead" },
+  { var: "OLLAMA_EMBED_PATH", message: "Use HAWK__EMBEDDING__BASE_URL instead" },
+  { var: "HAWK_EMBED_PROVIDER", message: "Use HAWK__EMBEDDING__PROVIDER instead" },
+  { var: "HAWK_EMBED_API_KEY", message: "Use HAWK__EMBEDDING__API_KEY instead" },
+  { var: "HAWK_EMBED_MODEL", message: "Use HAWK__EMBEDDING__MODEL instead" },
+  { var: "HAWK_EMBEDDING_DIM", message: "Use HAWK__EMBEDDING__DIMENSIONS instead" },
+  { var: "HAWK_PROXY", message: "Use HAWK__EMBEDDING__PROXY instead" },
+  { var: "HAWK_BM25_QUERY_LIMIT", message: "Use HAWK__STORAGE__BM25_QUERY_LIMIT instead" },
+  { var: "HAWK_MIN_SCORE", message: "Use HAWK__RECALL__MIN_SCORE instead" },
+  { var: "HAWK_RERANK", message: "Use HAWK__RECALL__RERANK_ENABLED instead" },
+  { var: "HAWK_RERANK_MODEL", message: "Use HAWK__RECALL__RERANK_MODEL instead" },
+  { var: "HAWK_LOG_LEVEL", message: "Use HAWK__LOGGING__LEVEL instead" }
+];
+var deprecationWarningsPrinted = false;
+function printDeprecationWarnings() {
+  if (deprecationWarningsPrinted) return;
+  deprecationWarningsPrinted = true;
+  for (const { var: v, message } of DEPRECATED_VARS) {
+    if (process.env[v] !== void 0) {
+      console.warn(`[hawk-bridge] DEPRECATED: ${v} is deprecated. ${message}`);
+    }
   }
-  if (process.env.HAWK_EMBED_PROVIDER) {
-    overrides.embedding = {
-      ...overrides.embedding,
-      provider: process.env.HAWK_EMBED_PROVIDER
+}
+function toCamel(s) {
+  const parts = s.split("_").map((p) => p.toLowerCase());
+  if (parts.length === 1) return parts[0];
+  return parts[0] + parts.slice(1).map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join("");
+}
+function applyValue(obj, key, value) {
+  if (value === "true" || value === "false") {
+    obj[key] = value === "true";
+  } else if (/^\d+$/.test(value)) {
+    obj[key] = parseInt(value, 10);
+  } else if (/^\d+\.\d+$/.test(value)) {
+    obj[key] = parseFloat(value);
+  } else {
+    obj[key] = value;
+  }
+}
+function parseUnifiedEnvVars() {
+  const result = {};
+  for (const [rawKey, rawValue] of Object.entries(process.env)) {
+    if (!rawKey.startsWith("HAWK__")) continue;
+    const parts = rawKey.slice(6).split("__");
+    if (parts.length < 2 || parts[0] === "") continue;
+    const topLevel = parts[0].toLowerCase();
+    const current = result[topLevel] ?? {};
+    result[topLevel] = current;
+    const nestedKey = toCamel(parts.slice(1).join("_"));
+    applyValue(current, nestedKey, rawValue);
+  }
+  const keys = Object.keys(result);
+  if (keys.length > 0) {
+  }
+  return stripUndefined(result);
+}
+function stripUndefined(obj) {
+  if (obj === void 0) return void 0;
+  if (Array.isArray(obj)) return obj.map(stripUndefined);
+  if (obj !== null && typeof obj === "object") {
+    const result = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (v !== void 0) result[k] = stripUndefined(v);
+    }
+    return result;
+  }
+  return obj;
+}
+function parseDeprecatedEnvVars() {
+  printDeprecationWarnings();
+  const config = {};
+  if (process.env.OLLAMA_BASE_URL) {
+    config.embedding = {
+      ...config.embedding || {},
+      provider: "ollama",
+      baseURL: process.env.OLLAMA_BASE_URL,
+      model: process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text",
+      dimensions: parseInt(process.env.HAWK_EMBEDDING_DIM || "768", 10)
     };
+  }
+  if (process.env.HAWK_EMBED_PROVIDER && !process.env.OLLAMA_BASE_URL) {
+    config.embedding = { ...config.embedding || {}, provider: process.env.HAWK_EMBED_PROVIDER };
   }
   if (process.env.HAWK_EMBED_API_KEY) {
-    overrides.embedding = {
-      ...overrides.embedding,
-      apiKey: process.env.HAWK_EMBED_API_KEY
-    };
+    config.embedding = { ...config.embedding || {}, apiKey: process.env.HAWK_EMBED_API_KEY };
+  }
+  if (process.env.HAWK_EMBED_MODEL) {
+    config.embedding = { ...config.embedding || {}, model: process.env.HAWK_EMBED_MODEL };
+  }
+  if (process.env.HAWK_EMBEDDING_DIM) {
+    config.embedding = { ...config.embedding || {}, dimensions: parseInt(process.env.HAWK_EMBEDDING_DIM, 10) };
+  }
+  if (process.env.HAWK_PROXY) {
+    config.embedding = { ...config.embedding || {}, proxy: process.env.HAWK_PROXY };
+  }
+  if (process.env.HAWK_LLM_PROVIDER) {
+    config.llm = { ...config.llm || {}, provider: process.env.HAWK_LLM_PROVIDER };
+  }
+  if (process.env.HAWK_LLM_MODEL) {
+    config.llm = { ...config.llm || {}, model: process.env.HAWK_LLM_MODEL };
+  }
+  if (process.env.HAWK_LLM_API_KEY) {
+    config.llm = { ...config.llm || {}, apiKey: process.env.HAWK_LLM_API_KEY };
+  }
+  if (process.env.HAWK_MIN_SCORE) {
+    config.recall = { ...config.recall || {}, minScore: parseFloat(process.env.HAWK_MIN_SCORE) };
+  }
+  if (process.env.HAWK_RERANK) {
+    config.recall = { ...config.recall || {}, rerankEnabled: process.env.HAWK_RERANK === "true" };
+  }
+  if (process.env.HAWK_RERANK_MODEL) {
+    config.recall = { ...config.recall || {}, rerankModel: process.env.HAWK_RERANK_MODEL };
   }
   if (process.env.HAWK_CAPTURE_ENABLED !== void 0) {
-    overrides.capture = {
-      ...overrides.capture,
-      enabled: process.env.HAWK_CAPTURE_ENABLED !== "false"
-    };
+    config.capture = { ...config.capture || {}, enabled: process.env.HAWK_CAPTURE_ENABLED !== "false" };
   }
-  return overrides;
+  return config;
+}
+function getEnvOverrides() {
+  const unified = parseUnifiedEnvVars();
+  const deprecated = parseDeprecatedEnvVars();
+  const unifiedEmbed = unified?.embedding;
+  if (unifiedEmbed) {
+    if (unifiedEmbed.baseUrl && !unifiedEmbed.baseURL) {
+      unifiedEmbed.baseURL = unifiedEmbed.baseUrl;
+      delete unifiedEmbed.baseUrl;
+    }
+    if (unifiedEmbed.baseURL && !unifiedEmbed.provider) {
+      const url = unifiedEmbed.baseURL;
+      if (url.includes("localhost") || url.includes("127.0.0.1")) {
+        unifiedEmbed.provider = "ollama";
+      }
+    }
+  }
+  return deepMerge(deprecated, unified);
 }
 function deepMerge(base, override) {
   const result = { ...base };
@@ -3179,7 +3292,6 @@ function getAgentModelKey(provider) {
 }
 function getDefaultModelId() {
   const cfg = loadOpenClawConfig();
-  const primary = cfg?.auth?.profiles?.default?.mode;
   const openclawPrimary = cfg?.agents?.defaults?.model?.primary;
   if (openclawPrimary && typeof openclawPrimary === "string") {
     return openclawPrimary;
@@ -3231,21 +3343,8 @@ function resolveEnvVars(raw) {
     return process.env[varName] ?? "";
   });
 }
-function snakeToCamel(obj) {
-  if (Array.isArray(obj)) return obj.map(snakeToCamel);
-  if (obj !== null && typeof obj === "object") {
-    return Object.fromEntries(
-      Object.entries(obj).map(([k, v]) => [
-        k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()),
-        snakeToCamel(v)
-      ])
-    );
-  }
-  return obj;
-}
 function loadYamlConfig() {
   const yamlPath = path.join(HAWK_CONFIG_DIR, "config.yaml");
-  const legacyPath = path.join(HAWK_CONFIG_DIR, "config.json");
   if (fs.existsSync(yamlPath)) {
     try {
       const raw = fs.readFileSync(yamlPath, "utf-8");
@@ -3253,37 +3352,6 @@ function loadYamlConfig() {
       return load(resolved);
     } catch (e) {
       console.warn("[hawk-bridge] Failed to load config.yaml:", e);
-    }
-  } else if (fs.existsSync(legacyPath)) {
-    try {
-      const raw = fs.readFileSync(legacyPath, "utf-8");
-      const parsed = JSON.parse(raw);
-      const camel = snakeToCamel(parsed);
-      const embeddingKeys = [
-        "embeddingModel",
-        "embeddingDimensions",
-        "baseUrl",
-        "proxy",
-        "openaiApiKey",
-        "apiKey",
-        "model",
-        "dimensions",
-        "provider"
-      ];
-      const embedding = {};
-      for (const key of embeddingKeys) {
-        if (camel[key] !== void 0) {
-          const embeddingField = key === "embeddingModel" ? "model" : key === "embeddingDimensions" ? "dimensions" : key === "openaiApiKey" ? "apiKey" : key;
-          embedding[embeddingField] = camel[key];
-          delete camel[key];
-        }
-      }
-      if (Object.keys(embedding).length > 0) {
-        camel.embedding = embedding;
-      }
-      return camel;
-    } catch (e) {
-      console.warn("[hawk-bridge] Failed to load legacy config.json:", e);
     }
   }
   return {};
@@ -3301,19 +3369,19 @@ async function getConfig() {
       if (Object.keys(envOverrides).length > 0) {
         config = deepMerge(config, envOverrides);
       }
-      const hasExplicitEmbedConfig = process.env.HAWK_EMBED_PROVIDER || process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_MODEL;
-      if (!hasExplicitEmbedConfig) {
+      const hasEmbedding = config.embedding?.provider || config.embedding?.apiKey || config.embedding?.baseURL;
+      if (!hasEmbedding) {
         if (process.env.OLLAMA_BASE_URL) {
           config.embedding.provider = "ollama";
           config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
           config.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
           config.embedding.dimensions = parseInt(process.env.HAWK_EMBEDDING_DIM || "768", 10);
         } else {
-          const openclawkEmbed = getAgentModelKey("minimax");
-          if (openclawkEmbed?.apiKey) {
+          const openclawkKey = getAgentModelKey("minimax");
+          if (openclawkKey?.apiKey) {
             config.embedding.provider = "minimax";
-            config.embedding.apiKey = openclawkEmbed.apiKey;
-            config.embedding.baseURL = openclawkEmbed.baseUrl || "https://api.minimaxi.com/v1";
+            config.embedding.apiKey = openclawkKey.apiKey;
+            config.embedding.baseURL = openclawkKey.baseUrl || "https://api.minimaxi.com/v1";
             config.embedding.model = "text-embedding-v2";
             config.embedding.dimensions = 1024;
           } else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
@@ -3360,35 +3428,30 @@ async function getConfig() {
   return configPromise;
 }
 function hasEmbeddingProvider() {
-  return !!(process.env.OLLAMA_BASE_URL || process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.JINA_API_KEY || process.env.OPENAI_API_KEY || process.env.COHERE_API_KEY);
+  return !!(process.env.OLLAMA_BASE_URL || process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.JINA_API_KEY || process.env.OPENAI_API_KEY || process.env.COHERE_API_KEY || (process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_PROVIDER));
 }
 var HAWK_CONFIG_VERSION = process.env.HAWK_CONFIG_VERSION || "1";
 async function recordConfigHistory(config) {
   try {
     const historyPath = path.join(HAWK_CONFIG_DIR, "config-history.jsonl");
-    const envSnapshot = {};
     const relevantKeys = [
       "OLLAMA_BASE_URL",
       "OLLAMA_EMBED_MODEL",
-      "OLLAMA_EMBED_PATH",
-      "HAWK_EMBED_PROVIDER",
-      "HAWK_EMBED_MODEL",
-      "HAWK_EMBEDDING_DIM",
-      "HAWK_PROXY",
-      "HTTPS_PROXY",
-      "https_proxy",
-      "HAWK_CONFIG_VERSION",
-      "HAWK_LANG",
-      "HAWK_BM25_QUERY_LIMIT",
-      "HAWK_MIN_SCORE",
-      "HAWK_RERANK",
-      "HAWK_RERANK_MODEL"
+      "HAWK__EMBEDDING__PROVIDER",
+      "HAWK__EMBEDDING__MODEL",
+      "HAWK__EMBEDDING__DIMENSIONS",
+      "HAWK__EMBEDDING__BASE_URL",
+      "HAWK__EMBEDDING__API_KEY",
+      "HAWK__LLM__PROVIDER",
+      "HAWK__LLM__MODEL",
+      "HAWK__LLM__API_KEY",
+      "HAWK__LOGGING__LEVEL",
+      "HAWK_CONFIG_VERSION"
     ];
+    const envSnapshot = {};
     for (const key of relevantKeys) {
       const val = process.env[key];
-      if (val !== void 0) {
-        envSnapshot[key] = val;
-      }
+      if (val !== void 0) envSnapshot[key] = val;
     }
     envSnapshot["__resolved_provider"] = config.embedding.provider;
     envSnapshot["__resolved_dim"] = String(config.embedding.dimensions);
@@ -3410,9 +3473,7 @@ async function recordConfigHistory(config) {
       }).filter((e) => e !== null);
     }
     entries.push(entry);
-    if (entries.length > 100) {
-      entries = entries.slice(-100);
-    }
+    if (entries.length > 100) entries = entries.slice(-100);
     const dir = path.dirname(historyPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(historyPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
@@ -4150,8 +4211,8 @@ var LanceDBAdapter = class {
    * Calls Ollama base URL + /v1/rerank endpoint with {query, texts}.
    */
   async rerankResults(query, results) {
-    const rerankEnabled = process.env.HAWK_RERANK === "true";
-    const rerankModel = process.env.HAWK_RERANK_MODEL;
+    const rerankEnabled = this.config?.recall?.rerankEnabled ?? process.env.HAWK_RERANK === "true";
+    const rerankModel = this.config?.recall?.rerankModel ?? process.env.HAWK_RERANK_MODEL;
     if (!rerankEnabled || !rerankModel || !query) return results;
     try {
       const baseURL = (this.config?.embedding?.baseURL || process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");

@@ -595,26 +595,55 @@ openclaw plugins install /tmp/hawk-bridge
 
 ## 🔧 Configuration
 
-After install, choose your embedding mode — all via environment variables:
+**Config file**: `~/.hawk/config.yaml` (YAML, no JSON — JSON is no longer supported)
+**Env vars**: `HAWK__*` with double-underscore for nesting (e.g. `HAWK__EMBEDDING__DIMENSIONS`)
+**Priority**: Defaults < config.yaml < env vars (higher = wins)
+
+### Environment Variables
 
 ```bash
-# ① Default: Qianwen 阿里云 DashScope (no API key needed by default!)
-# Works out of the box. Set API key for higher rate limits:
-export QWEN_API_KEY=your_qwen_key
+# Unified format (recommended): HAWK__SECTION__KEY
+# Example: HAWK__EMBEDDING__DIMENSIONS=1024
 
-# ② Ollama local GPU (recommended for quality — free, no API key)
-export OLLAMA_BASE_URL=http://localhost:11434
+# ── Embedding ──────────────────────────────────────────────
+export HAWK__EMBEDDING__PROVIDER=ollama    # ollama | jina | qianwen | openai | cohere
+export HAWK__EMBEDDING__BASE_URL=http://localhost:9997/v1
+export HAWK__EMBEDDING__MODEL=bge-m3
+export HAWK__EMBEDDING__DIMENSIONS=1024
+export HAWK__EMBEDDING__API_KEY=sk-...
+export HAWK__EMBEDDING__PROXY=http://proxy:10808
 
-# ③ Jina AI free tier (requires free API key from jina.ai)
-export JINA_API_KEY=your_free_key
-# ⚠️ Proxy required in China: set HTTP/SOCKS proxy below
-export HTTPS_PROXY=http://YOUR_PROXY_HOST:PORT
+# ── LLM (for reranking) ────────────────────────────────────
+export HAWK__LLM__PROVIDER=ollama
+export HAWK__LLM__MODEL=llama3.3
+export HAWK__LLM__BASE_URL=http://localhost:9997/v1
 
-# ④ OpenAI (paid, high quality)
-export OPENAI_API_KEY=sk-...
+# ── Recall ─────────────────────────────────────────────────
+export HAWK__RECALL__TOP_K=5
+export HAWK__RECALL__MIN_SCORE=0.3
+export HAWK__RECALL__RERANK_ENABLED=true
+export HAWK__RECALL__RERANK_MODEL=bge-m3
 
-# ⑤ BM25-only fallback (no embedding needed — keyword search only)
-# No environment variables needed
+# ── Logging ────────────────────────────────────────────────
+export HAWK__LOGGING__LEVEL=info    # debug | info | warn | error
+
+# ── Legacy env vars (deprecated, still work but print warnings) ─
+export OLLAMA_BASE_URL=http://localhost:11434    # → HAWK__EMBEDDING__BASE_URL
+export OLLAMA_EMBED_MODEL=nomic-embed-text       # → HAWK__EMBEDDING__MODEL
+export HAWK_EMBEDDING_DIM=1024                    # → HAWK__EMBEDDING__DIMENSIONS
+export JINA_API_KEY=...                           # → HAWK__EMBEDDING__API_KEY
+export OPENAI_API_KEY=...                        # → HAWK__EMBEDDING__API_KEY
+export QWEN_API_KEY=...                           # → HAWK__EMBEDDING__API_KEY
+```
+
+### Quick Start (Docker / Local)
+
+```bash
+# Minimal config for local Ollama
+export HAWK__EMBEDDING__PROVIDER=ollama
+export HAWK__EMBEDDING__BASE_URL=http://localhost:9997/v1
+export HAWK__EMBEDDING__MODEL=bge-m3
+export HAWK__EMBEDDING__DIMENSIONS=1024
 ```
 
 ### 🔑 Get Your Qianwen API Key (Recommended — 国内首选)
@@ -642,39 +671,45 @@ Jina AI offers a **generous free tier** — no credit card required:
 ### ~/.hawk/config.yaml
 
 ```yaml
-# 复制为 ~/.hawk/config.yaml 即可
+# hawk-bridge configuration (YAML only — JSON no longer supported)
+# Env vars in this file use ${ENV_VAR} syntax (will be expanded at load time)
+
 db:
   provider: lancedb
 
 embedding:
-  provider: jina
-  apiKey: ${JINA_API_KEY}
-  model: jina-embeddings-v5-small
+  provider: ollama
+  baseURL: ${OLLAMA_BASE_URL}       # e.g. http://localhost:9997/v1
+  model: bge-m3
   dimensions: 1024
+  proxy: ""                         # e.g. http://192.168.1.109:10808
 
 llm:
-  provider: groq
-  apiKey: ${GROQ_API_KEY}
-  model: llama-3.3-70b-versatile
+  provider: ollama
+  baseURL: ${OLLAMA_BASE_URL}
+  model: llama3.3
+
+recall:
+  topK: 5
+  minScore: 0.3
+  rerankEnabled: false
+  rerankModel: ""
 
 capture:
   enabled: true
   importanceThreshold: 0.5
 
-recall:
-  topK: 5
-  minScore: 0.3
-
-i18n:
-  lang: zh  # zh | en — interface language
+logging:
+  level: info    # debug | info | warn | error
 ```
 
-| Provider | Field | Description |
-|---------|-------|-------------|
-| Jina | `JINA_API_KEY` env | Jina API Key starts with `jina_` |
-| Ollama | `OLLAMA_BASE_URL` env | e.g. `http://localhost:11434` |
-| OpenAI | `OPENAI_API_KEY` env | OpenAI API Key |
-| Generic | `base_url` + `apiKey` | Any OpenAI-compatible endpoint |
+| Provider | YAML field | Env var (deprecated) |
+|---------|------------|---------------------|
+| Ollama | `HAWK__EMBEDDING__BASE_URL` | `OLLAMA_BASE_URL` |
+| Jina | `HAWK__EMBEDDING__API_KEY` | `JINA_API_KEY` |
+| OpenAI | `HAWK__EMBEDDING__API_KEY` | `OPENAI_API_KEY` |
+| Qianwen | `HAWK__EMBEDDING__API_KEY` | `QWEN_API_KEY` |
+| Generic | `embedding.baseURL` + `apiKey` | Any OpenAI-compatible endpoint |
 
 ### openclaw.json
 
@@ -706,15 +741,19 @@ No API keys in config files — environment variables only.
 
 ---
 
-## 🔄 Degradation Logic
+## 🔄 Provider Auto-Detection
+
+If no embedding config is set (yaml or env), auto-detects in this order:
 
 ```
-Has OLLAMA_BASE_URL?        → Ollama embeddings + BM25 + RRF
-Has JINA_API_KEY?          → Jina embeddings + BM25 + RRF
-Has QWEN_API_KEY?          → Qianwen (阿里云 DashScope) + BM25 + RRF
-Has OPENAI_API_KEY?        → OpenAI embeddings + BM25 + RRF
-Has COHERE_API_KEY?        → Cohere embeddings + BM25 + RRF
-Nothing configured?          → BM25-only (pure keyword, no API calls)
+OLLAMA_BASE_URL set?            → Ollama (recommended for local GPU)
+HAWK__EMBEDDING__* set?        → Configured provider
+Minimax key in OpenClaw?       → Minimax
+QWEN_API_KEY set?              → Qianwen (阿里云 DashScope)
+JINA_API_KEY set?              → Jina AI
+OPENAI_API_KEY set?            → OpenAI
+COHERE_API_KEY set?            → Cohere
+Nothing configured?            → BM25-only (pure keyword, no API calls)
 ```
 
 No API key = no crash = graceful degradation.

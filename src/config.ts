@@ -1,5 +1,28 @@
-// Config Provider — auto-reads OpenClaw's built-in model config
-// Config file: ~/.hawk/config.yaml (YAML) with ${ENV_VAR} support, falls back to ~/.hawk/config.json
+// hawk-bridge Config Provider
+//
+// Config file:  ~/.hawk/config.yaml  (YAML with ${ENV_VAR} support)
+// Env vars:     HAWK__* (unified prefix, double-underscore = nested)
+// Priority:     Defaults < config.yaml < HAWK__* env vars
+//
+// Unified env var format (HAWK__SECTION__KEY):
+//   HAWK__EMBEDDING__PROVIDER   → config.embedding.provider
+//   HAWK__EMBEDDING__MODEL      → config.embedding.model
+//   HAWK__EMBEDDING__DIMENSIONS → config.embedding.dimensions
+//   HAWK__EMBEDDING__BASE_URL   → config.embedding.baseURL
+//   HAWK__EMBEDDING__API_KEY    → config.embedding.apiKey
+//   HAWK__EMBEDDING__PROXY      → config.embedding.proxy
+//   HAWK__LLM__PROVIDER         → config.llm.provider
+//   HAWK__LLM__MODEL            → config.llm.model
+//   HAWK__LLM__API_KEY          → config.llm.apiKey
+//   HAWK__RECALL__TOP_K         → config.recall.topK
+//   HAWK__RECALL__MIN_SCORE     → config.recall.minScore
+//   HAWK__CAPTURE__ENABLED      → config.capture.enabled
+//   HAWK__LOGGING__LEVEL        → pino log level (info, debug, warn)
+//
+// Legacy env vars (still work, but deprecated):
+//   OLLAMA_BASE_URL, OLLAMA_EMBED_MODEL, HAWK_EMBED_*, JINA_API_KEY,
+//   OPENAI_API_KEY, QWEN_API_KEY, DASHSCOPE_API_KEY, COHERE_API_KEY
+//   (deprecated vars log a warning on first use)
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -11,8 +34,8 @@ import { getEnvOverrides, deepMerge } from './config/env.js';
 import type { HawkConfig } from './types.js';
 
 const OPENCLAW_CONFIG_PATH    = path.join(os.homedir(), '.openclaw', 'openclaw.json');
-const OPENCLAW_AGENT_MODELS = path.join(os.homedir(), '.openclaw', 'agents', 'main', 'agent', 'models.json');
-const HAWK_CONFIG_DIR = path.join(os.homedir(), '.hawk');
+const OPENCLAW_AGENT_MODELS  = path.join(os.homedir(), '.openclaw', 'agents', 'main', 'agent', 'models.json');
+const HAWK_CONFIG_DIR        = path.join(os.homedir(), '.hawk');
 
 export interface OpenClawModelProvider {
   id: string;
@@ -64,7 +87,6 @@ function loadAgentModels(): Record<string, unknown> | null {
   }
 }
 
-/** Get apiKey + baseUrl for a provider from OpenClaw's agent models.json (contains real credentials). */
 function getAgentModelKey(provider: string): { apiKey: string; baseUrl: string } | null {
   const agents = loadAgentModels();
   if (!agents) return null;
@@ -85,12 +107,10 @@ export function getConfiguredProvider(providerName: string = 'minimax'): OpenCla
 }
 
 export function getDefaultModelId(): string {
-  // Priority: agents.defaults.model.primary > first minimax model
   const cfg = loadOpenClawConfig();
-  const primary = cfg?.auth?.profiles?.default?.mode; // just provider name
   const openclawPrimary = (cfg as any)?.agents?.defaults?.model?.primary;
   if (openclawPrimary && typeof openclawPrimary === 'string') {
-    return openclawPrimary; // e.g. "minimax/MiniMax-M2.7-highspeed"
+    return openclawPrimary;
   }
   if (!cfg?.models?.providers) return 'MiniMax-M2.7';
   const prov = cfg.models.providers['minimax'];
@@ -142,24 +162,8 @@ function resolveEnvVars(raw: string): string {
   });
 }
 
-/** Recursively convert snake_case keys to camelCase (for legacy JSON config compatibility) */
-function snakeToCamel(obj: any): any {
-  if (Array.isArray(obj)) return obj.map(snakeToCamel);
-  if (obj !== null && typeof obj === 'object') {
-    return Object.fromEntries(
-      Object.entries(obj).map(([k, v]) => [
-        k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()),
-        snakeToCamel(v),
-      ])
-    );
-  }
-  return obj;
-}
-
 function loadYamlConfig(): Record<string, any> {
   const yamlPath = path.join(HAWK_CONFIG_DIR, 'config.yaml');
-  const legacyPath = path.join(HAWK_CONFIG_DIR, 'config.json');
-
   if (fs.existsSync(yamlPath)) {
     try {
       const raw = fs.readFileSync(yamlPath, 'utf-8');
@@ -167,35 +171,6 @@ function loadYamlConfig(): Record<string, any> {
       return yaml.load(resolved) as Record<string, any>;
     } catch (e) {
       console.warn('[hawk-bridge] Failed to load config.yaml:', e);
-    }
-  } else if (fs.existsSync(legacyPath)) {
-    try {
-      const raw = fs.readFileSync(legacyPath, 'utf-8');
-      const parsed = JSON.parse(raw) as Record<string, any>;
-      // Legacy config.json uses snake_case; convert to camelCase to match HawkConfig type
-      const camel = snakeToCamel(parsed) as Record<string, any>;
-      // Promote top-level embedding keys (embeddingModel, baseUrl, etc.) into embedding object
-      // so deepMerge works correctly with DEFAULT_CONFIG.embedding
-      const embeddingKeys = ['embeddingModel', 'embeddingDimensions', 'baseUrl', 'proxy',
-        'openaiApiKey', 'apiKey', 'model', 'dimensions', 'provider'];
-      const embedding: Record<string, any> = {};
-      for (const key of embeddingKeys) {
-        if (camel[key] !== undefined) {
-          // Map camelCase → HawkConfig embedding field names
-          const embeddingField = key === 'embeddingModel' ? 'model'
-            : key === 'embeddingDimensions' ? 'dimensions'
-            : key === 'openaiApiKey' ? 'apiKey'
-            : key;
-          (embedding as any)[embeddingField] = camel[key];
-          delete camel[key];
-        }
-      }
-      if (Object.keys(embedding).length > 0) {
-        camel.embedding = embedding;
-      }
-      return camel;
-    } catch (e) {
-      console.warn('[hawk-bridge] Failed to load legacy config.json:', e);
     }
   }
   return {};
@@ -206,82 +181,84 @@ let configPromise: Promise<HawkConfig> | null = null;
 export async function getConfig(): Promise<HawkConfig> {
   if (!configPromise) {
     configPromise = (async () => {
-      // 1. Start with defaults
+      // 1. Defaults
       let config: HawkConfig = { ...DEFAULT_CONFIG } as HawkConfig;
 
-      // 2. Merge YAML config file (yaml > defaults)
+      // 2. YAML config file (config.yaml > defaults)
       const yamlConfig = loadYamlConfig();
       if (Object.keys(yamlConfig).length > 0) {
         config = deepMerge(DEFAULT_CONFIG, yamlConfig as Partial<HawkConfig>);
       }
 
-      // 3. Env var overrides (env > yaml > defaults)
+      // 3. Env var overrides — unified HAWK__* vars + deprecated compat vars
+      //    (env > yaml > defaults)
       const envOverrides = getEnvOverrides();
       if (Object.keys(envOverrides).length > 0) {
         config = deepMerge(config, envOverrides);
       }
 
-      // 4. Auto-detect embedding provider — only if user did NOT explicitly set HAWK_EMBED_*
-      //    HAWK_EMBED_* env vars take absolute priority over auto-detection
-      const hasExplicitEmbedConfig = process.env.HAWK_EMBED_PROVIDER || process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_MODEL;
-      if (!hasExplicitEmbedConfig) {
-        // OLLAMA_BASE_URL is checked first — it overrides config file values (e.g. config.json's Jina settings)
-        // OLLAMA_BASE_URL always wins when set, regardless of HAWK_EMBED_* env vars
+      // 4. Auto-detect embedding provider — only if no embedding config is set
+      //    (yaml/env didn't provide any embedding settings)
+      const hasEmbedding =
+        config.embedding?.provider ||
+        config.embedding?.apiKey ||
+        config.embedding?.baseURL;
+      if (!hasEmbedding) {
         if (process.env.OLLAMA_BASE_URL) {
+          // Already handled in getEnvOverrides, but we keep this as final fallback
           config.embedding.provider = 'ollama';
-          config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
-          config.embedding.model = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
+          config.embedding.baseURL  = process.env.OLLAMA_BASE_URL;
+          config.embedding.model    = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
           config.embedding.dimensions = parseInt(process.env.HAWK_EMBEDDING_DIM || '768', 10);
         } else {
-          const openclawkEmbed = getAgentModelKey('minimax');
-          if (openclawkEmbed?.apiKey) {
+          const openclawkKey = getAgentModelKey('minimax');
+          if (openclawkKey?.apiKey) {
             config.embedding.provider = 'minimax';
-            config.embedding.apiKey  = openclawkEmbed.apiKey;
-            config.embedding.baseURL = openclawkEmbed.baseUrl || 'https://api.minimaxi.com/v1';
-            config.embedding.model  = 'text-embedding-v2';
+            config.embedding.apiKey  = openclawkKey.apiKey;
+            config.embedding.baseURL = openclawkKey.baseUrl || 'https://api.minimaxi.com/v1';
+            config.embedding.model   = 'text-embedding-v2';
             config.embedding.dimensions = 1024;
           } else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
             config.embedding.provider = 'qianwen';
-            config.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '';
+            config.embedding.apiKey   = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '';
             config.embedding.baseURL = 'https://dashscope.aliyuncs.com/api/v1';
-            config.embedding.model = 'text-embedding-v1';
+            config.embedding.model   = 'text-embedding-v1';
             config.embedding.dimensions = 1024;
           } else if (process.env.JINA_API_KEY) {
             config.embedding.provider = 'jina';
-            config.embedding.apiKey = process.env.JINA_API_KEY;
-            config.embedding.baseURL = '';
-            config.embedding.model = 'jina-embeddings-v5-small';
+            config.embedding.apiKey   = process.env.JINA_API_KEY;
+            config.embedding.baseURL  = '';
+            config.embedding.model    = 'jina-embeddings-v5-small';
             config.embedding.dimensions = 1024;
           } else if (process.env.OPENAI_API_KEY) {
             config.embedding.provider = 'openai';
-            config.embedding.apiKey = process.env.OPENAI_API_KEY;
-            config.embedding.baseURL = '';
-            config.embedding.model = 'text-embedding-3-small';
+            config.embedding.apiKey   = process.env.OPENAI_API_KEY;
+            config.embedding.baseURL   = '';
+            config.embedding.model    = 'text-embedding-3-small';
             config.embedding.dimensions = 1536;
           } else if (process.env.COHERE_API_KEY) {
             config.embedding.provider = 'cohere';
-            config.embedding.apiKey = process.env.COHERE_API_KEY;
-            config.embedding.baseURL = '';
-            config.embedding.model = 'embed-english-v3.0';
+            config.embedding.apiKey   = process.env.COHERE_API_KEY;
+            config.embedding.baseURL  = '';
+            config.embedding.model    = 'embed-english-v3.0';
             config.embedding.dimensions = 1024;
           }
         }
       }
 
-      // 5. Default LLM to OpenClaw's configured model (if not set in yaml or env)
-      //    Uses agents/main/agent/models.json for real credentials (getAgentModelKey)
+      // 5. Default LLM from OpenClaw (if not set in yaml or env)
       if (!config.llm.model || !config.llm.apiKey) {
         const openclawkKey = getAgentModelKey('minimax');
         if (openclawkKey?.apiKey) {
           config.llm = config.llm || {} as any;
           config.llm.model    = config.llm.model || getDefaultModelId();
           config.llm.apiKey   = openclawkKey.apiKey;
-          config.llm.baseURL  = config.llm.baseURL || openclawkKey.baseUrl || '';
+          config.llm.baseURL = config.llm.baseURL || openclawkKey.baseUrl || '';
           config.llm.provider = config.llm.provider || 'minimax';
         }
       }
 
-      // Record config version history (non-blocking, non-critical)
+      // Record config version history (non-critical, never fails config load)
       await recordConfigHistory(config);
 
       return config;
@@ -297,11 +274,12 @@ export function hasEmbeddingProvider(): boolean {
     process.env.DASHSCOPE_API_KEY ||
     process.env.JINA_API_KEY ||
     process.env.OPENAI_API_KEY ||
-    process.env.COHERE_API_KEY
+    process.env.COHERE_API_KEY ||
+    (process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_PROVIDER)
   );
 }
 
-// ─── Config Versioning ────────────────────────────────────────────────────────────
+// ─── Config Version History ─────────────────────────────────────────────────────
 
 const HAWK_CONFIG_VERSION = process.env.HAWK_CONFIG_VERSION || '1';
 
@@ -312,31 +290,22 @@ interface ConfigHistoryEntry {
   hash: string;
 }
 
-/**
- * Record a config snapshot to ~/.hawk/config-history.jsonl.
- * Keeps last 100 entries, prunes older.
- */
 async function recordConfigHistory(config: HawkConfig): Promise<void> {
   try {
     const historyPath = path.join(HAWK_CONFIG_DIR, 'config-history.jsonl');
-
-    // Collect non-sensitive env vars
-    const envSnapshot: Record<string, string> = {};
     const relevantKeys = [
-      'OLLAMA_BASE_URL', 'OLLAMA_EMBED_MODEL', 'OLLAMA_EMBED_PATH',
-      'HAWK_EMBED_PROVIDER', 'HAWK_EMBED_MODEL', 'HAWK_EMBEDDING_DIM',
-      'HAWK_PROXY', 'HTTPS_PROXY', 'https_proxy',
-      'HAWK_CONFIG_VERSION', 'HAWK_LANG',
-      'HAWK_BM25_QUERY_LIMIT', 'HAWK_MIN_SCORE',
-      'HAWK_RERANK', 'HAWK_RERANK_MODEL',
+      'OLLAMA_BASE_URL', 'OLLAMA_EMBED_MODEL',
+      'HAWK__EMBEDDING__PROVIDER', 'HAWK__EMBEDDING__MODEL', 'HAWK__EMBEDDING__DIMENSIONS',
+      'HAWK__EMBEDDING__BASE_URL', 'HAWK__EMBEDDING__API_KEY',
+      'HAWK__LLM__PROVIDER', 'HAWK__LLM__MODEL', 'HAWK__LLM__API_KEY',
+      'HAWK__LOGGING__LEVEL',
+      'HAWK_CONFIG_VERSION',
     ];
+    const envSnapshot: Record<string, string> = {};
     for (const key of relevantKeys) {
       const val = process.env[key];
-      if (val !== undefined) {
-        envSnapshot[key] = val;
-      }
+      if (val !== undefined) envSnapshot[key] = val;
     }
-    // Add effective provider/dim from resolved config
     envSnapshot['__resolved_provider'] = config.embedding.provider;
     envSnapshot['__resolved_dim'] = String(config.embedding.dimensions);
 
@@ -347,28 +316,18 @@ async function recordConfigHistory(config: HawkConfig): Promise<void> {
       hash: crypto.createHash('md5').update(JSON.stringify(envSnapshot)).digest('hex'),
     };
 
-    // Read existing entries
     let entries: ConfigHistoryEntry[] = [];
     if (fs.existsSync(historyPath)) {
       const raw = fs.readFileSync(historyPath, 'utf-8');
-      entries = raw.trim().split('\n')
-        .filter(Boolean)
-        .map(line => {
-          try { return JSON.parse(line) as ConfigHistoryEntry; }
-          catch { return null; }
-        })
-        .filter((e): e is ConfigHistoryEntry => e !== null);
+      entries = raw.trim().split('\n').filter(Boolean).map(line => {
+        try { return JSON.parse(line) as ConfigHistoryEntry; }
+        catch { return null; }
+      }).filter((e): e is ConfigHistoryEntry => e !== null);
     }
 
-    // Append new entry
     entries.push(entry);
+    if (entries.length > 100) entries = entries.slice(-100);
 
-    // Prune to last 100
-    if (entries.length > 100) {
-      entries = entries.slice(-100);
-    }
-
-    // Write back
     const dir = path.dirname(historyPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(historyPath, entries.map(e => JSON.stringify(e)).join('\n') + '\n');
@@ -377,7 +336,6 @@ async function recordConfigHistory(config: HawkConfig): Promise<void> {
   }
 }
 
-/** Print recent config history entries */
 export function printConfigHistory(limit: number = 20): void {
   const historyPath = path.join(HAWK_CONFIG_DIR, 'config-history.jsonl');
   if (!fs.existsSync(historyPath)) {
@@ -386,8 +344,7 @@ export function printConfigHistory(limit: number = 20): void {
   }
   try {
     const raw = fs.readFileSync(historyPath, 'utf-8');
-    const lines = raw.trim().split('\n').filter(Boolean);
-    const entries = lines.map(line => {
+    const entries = raw.trim().split('\n').filter(Boolean).map(line => {
       try { return JSON.parse(line) as ConfigHistoryEntry; }
       catch { return null; }
     }).filter((e): e is ConfigHistoryEntry => e !== null);

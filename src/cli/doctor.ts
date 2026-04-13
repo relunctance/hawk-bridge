@@ -72,14 +72,14 @@ async function runDoctor() {
     }
   });
 
-  // 3. Config file check
+  // 3. Config file check (YAML only — JSON no longer supported)
   check('配置文件', () => {
     const yamlPath = path.join(os.homedir(), '.hawk', 'config.yaml');
     const jsonPath = path.join(os.homedir(), '.hawk', 'config.json');
     if (fs.existsSync(yamlPath)) {
       return { status: 'pass', message: `~/.hawk/config.yaml 存在` };
     } else if (fs.existsSync(jsonPath)) {
-      return { status: 'warn', message: `~/.hawk/config.json 存在（建议迁移到 YAML）` };
+      return { status: 'fail', message: `~/.hawk/config.json 不再支持，请迁移到 ~/.hawk/config.yaml` };
     } else {
       return { status: 'warn', message: `无配置文件，使用默认配置` };
     }
@@ -89,8 +89,7 @@ async function runDoctor() {
   check('配置解析', () => {
     try {
       const yamlPath = path.join(os.homedir(), '.hawk', 'config.yaml');
-      const jsonPath = path.join(os.homedir(), '.hawk', 'config.json');
-      if (fs.existsSync(yamlPath) || fs.existsSync(jsonPath)) {
+      if (fs.existsSync(yamlPath)) {
         return { status: 'pass', message: '配置文件可读取' };
       }
       return { status: 'warn', message: '无配置文件，使用默认配置' };
@@ -99,25 +98,27 @@ async function runDoctor() {
     }
   });
 
-  // 5. Embedder API key check
+  // 5. Embedder API key check (supports both legacy and unified HAWK__ env vars)
   check('Embedding API Key', () => {
     const keys = [
       process.env.OLLAMA_BASE_URL,
+      process.env.HAWK__EMBEDDING__BASE_URL,
       process.env.QWEN_API_KEY,
       process.env.DASHSCOPE_API_KEY,
       process.env.JINA_API_KEY,
       process.env.OPENAI_API_KEY,
       process.env.COHERE_API_KEY,
+      process.env.HAWK__EMBEDDING__API_KEY,
     ].filter(Boolean);
 
     if (keys.length > 0) {
-      const hasKey = keys.some(k => !k?.startsWith('ollama'));
+      const hasKey = keys.some(k => !k?.startsWith('ollama') && !k?.includes('localhost'));
       return {
         status: hasKey ? 'pass' : 'warn',
-        message: hasKey ? `API Key 存在 (${keys.length}个)` : '仅 OLLAMA_BASE_URL 配置（本地部署）'
+        message: hasKey ? `API Key / URL 存在 (${keys.length}个)` : '仅 OLLAMA_BASE_URL / HAWK__EMBEDDING__BASE_URL 配置（本地部署）'
       };
     }
-    return { status: 'warn', message: '未检测到 API Key，将使用 fallback（无向量搜索）' };
+    return { status: 'warn', message: '未检测到 Embedding 配置，将使用 fallback（无向量搜索）' };
   });
 
   // 6. hawk CLI check
