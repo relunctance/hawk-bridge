@@ -27,6 +27,7 @@
 
 ## Nice to Have (not urgent)
 
+- [x] **uninstall.sh** — 一键卸载脚本，支持：取消插件注册、删除符号链接、清理 ~/.hawk 数据、删除 context-hawk、清理构建产物、确认提示
 - [ ] Multi-tenant namespace support
 - [ ] Batch write API (`storeMany`)
 - [ ] Dry-run mode for migration (`--dry-run`)

@@ -342,9 +342,8 @@ main() {
   echo "  INSTALL_OLLAMA=1 bash $HAWK_BRIDGE_DIR/install.sh"
   echo ""
   echo "卸载方法："
-  echo "  openclaw plugins uninstall hawk-bridge"
-  echo "  rm -rf ~/.openclaw/hawk ~/.hawk"
-  echo "  rm -rf $CONTEXT_HAWK_DIR"
+  echo "  bash $HAWK_BRIDGE_DIR/uninstall.sh"
+  echo "  # 或远程卸载：bash <(curl -fsSL https://raw.githubusercontent.com/relunctance/hawk-bridge/master/uninstall.sh)"
   echo ""
 }
 
