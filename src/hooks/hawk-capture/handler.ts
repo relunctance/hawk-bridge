@@ -384,7 +384,127 @@ async function handleSaturation(text: string, threshold: number = 0.70): Promise
 
 // ─── Main Capture Handler ──────────────────────────────────────────────────────
 
+const SESSIONS_JSON_PATH = path.join(os.homedir(), '.openclaw', 'agents', 'main', 'sessions', 'sessions.json');
+
+interface SessionMessage {
+  id: string;
+  role: string;
+  text: string;
+  timestamp: string;
+}
+
+// ─── Session Compaction Handler ─────────────────────────────────────────────────
+// Captures AI replies in the main session which don't trigger message:sent.
+// OpenClaw compacts sessions periodically; at that point we read the transcript
+// and store any user/assistant exchanges that weren't captured via message events.
+
+async function handleSessionCompaction(event: HookEvent): Promise<void> {
+  try {
+    const config = await getConfig();
+    if (!config.capture.enabled) return;
+
+    const sessionKey = event.sessionKey;
+    if (!sessionKey) return;
+
+    // Look up transcript path from sessions.json
+    let transcriptPath: string | null = null;
+    try {
+      const content = await fs.promises.readFile(SESSIONS_JSON_PATH, 'utf-8');
+      const sessionsMap = JSON.parse(content);
+      const entry = sessionsMap[sessionKey];
+      transcriptPath = entry?.sessionFile ?? null;
+    } catch (lookupErr) {
+      logger.warn({ err: lookupErr, sessionKey }, 'Could not look up session transcript path');
+      return;
+    }
+
+    if (!transcriptPath) {
+      logger.debug({ sessionKey }, 'No transcript path found');
+      return;
+    }
+
+    // Read recent messages via Python script
+    const scriptPath = path.join(
+      os.homedir(), '.openclaw', 'workspace', 'hawk-bridge', 'python', 'hawk_session_history.py'
+    );
+    const { stdout } = await exec(
+      `python3 "${scriptPath}" "${transcriptPath}" 30`
+    );
+
+    let result: { messages: SessionMessage[]; error?: string };
+    try {
+      result = JSON.parse(stdout);
+    } catch {
+      logger.warn({ parseError: stdout.slice(0, 200) }, 'Failed to parse session history output');
+      return;
+    }
+
+    if (result.error || !result.messages?.length) {
+      if (result.error) {
+        logger.warn({ error: result.error }, 'Session history script error');
+      }
+      return;
+    }
+
+    // Store messages in LanceDB
+    const store = await getDB();
+    const embed = await getEmbedder();
+    const { importanceThreshold } = config.capture;
+    let storedCount = 0;
+
+    for (const msg of result.messages) {
+      const text = msg.text;
+      if (!text || text.length < 30) continue;
+
+      const trimmed = text.trim();
+      if (/^[\d\s.,]+$/.test(trimmed)) continue;
+      if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]{1,3}$/u.test(trimmed)) continue;
+      if (trimmed.length < 30) continue;
+
+      const sourceType = msg.role === 'user' ? 'user-message' : 'hawk-capture';
+
+      try {
+        const [vector] = await embed.embed([text]);
+        await store.store({
+          id: generateId(),
+          text,
+          vector,
+          category: 'conversation',
+          scope: 'global',
+          importance: 0.5,
+          metadata: {
+            capture_trigger: 'session_compaction',
+            source_type: sourceType,
+            sender_id: 'session:' + sessionKey,
+            session_msg_id: msg.id,
+            session_timestamp: msg.timestamp,
+          },
+        }, sessionKey);
+        storedCount++;
+        audit('compact', 'success', text.slice(0, 80));
+      } catch (storeErr) {
+        audit('compact', 'store_error:' + String(storeErr), text.slice(0, 80));
+      }
+    }
+
+    if (storedCount > 0) {
+      logger.info({ storedCount, sessionKey }, 'Stored memories from session compaction');
+      audit('compact', 'stored', `Stored ${storedCount} memories`);
+      markBm25Dirty();
+    }
+  } catch (err) {
+    logger.error({ err }, 'session:compact:after handler error');
+    memoryErrors.inc({ type: 'compaction_handler' });
+  }
+}
+
 const captureHandler = async (event: HookEvent) => {
+  // Handle session:compact:after — captures AI replies that bypassed message:sent
+  if (event.type === 'session:compact:after') {
+    await handleSessionCompaction(event);
+    return;
+  }
+
   if (event.type !== 'message') return;
   const isOutbound = event.action === 'sent';
   const isInbound = event.action === 'received';

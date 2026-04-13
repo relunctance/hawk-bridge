@@ -3,7 +3,7 @@ name: hawk-capture
 description: "Auto-extract and store memories from both inbound user messages and outbound agent responses"
 homepage: https://github.com/relunctance/hawk-bridge
 metadata:
-  { "openclaw": { "emoji": "🦅", "events": ["message:sent", "message:received"], "requires": {} } }
+  { "openclaw": { "emoji": "🦅", "events": ["message:sent", "message:received", "session:compact:after"], "requires": {} } }
 ---
 
 # hawk-capture

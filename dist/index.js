@@ -6173,7 +6173,101 @@ async function handleSaturation(text, threshold = 0.7) {
   }
   return false;
 }
+var SESSIONS_JSON_PATH = path4.join(os4.homedir(), ".openclaw", "agents", "main", "sessions", "sessions.json");
+async function handleSessionCompaction(event) {
+  try {
+    const config = await getConfig();
+    if (!config.capture.enabled) return;
+    const sessionKey = event.sessionKey;
+    if (!sessionKey) return;
+    let transcriptPath = null;
+    try {
+      const content = await fs3.promises.readFile(SESSIONS_JSON_PATH, "utf-8");
+      const sessionsMap = JSON.parse(content);
+      const entry = sessionsMap[sessionKey];
+      transcriptPath = entry?.sessionFile ?? null;
+    } catch (lookupErr) {
+      logger.warn({ err: lookupErr, sessionKey }, "Could not look up session transcript path");
+      return;
+    }
+    if (!transcriptPath) {
+      logger.debug({ sessionKey }, "No transcript path found");
+      return;
+    }
+    const scriptPath = path4.join(
+      os4.homedir(),
+      ".openclaw",
+      "workspace",
+      "hawk-bridge",
+      "python",
+      "hawk_session_history.py"
+    );
+    const { stdout } = await exec(
+      `python3 "${scriptPath}" "${transcriptPath}" 30`
+    );
+    let result;
+    try {
+      result = JSON.parse(stdout);
+    } catch {
+      logger.warn({ parseError: stdout.slice(0, 200) }, "Failed to parse session history output");
+      return;
+    }
+    if (result.error || !result.messages?.length) {
+      if (result.error) {
+        logger.warn({ error: result.error }, "Session history script error");
+      }
+      return;
+    }
+    const store = await getDB();
+    const embed = await getEmbedder2();
+    const { importanceThreshold } = config.capture;
+    let storedCount = 0;
+    for (const msg of result.messages) {
+      const text = msg.text;
+      if (!text || text.length < 30) continue;
+      const trimmed = text.trim();
+      if (/^[\d\s.,]+$/.test(trimmed)) continue;
+      if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]{1,3}$/u.test(trimmed)) continue;
+      if (trimmed.length < 30) continue;
+      const sourceType = msg.role === "user" ? "user-message" : "hawk-capture";
+      try {
+        const [vector] = await embed.embed([text]);
+        await store.store({
+          id: generateId(),
+          text,
+          vector,
+          category: "conversation",
+          scope: "global",
+          importance: 0.5,
+          metadata: {
+            capture_trigger: "session_compaction",
+            source_type: sourceType,
+            sender_id: "session:" + sessionKey,
+            session_msg_id: msg.id,
+            session_timestamp: msg.timestamp
+          }
+        }, sessionKey);
+        storedCount++;
+        audit("compact", "success", text.slice(0, 80));
+      } catch (storeErr) {
+        audit("compact", "store_error:" + String(storeErr), text.slice(0, 80));
+      }
+    }
+    if (storedCount > 0) {
+      logger.info({ storedCount, sessionKey }, "Stored memories from session compaction");
+      audit("compact", "stored", `Stored ${storedCount} memories`);
+      markBm25Dirty();
+    }
+  } catch (err) {
+    logger.error({ err }, "session:compact:after handler error");
+    memoryErrors.inc({ type: "compaction_handler" });
+  }
+}
 var captureHandler = async (event) => {
+  if (event.type === "session:compact:after") {
+    await handleSessionCompaction(event);
+    return;
+  }
   if (event.type !== "message") return;
   const isOutbound = event.action === "sent";
   const isInbound = event.action === "received";
