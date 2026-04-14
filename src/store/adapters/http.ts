@@ -41,16 +41,28 @@ export class HTTPAdapter implements MemoryStore {
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const url = `${this.baseUrl}${path}`;
-    const res = await fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`HTTP ${method} ${path} failed ${res.status}: ${text}`);
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY = 0.5; // seconds
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          throw new Error(`HTTP ${method} ${path} failed ${res.status}: ${text}`);
+        }
+        return res.json() as Promise<T>;
+      } catch (err) {
+        if (attempt === MAX_RETRIES) throw err;
+        // Exponential backoff
+        await new Promise(r => setTimeout(r, RETRY_DELAY * Math.pow(2, attempt - 1)));
+      }
     }
-    return res.json() as Promise<T>;
+    throw new Error('unreachable');
   }
 
   // ─── MemoryStore Interface ───────────────────────────────────────────────────
