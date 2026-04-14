@@ -7,7 +7,11 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as http from 'http';
+import * as https from 'https';
 import type { HookEvent } from '../../../../../.npm-global/lib/node_modules/openclaw/dist/v10/types/hooks.js';
+import type { PluginHookMessageContext } from '../../../../../.npm-global/lib/node_modules/openclaw/dist/plugin-sdk/src/plugins/hooks.d.ts';
+type HookContext = PluginHookMessageContext;
 import { getMemoryStore } from '../../store/factory.js';
 import type { MemoryStore } from '../../store/interface.js';
 import { Embedder } from '../../embeddings.js';
@@ -498,9 +502,37 @@ async function handleSessionCompaction(event: HookEvent): Promise<void> {
   }
 }
 
-const captureHandler = async (event: HookEvent) => {
-  // DEBUG: log all events to trace hook invocations
+const captureHandler = async (event: HookEvent, ctx?: HookContext) => {
   logger.debug({ type: event.type, action: event.action, sessionKey: event.sessionKey }, 'hawk-capture: event received');
+
+  // ─── Normalize typed plugin hook events to internal hook event format ───
+  // Typed hook events (message_received, message_sent) have a different structure:
+  //   { from, content, timestamp, metadata } + ctx: { channelId, accountId, conversationId }
+  // Internal hook events have:
+  //   { type, action, sessionKey, context: { from, content, metadata, success, ... } }
+  const isTypedHookEvent = !event.type && !event.action && 'content' in event;
+  if (isTypedHookEvent) {
+    // Normalize typed hook event to look like internal hook event
+    const typedEvent = event as unknown as { from: string; content: string; timestamp?: number; metadata?: Record<string, any> };
+    const typedCtx = ctx as unknown as { channelId?: string; accountId?: string; conversationId?: string };
+    // Build sessionKey from ctx (format: agent:<agentId>:<channel>:<type>:<peerId>)
+    const channelId = typedCtx?.channelId || 'feishu';
+    const conversationId = typedCtx?.conversationId || typedEvent.from || '';
+    const sessionKey = `agent:main:${channelId}:direct:${conversationId}`;
+    (event as any).sessionKey = sessionKey;
+    (event as any).type = 'message';
+    // Detect direction: typed message_received = inbound
+    (event as any).action = 'received';
+    (event as any).context = {
+      from: typedEvent.from || typedEvent.metadata?.senderId || '',
+      content: typedEvent.content,
+      timestamp: typedEvent.timestamp,
+      metadata: typedEvent.metadata || {},
+      channelId: typedCtx?.channelId,
+      accountId: typedCtx?.accountId,
+      conversationId: typedCtx?.conversationId,
+    };
+  }
 
   // Handle session:compact:after — captures AI replies that bypassed message:sent
   if (event.type === 'session:compact:after') {
@@ -747,6 +779,80 @@ const captureHandler = async (event: HookEvent) => {
 // ─── Python Extractor ─────────────────────────────────────────────────────────
 
 function callExtractor(conversationText: string, config: any): Promise<any[]> {
+  return new Promise((resolve) => {
+    const apiKey = config.llm?.apiKey || config.embedding.apiKey || '';
+    const model = config.llm?.model || 'MiniMax-M2.7';
+    const provider = config.llm?.provider || 'openclaw';
+    const baseURL = config.llm?.baseURL || '';
+    const httpMode = config.python?.httpMode ?? false;
+    const httpBase = config.python?.httpBase || process.env.HAWK_API_BASE || 'http://127.0.0.1:18789';
+
+    // ── HTTP mode: call hawk-memory-api /extract endpoint ──────────────────────
+    if (httpMode) {
+      const postData = JSON.stringify({
+        text: conversationText,
+        provider,
+        model,
+        api_key: apiKey,
+        base_url: baseURL,
+      });
+
+      const url = new URL(httpBase + '/extract');
+      const isHttps = url.protocol === 'https:';
+      const client = isHttps ? https : http;
+
+      const req = client.request(
+        url.toString(),
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(postData),
+          },
+          timeout: 30000,
+        },
+        (res) => {
+          let body = '';
+          res.on('data', (chunk) => { body += chunk; });
+          res.on('end', () => {
+            if (res.statusCode !== 200) {
+              logger.warn({ status: res.statusCode }, 'HTTP extractor error, falling back to subprocess');
+              resolve(callExtractorSubprocess(conversationText, config));
+              return;
+            }
+            try {
+              const data = JSON.parse(body);
+              resolve(Array.isArray(data.memories) ? data.memories : []);
+            } catch {
+              logger.warn('HTTP extractor JSON parse failed, falling back to subprocess');
+              resolve(callExtractorSubprocess(conversationText, config));
+            }
+          });
+        },
+      );
+
+      req.on('error', (err) => {
+        logger.warn({ err: err.message }, 'HTTP extractor connection error, falling back to subprocess');
+        resolve(callExtractorSubprocess(conversationText, config));
+      });
+
+      req.on('timeout', () => {
+        req.destroy();
+        logger.warn('HTTP extractor timeout, falling back to subprocess');
+        resolve(callExtractorSubprocess(conversationText, config));
+      });
+
+      req.write(postData);
+      req.end();
+      return;
+    }
+
+    // ── Default: subprocess mode ───────────────────────────────────────────────
+    resolve(callExtractorSubprocess(conversationText, config));
+  });
+}
+
+function callExtractorSubprocess(conversationText: string, config: any): Promise<any[]> {
   return new Promise((resolve) => {
     const apiKey = config.llm?.apiKey || config.embedding.apiKey || '';
     const model = config.llm?.model || 'MiniMax-M2.7';

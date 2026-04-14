@@ -455,12 +455,12 @@ import { homedir as homedir3 } from "os";
 // src/store/adapters/lancedb.ts
 init_embeddings();
 import * as path2 from "path";
-import * as os3 from "os";
+import * as os2 from "os";
 
 // src/config.ts
 import * as fs from "fs";
 import * as path from "path";
-import * as os2 from "os";
+import * as os from "os";
 
 // node_modules/js-yaml/dist/js-yaml.mjs
 function isNothing(subject) {
@@ -3254,9 +3254,9 @@ function deepMerge(base, override) {
 }
 
 // src/config.ts
-var OPENCLAW_CONFIG_PATH = path.join(os2.homedir(), ".openclaw", "openclaw.json");
-var OPENCLAW_AGENT_MODELS = path.join(os2.homedir(), ".openclaw", "agents", "main", "agent", "models.json");
-var HAWK_CONFIG_DIR = path.join(os2.homedir(), ".hawk");
+var OPENCLAW_CONFIG_PATH = path.join(os.homedir(), ".openclaw", "openclaw.json");
+var OPENCLAW_AGENT_MODELS = path.join(os.homedir(), ".openclaw", "agents", "main", "agent", "models.json");
+var HAWK_CONFIG_DIR = path.join(os.homedir(), ".hawk");
 var cachedOpenClawConfig = null;
 var cachedAgentModels = null;
 function loadOpenClawConfig() {
@@ -3496,7 +3496,7 @@ var LanceDBAdapter = class {
   embedder = null;
   config;
   constructor(dbPath) {
-    const home = os3.homedir();
+    const home = os2.homedir();
     this.dbPath = dbPath ?? path2.join(home, ".hawk", "lancedb");
   }
   async init() {
@@ -4952,7 +4952,7 @@ function sanitize(text) {
   for (const [p, repl] of SANITIZE) r = r.replace(p, repl);
   return r;
 }
-var DRIFT_VERIFY_QUEUE = path3.join(os.homedir(), ".hawk", "drift-verify-queue.jsonl");
+var DRIFT_VERIFY_QUEUE = path3.join(homedir3(), ".hawk", "drift-verify-queue.jsonl");
 function checkDriftVerifyQueue() {
   try {
     if (!fs2.existsSync(DRIFT_VERIFY_QUEUE)) return [];

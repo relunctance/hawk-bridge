@@ -322,7 +322,7 @@ function sanitize(text: string): string { let r = text; for (const [p, repl] of 
 
 // ─── Main Handler ─────────────────────────────────────────────────────────
 
-const DRIFT_VERIFY_QUEUE = path.join(os.homedir(), '.hawk', 'drift-verify-queue.jsonl');
+const DRIFT_VERIFY_QUEUE = path.join(homedir(), '.hawk', 'drift-verify-queue.jsonl');
 
 // Check drift verify queue on startup — warn about pending verifications
 function checkDriftVerifyQueue(): string[] {

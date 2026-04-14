@@ -1,6 +1,6 @@
 ---
 name: hawk-bridge
-description: 'OpenClaw Hook Bridge + context-hawk Python Memory Engine. Auto-capture memories on every reply, auto-inject relevant memories before each response. Supports 4-tier decay, hybrid vector + BM25 search, and Markdown import.'
+description: 'OpenClaw Hook Bridge + Hermes Hook Bridge + context-hawk Python Memory Engine. Auto-capture memories on every reply, auto-inject relevant memories before each response. Supports 4-tier decay, hybrid vector + BM25 search, and Markdown import.'
 metadata:
   {
     "openclaw":
@@ -505,7 +505,90 @@ hawk-bridge/                          ← OpenClaw 插件（TypeScript）
 ~/.openclaw/hawk → ~/.openclaw/workspace/context-hawk/hawk  ← 符号链接
 ~/.hawk/                                             ← LanceDB 数据目录
 ~/.hawk/audit.log                                    ← 审计日志
+~/.hermes/hooks/hawk-bridge/                         ← Hermes Hook 适配层
+~/.hermes/hooks/hawk-bridge/HOOK.yaml               ← Hermes 钩子注册
+~/.hermes/hooks/hawk-bridge/handler.py              ← Hermes Hook 处理函数（Python）
 ```
+
+---
+
+## Hermes 接入（v2.0 新增）
+
+hawk-bridge 同时支持 OpenClaw 和 Hermes 两个框架，共用同一份 LanceDB 记忆数据。
+
+### Hermes 目录结构
+
+```
+~/.hermes/hooks/hawk-bridge/
+├── HOOK.yaml      # 声明 agent:start / agent:end 事件
+└── handler.py     # Hermes Hook 处理函数（Python）
+```
+
+### HOOK.yaml
+
+```yaml
+name: hawk-bridge-hermes
+description: "Hermes Hook Bridge for hawk-bridge memory system"
+events:
+  - agent:start   # 召回记忆 → 注入上下文
+  - agent:end     # 捕获对话 → 存储记忆
+```
+
+### hawk-memory-api — HTTP 服务层
+
+OpenClaw 的 Python subprocess 调用和 Hermes 的 handler.py 都通过 HTTP 与 `hawk-memory-api` 通信：
+
+```
+                    ┌─────────────────────────────────────┐
+                    │      hawk-memory-api (FastAPI)       │
+                    │  POST /recall  → LanceDB 召回       │
+                    │  POST /capture → LanceDB 存储        │
+                    │  POST /extract → LLM 提取记忆        │
+                    │  GET  /stats   → 统计信息            │
+                    └──────────────┬──────────────────────┘
+                                   │
+              HTTP (HAWK_PYTHON_HTTP_MODE) │              HTTP
+                    ┌───────────────┴──────┐         ┌──────────────┐
+                    │ hawk-capture (OpenClaw)│         │ Hermes hook   │
+                    │ subprocess fallback   │         │ handler.py    │
+                    └──────────────────────┘         └──────────────┘
+```
+
+### 启动 hawk-memory-api
+
+```bash
+# 方式1: 直接运行
+python3 ~/repos/hawk-memory-api/server.py
+
+# 方式2: 使用启动脚本
+bash ~/repos/hawk-memory-api/run.sh
+
+# 方式3: 通过 cronjob 常驻后台
+nohup python3 ~/repos/hawk-memory-api/server.py > ~/.hawk/api.log 2>&1 &
+```
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `HAWK__PYTHON__HTTP_MODE` | `false` | 启用 HTTP 模式（替代 subprocess） |
+| `HAWK__PYTHON__HTTP_BASE` | `http://127.0.0.1:18360` | hawk-memory-api 地址 |
+| `HAWK_API_BASE` | — | 同上（deprecated） |
+| `HAWK_PYTHON_HTTP_MODE` | — | 同上（deprecated） |
+
+### OpenClaw 启用 HTTP 模式
+
+```bash
+# 推荐方式（HAWK__ 前缀嵌套）
+export HAWK__PYTHON__HTTP_MODE=true
+export HAWK__PYTHON__HTTP_BASE=http://127.0.0.1:18360
+
+# 兼容旧方式（deprecated）
+export HAWK_PYTHON_HTTP_MODE=true
+export HAWK_API_BASE=http://127.0.0.1:18360
+```
+
+**注意：** HTTP 模式默认为 `false`（subprocess），设为 `true` 后优先走 HTTP，连接失败自动 fallback 到 subprocess。
 
 ---
 

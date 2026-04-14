@@ -1,90 +1,65 @@
-var __defProp = Object.defineProperty;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
-  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
-}) : x)(function(x) {
-  if (typeof require !== "undefined") return require.apply(this, arguments);
-  throw Error('Dynamic require of "' + x + '" is not supported');
-});
-var __esm = (fn, res) => function __init() {
-  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-};
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
-};
+// src/cli/write.ts
+import * as path3 from "path";
+import * as os3 from "os";
 
-// src/logger.ts
-import pino from "pino";
-var logLevel, logger;
-var init_logger = __esm({
-  "src/logger.ts"() {
-    "use strict";
-    logLevel = process.env.HAWK__LOGGING__LEVEL || process.env.HAWK_LOG_LEVEL || "info";
-    logger = pino({
-      level: logLevel,
-      formatters: {
-        level: (label) => ({ level: label })
-      },
-      timestamp: pino.stdTimeFunctions.isoTime
-    });
-  }
-});
-
-// src/metrics.ts
-import { Registry, Counter, Histogram, Gauge } from "prom-client";
-var register, httpRequestsTotal, httpRequestDuration, embeddingLatency, memoryCount, memoryErrors;
-var init_metrics = __esm({
-  "src/metrics.ts"() {
-    "use strict";
-    register = new Registry();
-    httpRequestsTotal = new Counter({
-      name: "hawk_http_requests_total",
-      help: "Total number of HTTP requests",
-      labelNames: ["method", "path", "status"],
-      registers: [register]
-    });
-    httpRequestDuration = new Histogram({
-      name: "hawk_http_request_duration_seconds",
-      help: "HTTP request duration in seconds",
-      labelNames: ["method", "path"],
-      buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2],
-      registers: [register]
-    });
-    embeddingLatency = new Histogram({
-      name: "hawk_embedding_duration_seconds",
-      help: "Embedding latency in seconds",
-      labelNames: ["provider"],
-      buckets: [0.1, 0.25, 0.5, 1, 2, 5],
-      registers: [register]
-    });
-    memoryCount = new Gauge({
-      name: "hawk_memory_count",
-      help: "Number of memories in the store",
-      registers: [register]
-    });
-    memoryErrors = new Counter({
-      name: "hawk_errors_total",
-      help: "Total number of memory errors",
-      labelNames: ["type"],
-      registers: [register]
-    });
-  }
-});
+// src/store/adapters/lancedb.ts
+import * as path2 from "path";
+import * as os2 from "os";
 
 // src/embeddings.ts
-var embeddings_exports = {};
-__export(embeddings_exports, {
-  Embedder: () => Embedder,
-  fetchWithRetry: () => fetchWithRetry,
-  formatRecallForContext: () => formatRecallForContext,
-  getProxyUrl: () => getProxyUrl,
-  setProxyUrl: () => setProxyUrl
-});
 import http from "http";
 import https from "https";
 import { URL } from "url";
 import { HttpsProxyAgent } from "https-proxy-agent";
+
+// src/logger.ts
+import pino from "pino";
+var logLevel = process.env.HAWK__LOGGING__LEVEL || process.env.HAWK_LOG_LEVEL || "info";
+var logger = pino({
+  level: logLevel,
+  formatters: {
+    level: (label) => ({ level: label })
+  },
+  timestamp: pino.stdTimeFunctions.isoTime
+});
+
+// src/metrics.ts
+import { Registry, Counter, Histogram, Gauge } from "prom-client";
+var register = new Registry();
+var httpRequestsTotal = new Counter({
+  name: "hawk_http_requests_total",
+  help: "Total number of HTTP requests",
+  labelNames: ["method", "path", "status"],
+  registers: [register]
+});
+var httpRequestDuration = new Histogram({
+  name: "hawk_http_request_duration_seconds",
+  help: "HTTP request duration in seconds",
+  labelNames: ["method", "path"],
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2],
+  registers: [register]
+});
+var embeddingLatency = new Histogram({
+  name: "hawk_embedding_duration_seconds",
+  help: "Embedding latency in seconds",
+  labelNames: ["provider"],
+  buckets: [0.1, 0.25, 0.5, 1, 2, 5],
+  registers: [register]
+});
+var memoryCount = new Gauge({
+  name: "hawk_memory_count",
+  help: "Number of memories in the store",
+  registers: [register]
+});
+var memoryErrors = new Counter({
+  name: "hawk_errors_total",
+  help: "Total number of memory errors",
+  labelNames: ["type"],
+  registers: [register]
+});
+
+// src/embeddings.ts
+var FETCH_TIMEOUT_MS = 15e3;
 async function fetchWithRetry(url, options = {}, retries = 3) {
   let lastError = null;
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -109,6 +84,8 @@ async function fetchWithRetry(url, options = {}, retries = 3) {
   }
   throw lastError;
 }
+var _activeProxyUrl = process.env.HAWK_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || "";
+var _proxyAgent = null;
 function setProxyUrl(url) {
   _activeProxyUrl = url;
   _proxyAgent = null;
@@ -171,295 +148,262 @@ async function fetchWithTimeout(url, init, timeoutMs) {
     req.end();
   });
 }
-function formatRecallForContext(memories, emoji = "\u{1F985}") {
-  if (!memories.length) return "";
-  const lines = [`${emoji} ** hawk \u8BB0\u5FC6\u68C0\u7D22\u7ED3\u679C **`];
-  for (const m of memories) {
-    lines.push(`[${m.category}] (${(m.score * 100).toFixed(0)}%\u76F8\u5173): ${m.text}`);
+var Embedder = class _Embedder {
+  config;
+  // TTL cache: normalized_text → { vector, timestamp }
+  cache = /* @__PURE__ */ new Map();
+  static CACHE_TTL_MS = 24 * 60 * 60 * 1e3;
+  // 24h
+  constructor(config) {
+    this.config = config;
+    if (config.proxy) {
+      setProxyUrl(config.proxy);
+    }
   }
-  return lines.join("\n");
-}
-var FETCH_TIMEOUT_MS, _activeProxyUrl, _proxyAgent, Embedder;
-var init_embeddings = __esm({
-  "src/embeddings.ts"() {
-    "use strict";
-    init_logger();
-    init_metrics();
-    FETCH_TIMEOUT_MS = 15e3;
-    _activeProxyUrl = process.env.HAWK_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || "";
-    _proxyAgent = null;
-    Embedder = class _Embedder {
-      config;
-      // TTL cache: normalized_text → { vector, timestamp }
-      cache = /* @__PURE__ */ new Map();
-      static CACHE_TTL_MS = 24 * 60 * 60 * 1e3;
-      // 24h
-      constructor(config) {
-        this.config = config;
-        if (config.proxy) {
-          setProxyUrl(config.proxy);
-        }
-      }
-      normalizeForCache(text) {
-        return text.toLowerCase().replace(/\s+/g, " ").trim();
-      }
-      getCached(text) {
-        const key = this.normalizeForCache(text);
-        const entry = this.cache.get(key);
-        if (!entry) return null;
-        if (Date.now() - entry.ts > _Embedder.CACHE_TTL_MS) {
-          this.cache.delete(key);
-          return null;
-        }
-        return entry.vector;
-      }
-      setCached(text, vector) {
-        const key = this.normalizeForCache(text);
-        this.cache.set(key, { vector, ts: Date.now() });
-        if (this.cache.size > 1e4) {
-          const oldest = [...this.cache.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, Math.floor(this.cache.size * 0.3));
-          for (const [k] of oldest) this.cache.delete(k);
-        }
-      }
-      async embed(texts) {
-        const uncached = [];
-        const results = texts.map((t) => this.getCached(t));
-        for (let i = 0; i < texts.length; i++) {
-          if (results[i] === null) uncached.push(texts[i]);
-        }
-        if (uncached.length === 0) return results;
-        const { provider } = this.config;
-        const uncachedIdxMap = /* @__PURE__ */ new Map();
-        texts.forEach((t, i) => {
-          if (results[i] === null) uncachedIdxMap.set(t, i);
-        });
-        let freshVectors;
-        if (provider === "qianwen") {
-          freshVectors = await this.embedQianwen(uncached);
-        } else if (provider === "openai-compat") {
-          freshVectors = await this.embedOpenAICompat(uncached);
-        } else if (provider === "ollama") {
-          freshVectors = await this.embedOllama(uncached);
-        } else if (provider === "jina") {
-          freshVectors = await this.embedJina(uncached);
-        } else if (provider === "cohere") {
-          freshVectors = await this.embedCohere(uncached);
-        } else {
-          freshVectors = await this.embedOpenAI(uncached);
-        }
-        const finalResults = [...results];
-        for (let i = 0; i < uncached.length; i++) {
-          const originalIdx = uncachedIdxMap.get(uncached[i]);
-          finalResults[originalIdx] = freshVectors[i];
-          this.setCached(uncached[i], freshVectors[i]);
-        }
-        return finalResults;
-      }
-      async embedQuery(text) {
-        const vectors = await this.embed([text]);
-        return vectors[0];
-      }
-      // ---- Qianwen (阿里云 DashScope) — OpenAI-compatible, 国内首选 ----
-      async embedQianwen(texts) {
-        const start = Date.now();
-        try {
-          const apiKey = this.config.apiKey || process.env.QWEN_API_KEY || "";
-          const baseURL = this.config.baseURL || "https://dashscope.aliyuncs.com/api/v1";
-          const resp = await fetchWithRetry(
-            `${baseURL}/services/embeddings/text-embedding/text-embedding`,
-            {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${apiKey}`,
-                "Content-Type": "application/json"
-              },
-              body: JSON.stringify({
-                model: this.config.model || "text-embedding-v1",
-                input: { text: texts }
-              })
-            }
-          );
-          if (!resp.ok) {
-            const err = await resp.text();
-            throw new Error(`Qianwen embedding error: ${resp.status} ${err}`);
-          }
-          const data = await resp.json();
-          if (!data.output?.embeddings?.length) {
-            throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
-          }
-          const result = data.output.embeddings.map((e) => e.embedding);
-          embeddingLatency.observe({ provider: "qianwen" }, (Date.now() - start) / 1e3);
-          return result;
-        } catch (err) {
-          embeddingLatency.observe({ provider: "qianwen" }, (Date.now() - start) / 1e3);
-          throw err;
-        }
-      }
-      // ---- OpenAI-Compatible (generic endpoint — user provides baseURL + apiKey) ----
-      async embedOpenAICompat(texts) {
-        const start = Date.now();
-        try {
-          const baseURL = this.config.baseURL;
-          const apiKey = this.config.apiKey;
-          if (!baseURL || !apiKey) {
-            throw new Error("openai-compat provider requires both baseURL and apiKey in config");
-          }
-          const resp = await fetchWithRetry(`${baseURL}/embeddings`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
-              model: this.config.model || "text-embedding-3-small",
-              input: texts
-            })
-          });
-          if (!resp.ok) {
-            const err = await resp.text();
-            throw new Error(`OpenAI-compatible embedding error: ${resp.status} ${err}`);
-          }
-          const data = await resp.json();
-          if (!data.data?.length) {
-            throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
-          }
-          const result = data.data.map((item) => item.embedding);
-          embeddingLatency.observe({ provider: "openai-compat" }, (Date.now() - start) / 1e3);
-          return result;
-        } catch (err) {
-          embeddingLatency.observe({ provider: "openai-compat" }, (Date.now() - start) / 1e3);
-          throw err;
-        }
-      }
-      // ---- OpenAI ----
-      async embedOpenAI(texts) {
-        const start = Date.now();
-        try {
-          const { OpenAI } = await import("openai");
-          const client = new OpenAI({
-            apiKey: this.config.apiKey || process.env.OPENAI_API_KEY,
-            baseURL: this.config.baseURL || void 0,
-            timeout: FETCH_TIMEOUT_MS,
-            // @ts-ignore — Node-specific http agent for proxy
-            httpAgent: getProxyAgent(),
-            httpsAgent: getProxyAgent()
-          });
-          const model = this.config.model || "text-embedding-3-small";
-          const resp = await client.embeddings.create({ model, input: texts });
-          const result = resp.data.map((item) => item.embedding);
-          embeddingLatency.observe({ provider: "openai" }, (Date.now() - start) / 1e3);
-          return result;
-        } catch (err) {
-          embeddingLatency.observe({ provider: "openai" }, (Date.now() - start) / 1e3);
-          throw err;
-        }
-      }
-      // ---- Jina AI (free tier) ----
-      async embedJina(texts) {
-        const start = Date.now();
-        try {
-          const apiKey = this.config.apiKey || process.env.JINA_API_KEY || "";
-          const model = this.config.model || "jina-embeddings-v5-small";
-          const resp = await fetchWithRetry("https://api.jina.ai/v1/embeddings", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              ...apiKey ? { "Authorization": `Bearer ${apiKey}` } : {}
-            },
-            body: JSON.stringify({ model, input: texts })
-          });
-          if (!resp.ok) throw new Error(`Jina error: ${resp.status}`);
-          const data = await resp.json();
-          const result = data.data.map((item) => item.embedding);
-          embeddingLatency.observe({ provider: "jina" }, (Date.now() - start) / 1e3);
-          return result;
-        } catch (err) {
-          embeddingLatency.observe({ provider: "jina" }, (Date.now() - start) / 1e3);
-          throw err;
-        }
-      }
-      // ---- Cohere (free tier) ----
-      async embedCohere(texts) {
-        const start = Date.now();
-        try {
-          const apiKey = this.config.apiKey || process.env.COHERE_API_KEY || "";
-          const resp = await fetchWithRetry("https://api.cohere.ai/v1/embed", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
-              model: "embed-english-v3.0",
-              texts,
-              input_type: "search_document"
-            })
-          });
-          if (!resp.ok) throw new Error(`Cohere error: ${resp.status}`);
-          const data = await resp.json();
-          const result = data.embeddings;
-          embeddingLatency.observe({ provider: "cohere" }, (Date.now() - start) / 1e3);
-          return result;
-        } catch (err) {
-          embeddingLatency.observe({ provider: "cohere" }, (Date.now() - start) / 1e3);
-          throw err;
-        }
-      }
-      // ---- Ollama (local free) ----
-      async embedOllama(texts) {
-        const start = Date.now();
-        try {
-          const baseURL = (this.config.baseURL || process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
-          const model = this.config.model || process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
-          const embedPath = process.env.OLLAMA_EMBED_PATH || "/embeddings";
-          const normalizedBase = baseURL.replace(/\/$/, "");
-          const url = `${normalizedBase}${embedPath}`;
-          const resp = await fetchWithRetry(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ model, input: texts })
-          });
-          if (!resp.ok) {
-            const err = await resp.text();
-            throw new Error(`Ollama embedding error: ${resp.status} ${err}`);
-          }
-          const data = await resp.json();
-          if (Array.isArray(data.data)) {
-            const sorted = data.data.sort((a, b) => a.index - b.index);
-            const result = sorted.map((item) => item.embedding);
-            embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
-            return result;
-          }
-          if (Array.isArray(data.embeddings) && Array.isArray(data.embeddings[0])) {
-            embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
-            return data.embeddings;
-          } else if (Array.isArray(data.embeddings)) {
-            embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
-            return [data.embeddings];
-          }
-          throw new Error(`Unexpected embedding response: ${JSON.stringify(data)}`);
-        } catch (err) {
-          embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
-          throw err;
-        }
-      }
-    };
+  normalizeForCache(text) {
+    return text.toLowerCase().replace(/\s+/g, " ").trim();
   }
-});
-
-// src/index.ts
-import http2 from "http";
-import { URL as URL2 } from "url";
-
-// src/hooks/hawk-recall/handler.ts
-import * as path3 from "path";
-import * as fs2 from "fs";
-import { homedir as homedir3 } from "os";
-
-// src/store/adapters/lancedb.ts
-init_embeddings();
-import * as path2 from "path";
-import * as os2 from "os";
+  getCached(text) {
+    const key = this.normalizeForCache(text);
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+    if (Date.now() - entry.ts > _Embedder.CACHE_TTL_MS) {
+      this.cache.delete(key);
+      return null;
+    }
+    return entry.vector;
+  }
+  setCached(text, vector) {
+    const key = this.normalizeForCache(text);
+    this.cache.set(key, { vector, ts: Date.now() });
+    if (this.cache.size > 1e4) {
+      const oldest = [...this.cache.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, Math.floor(this.cache.size * 0.3));
+      for (const [k] of oldest) this.cache.delete(k);
+    }
+  }
+  async embed(texts) {
+    const uncached = [];
+    const results = texts.map((t) => this.getCached(t));
+    for (let i = 0; i < texts.length; i++) {
+      if (results[i] === null) uncached.push(texts[i]);
+    }
+    if (uncached.length === 0) return results;
+    const { provider } = this.config;
+    const uncachedIdxMap = /* @__PURE__ */ new Map();
+    texts.forEach((t, i) => {
+      if (results[i] === null) uncachedIdxMap.set(t, i);
+    });
+    let freshVectors;
+    if (provider === "qianwen") {
+      freshVectors = await this.embedQianwen(uncached);
+    } else if (provider === "openai-compat") {
+      freshVectors = await this.embedOpenAICompat(uncached);
+    } else if (provider === "ollama") {
+      freshVectors = await this.embedOllama(uncached);
+    } else if (provider === "jina") {
+      freshVectors = await this.embedJina(uncached);
+    } else if (provider === "cohere") {
+      freshVectors = await this.embedCohere(uncached);
+    } else {
+      freshVectors = await this.embedOpenAI(uncached);
+    }
+    const finalResults = [...results];
+    for (let i = 0; i < uncached.length; i++) {
+      const originalIdx = uncachedIdxMap.get(uncached[i]);
+      finalResults[originalIdx] = freshVectors[i];
+      this.setCached(uncached[i], freshVectors[i]);
+    }
+    return finalResults;
+  }
+  async embedQuery(text) {
+    const vectors = await this.embed([text]);
+    return vectors[0];
+  }
+  // ---- Qianwen (阿里云 DashScope) — OpenAI-compatible, 国内首选 ----
+  async embedQianwen(texts) {
+    const start = Date.now();
+    try {
+      const apiKey = this.config.apiKey || process.env.QWEN_API_KEY || "";
+      const baseURL = this.config.baseURL || "https://dashscope.aliyuncs.com/api/v1";
+      const resp = await fetchWithRetry(
+        `${baseURL}/services/embeddings/text-embedding/text-embedding`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: this.config.model || "text-embedding-v1",
+            input: { text: texts }
+          })
+        }
+      );
+      if (!resp.ok) {
+        const err = await resp.text();
+        throw new Error(`Qianwen embedding error: ${resp.status} ${err}`);
+      }
+      const data = await resp.json();
+      if (!data.output?.embeddings?.length) {
+        throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
+      }
+      const result = data.output.embeddings.map((e) => e.embedding);
+      embeddingLatency.observe({ provider: "qianwen" }, (Date.now() - start) / 1e3);
+      return result;
+    } catch (err) {
+      embeddingLatency.observe({ provider: "qianwen" }, (Date.now() - start) / 1e3);
+      throw err;
+    }
+  }
+  // ---- OpenAI-Compatible (generic endpoint — user provides baseURL + apiKey) ----
+  async embedOpenAICompat(texts) {
+    const start = Date.now();
+    try {
+      const baseURL = this.config.baseURL;
+      const apiKey = this.config.apiKey;
+      if (!baseURL || !apiKey) {
+        throw new Error("openai-compat provider requires both baseURL and apiKey in config");
+      }
+      const resp = await fetchWithRetry(`${baseURL}/embeddings`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: this.config.model || "text-embedding-3-small",
+          input: texts
+        })
+      });
+      if (!resp.ok) {
+        const err = await resp.text();
+        throw new Error(`OpenAI-compatible embedding error: ${resp.status} ${err}`);
+      }
+      const data = await resp.json();
+      if (!data.data?.length) {
+        throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
+      }
+      const result = data.data.map((item) => item.embedding);
+      embeddingLatency.observe({ provider: "openai-compat" }, (Date.now() - start) / 1e3);
+      return result;
+    } catch (err) {
+      embeddingLatency.observe({ provider: "openai-compat" }, (Date.now() - start) / 1e3);
+      throw err;
+    }
+  }
+  // ---- OpenAI ----
+  async embedOpenAI(texts) {
+    const start = Date.now();
+    try {
+      const { OpenAI } = await import("openai");
+      const client = new OpenAI({
+        apiKey: this.config.apiKey || process.env.OPENAI_API_KEY,
+        baseURL: this.config.baseURL || void 0,
+        timeout: FETCH_TIMEOUT_MS,
+        // @ts-ignore — Node-specific http agent for proxy
+        httpAgent: getProxyAgent(),
+        httpsAgent: getProxyAgent()
+      });
+      const model = this.config.model || "text-embedding-3-small";
+      const resp = await client.embeddings.create({ model, input: texts });
+      const result = resp.data.map((item) => item.embedding);
+      embeddingLatency.observe({ provider: "openai" }, (Date.now() - start) / 1e3);
+      return result;
+    } catch (err) {
+      embeddingLatency.observe({ provider: "openai" }, (Date.now() - start) / 1e3);
+      throw err;
+    }
+  }
+  // ---- Jina AI (free tier) ----
+  async embedJina(texts) {
+    const start = Date.now();
+    try {
+      const apiKey = this.config.apiKey || process.env.JINA_API_KEY || "";
+      const model = this.config.model || "jina-embeddings-v5-small";
+      const resp = await fetchWithRetry("https://api.jina.ai/v1/embeddings", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...apiKey ? { "Authorization": `Bearer ${apiKey}` } : {}
+        },
+        body: JSON.stringify({ model, input: texts })
+      });
+      if (!resp.ok) throw new Error(`Jina error: ${resp.status}`);
+      const data = await resp.json();
+      const result = data.data.map((item) => item.embedding);
+      embeddingLatency.observe({ provider: "jina" }, (Date.now() - start) / 1e3);
+      return result;
+    } catch (err) {
+      embeddingLatency.observe({ provider: "jina" }, (Date.now() - start) / 1e3);
+      throw err;
+    }
+  }
+  // ---- Cohere (free tier) ----
+  async embedCohere(texts) {
+    const start = Date.now();
+    try {
+      const apiKey = this.config.apiKey || process.env.COHERE_API_KEY || "";
+      const resp = await fetchWithRetry("https://api.cohere.ai/v1/embed", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: "embed-english-v3.0",
+          texts,
+          input_type: "search_document"
+        })
+      });
+      if (!resp.ok) throw new Error(`Cohere error: ${resp.status}`);
+      const data = await resp.json();
+      const result = data.embeddings;
+      embeddingLatency.observe({ provider: "cohere" }, (Date.now() - start) / 1e3);
+      return result;
+    } catch (err) {
+      embeddingLatency.observe({ provider: "cohere" }, (Date.now() - start) / 1e3);
+      throw err;
+    }
+  }
+  // ---- Ollama (local free) ----
+  async embedOllama(texts) {
+    const start = Date.now();
+    try {
+      const baseURL = (this.config.baseURL || process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
+      const model = this.config.model || process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
+      const embedPath = process.env.OLLAMA_EMBED_PATH || "/embeddings";
+      const normalizedBase = baseURL.replace(/\/$/, "");
+      const url = `${normalizedBase}${embedPath}`;
+      const resp = await fetchWithRetry(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model, input: texts })
+      });
+      if (!resp.ok) {
+        const err = await resp.text();
+        throw new Error(`Ollama embedding error: ${resp.status} ${err}`);
+      }
+      const data = await resp.json();
+      if (Array.isArray(data.data)) {
+        const sorted = data.data.sort((a, b) => a.index - b.index);
+        const result = sorted.map((item) => item.embedding);
+        embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
+        return result;
+      }
+      if (Array.isArray(data.embeddings) && Array.isArray(data.embeddings[0])) {
+        embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
+        return data.embeddings;
+      } else if (Array.isArray(data.embeddings)) {
+        embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
+        return [data.embeddings];
+      }
+      throw new Error(`Unexpected embedding response: ${JSON.stringify(data)}`);
+    } catch (err) {
+      embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
+      throw err;
+    }
+  }
+};
 
 // src/config.ts
 import * as fs from "fs";
@@ -3435,9 +3379,6 @@ async function getConfig() {
   }
   return configPromise;
 }
-function hasEmbeddingProvider() {
-  return !!(process.env.OLLAMA_BASE_URL || process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.JINA_API_KEY || process.env.OPENAI_API_KEY || process.env.COHERE_API_KEY || (process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_PROVIDER));
-}
 var HAWK_CONFIG_VERSION = process.env.HAWK_CONFIG_VERSION || "1";
 async function recordConfigHistory(config) {
   try {
@@ -3490,8 +3431,6 @@ async function recordConfigHistory(config) {
 }
 
 // src/store/adapters/lancedb.ts
-init_logger();
-init_embeddings();
 var TABLE_NAME = "hawk_memories";
 var LanceDBAdapter = class {
   db = null;
@@ -3911,16 +3850,16 @@ var LanceDBAdapter = class {
     return { count, sizeMB, path: this.dbPath };
   }
   async _dirSize(dirPath) {
-    const fs22 = await import("fs/promises");
+    const fs2 = await import("fs/promises");
     let total = 0;
     try {
-      const entries = await fs22.readdir(dirPath, { withFileTypes: true });
+      const entries = await fs2.readdir(dirPath, { withFileTypes: true });
       for (const entry of entries) {
         const full = path2.join(dirPath, entry.name);
         if (entry.isDirectory()) {
           total += await this._dirSize(full);
         } else {
-          const stat = await fs22.stat(full);
+          const stat = await fs2.stat(full);
           total += stat.size;
         }
       }
@@ -4468,2166 +4407,185 @@ async function getMemoryStore() {
   return storeInstance;
 }
 
-// src/retriever.ts
-var HybridRetriever = class {
-  db;
-  embedder;
-  noisePrototypes = [];
-  constructor(db2, embedder2) {
-    this.db = db2;
-    this.embedder = embedder2;
-  }
-  // ---------- Noise Prototype Setup ----------
-  async buildNoisePrototypes() {
-    if (!hasEmbeddingProvider()) {
-      console.log("[hawk-bridge] No embedding provider, skipping noise prototypes");
-      return;
-    }
-    const noiseTexts = [
-      "\u597D\u7684\uFF0C\u660E\u767D\u4E86",
-      "\u6536\u5230\uFF0C\u8C22\u8C22",
-      "ok",
-      "\u597D\u7684",
-      "\u4E86\u89E3",
-      "\u6CA1\u95EE\u9898",
-      "\u5BF9",
-      "\u662F\u7684",
-      "\u54C8\u54C8",
-      "\u55EF\u55EF",
-      "\u597D\u7684\u597D\u7684",
-      "\u6536\u5230\u6536\u5230",
-      "OK",
-      "\u{1F44D}",
-      "\u2705",
-      "\u597D\u7684\uFF0C\u8F9B\u82E6\u4E86"
-    ];
-    try {
-      if (!this.noisePrototypes.length) {
-        this.noisePrototypes = await this.embedder.embed(noiseTexts);
-      }
-    } catch (e) {
-      console.warn("[hawk-bridge] Noise prototype embedding failed, noise filter disabled:", e.message);
-    }
-  }
-  isNoise(embedding) {
-    for (const prototype of this.noisePrototypes) {
-      const sim = cosineSimilarity(embedding, prototype);
-      if (sim >= NOISE_SIMILARITY_THRESHOLD) return true;
-    }
-    return false;
-  }
-  // ---------- RRF Fusion ----------
-  rrfFusion(vectorResults, ftsResults) {
-    const rrfMap = /* @__PURE__ */ new Map();
-    for (let rank = 0; rank < vectorResults.length; rank++) {
-      const item = vectorResults[rank];
-      const score = 1 / (RRF_K + rank + 1);
-      const existing = rrfMap.get(item.id) || { rrfScore: 0, vectorScore: 0, ftsScore: 0 };
-      rrfMap.set(item.id, {
-        rrfScore: existing.rrfScore + score * RRF_VECTOR_WEIGHT,
-        vectorScore: item.score,
-        ftsScore: existing.ftsScore
-      });
-    }
-    for (let rank = 0; rank < ftsResults.length; rank++) {
-      const item = ftsResults[rank];
-      const score = 1 / (RRF_K + rank + 1);
-      const existing = rrfMap.get(item.id) || { rrfScore: 0, vectorScore: 0, ftsScore: 0 };
-      rrfMap.set(item.id, {
-        rrfScore: existing.rrfScore + score * (1 - RRF_VECTOR_WEIGHT),
-        vectorScore: existing.vectorScore,
-        ftsScore: item.score
-      });
-    }
-    return Array.from(rrfMap.entries()).map(([id, v]) => ({ id, ...v }));
-  }
-  // ---------- Cross-encoder Rerank ----------
-  async rerank(query, candidates, topN) {
-    if (candidates.length <= 2) return candidates.map((c) => ({ id: c.id, text: c.text, rerankScore: c.score }));
-    const providers = [
-      async () => {
-        const apiKey = process.env.JINA_RERANKER_API_KEY;
-        if (!apiKey) return null;
-        const resp = await fetch("https://api.jina.ai/v1/rerank", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            model: "jina-reranker-v1-base-en",
-            query,
-            documents: candidates.map((c) => c.text),
-            top_n: Math.min(topN * 2, candidates.length)
-          })
-        });
-        if (!resp.ok) return null;
-        const data = await resp.json();
-        return data.results.map((r) => ({
-          id: candidates[r.index].id,
-          text: candidates[r.index].text,
-          rerankScore: r.relevance_score
-        }));
-      },
-      async () => {
-        const apiKey = process.env.COHERE_API_KEY || process.env.COHERE_RERANK_API_KEY;
-        if (!apiKey) return null;
-        const resp = await fetch("https://api.cohere.ai/v1/rerank", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            model: "rerank-english-v3.0",
-            query,
-            documents: candidates.map((c) => c.text),
-            top_n: Math.min(topN * 2, candidates.length),
-            return_documents: false
-          })
-        });
-        if (!resp.ok) return null;
-        const data = await resp.json();
-        const idMap = new Map(candidates.map((c, i) => [i, c]));
-        return data.results.map((r) => {
-          const mem = idMap.get(r.index);
-          return { id: mem.id, text: mem.text, rerankScore: r.relevance_score };
-        });
-      },
-      async () => {
-        const apiKey = process.env.MIXTBREAD_API_KEY || process.env.MIXEDBREAD_API_KEY;
-        if (!apiKey) return null;
-        const resp = await fetch("https://api.mixedbread.ai/v1/rerank", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            model: "mxbai-rerank-large-v1",
-            query,
-            input: candidates.map((c) => c.text),
-            top_k: Math.min(topN * 2, candidates.length)
-          })
-        });
-        if (!resp.ok) return null;
-        const data = await resp.json();
-        const idMap = new Map(candidates.map((c, i) => [i, c]));
-        return data.data.map((r) => {
-          const mem = idMap.get(r.index);
-          return { id: mem.id, text: mem.text, rerankScore: r.relevance_score };
-        });
-      }
-    ];
-    for (const tryProvider of providers) {
-      try {
-        const result = await tryProvider();
-        if (result) return result;
-      } catch {
-      }
-    }
-    return candidates.map((c) => ({ id: c.id, text: c.text, rerankScore: c.score }));
-  }
-  // ---------- Main Search Pipeline ----------
-  async search(query, topK, scope, sourceTypes) {
-    const hasEmbedding = hasEmbeddingProvider();
-    if (hasEmbedding) {
-      try {
-        const queryVector = await this.embedder.embedQuery(query);
-        const [vectorResults, ftsResults] = await Promise.all([
-          this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, 0, scope, sourceTypes),
-          this.db.ftsSearch(query, topK * VECTOR_SEARCH_MULTIPLIER, scope, sourceTypes)
-        ]);
-        const vectorRanked = vectorResults.map((r, i) => ({ id: r.id, score: 1 - i * 0.01, text: r.text })).sort((a, b) => b.score - a.score);
-        const ftsRanked = ftsResults.map((r, i) => ({ id: r.id, score: r.score, text: r.text })).sort((a, b) => b.score - a.score).slice(0, topK * VECTOR_SEARCH_MULTIPLIER);
-        const fused = this.rrfFusion(vectorRanked, ftsRanked);
-        const fusedIds = fused.map((f) => f.id);
-        const fetched = await this.db.getByIds(fusedIds);
-        const noiseFiltered = [];
-        for (const item of fused) {
-          const memory = fetched.get(item.id);
-          if (!memory) continue;
-          if (this.isNoise(memory.vector)) continue;
-          noiseFiltered.push({ ...item, text: memory.text, vector: memory.vector });
-        }
-        const candidates = noiseFiltered.slice(0, topK * RERANK_CANDIDATE_MULTIPLIER).map((item) => ({
-          id: item.id,
-          text: item.text,
-          score: item.rrfScore
-        }));
-        const reranked = await this.rerank(query, candidates, topK);
-        const idToRerank = new Map(reranked.map((r) => [r.id, r.rerankScore]));
-        const results = [];
-        for (const item of noiseFiltered) {
-          const rerankScore = idToRerank.get(item.id);
-          if (rerankScore === void 0) continue;
-          const memory = fetched.get(item.id);
-          if (!memory) continue;
-          results.push({
-            id: item.id,
-            text: memory.text,
-            score: rerankScore,
-            category: memory.category,
-            metadata: memory.metadata
-          });
-          if (results.length >= topK) break;
-        }
-        return results;
-      } catch (err) {
-        console.warn("[hawk-bridge] Vector search failed, falling back to FTS-only:", err);
-      }
-    }
-    console.log("[hawk-bridge] Running in FTS-only mode (LanceDB native full-text search)");
-    try {
-      const ftsResults = await this.db.ftsSearch(query, topK * 3, scope, sourceTypes);
-      const idToScore = new Map(ftsResults.map((r) => [r.id, r.score]));
-      const ftsIds = ftsResults.map((r) => r.id);
-      const fetched = await this.db.getByIds(ftsIds);
-      const results = [];
-      for (const id of ftsIds) {
-        const score = idToScore.get(id);
-        if (score === void 0) continue;
-        const memory = fetched.get(id);
-        if (!memory) continue;
-        results.push({
-          id,
-          text: memory.text,
-          score,
-          category: memory.category,
-          metadata: memory.metadata
-        });
-        if (results.length >= topK) break;
-      }
-      return results;
-    } catch (err) {
-      console.error("[hawk-bridge] FTS search failed:", err);
-      return [];
-    }
-  }
-};
-function cosineSimilarity(a, b) {
-  let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < Math.min(a.length, b.length); i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-10);
-}
-
-// src/hooks/hawk-recall/handler.ts
-init_embeddings();
-init_logger();
-init_metrics();
-var LANG = process.env.HAWK_LANG || "zh";
-var INJECTION_LIMIT = 5;
-var MAX_INJECTION_CHARS = 2e3;
-var COMPOSITE_WEIGHT_RELIABILITY = 0.4;
-var COMPOSITE_WEIGHT_SCORE = 0.6;
-var sharedDb = null;
-async function getSharedDb() {
-  if (!sharedDb) {
-    sharedDb = await getMemoryStore();
-  }
-  return sharedDb;
-}
-var sharedEmbedder = null;
-async function getSharedEmbedder() {
-  if (!sharedEmbedder) {
-    const config = await getConfig();
-    sharedEmbedder = new Embedder(config.embedding);
-  }
-  return sharedEmbedder;
-}
-async function getEmbedder() {
-  return getSharedEmbedder();
-}
-var bm25DirtyGlobal = false;
-function markBm25Dirty() {
-  bm25DirtyGlobal = true;
-}
-var SEARCH_HISTORY_MAX = 20;
-var searchHistory = [];
-function recordSearch(query, resultCount) {
-  searchHistory.unshift({ q: query, ts: Date.now(), resultCount });
-  if (searchHistory.length > SEARCH_HISTORY_MAX) searchHistory.pop();
-}
-var retrieverPromise = null;
-async function getRetriever() {
-  if (!retrieverPromise) {
-    retrieverPromise = (async () => {
-      const config = await getConfig();
-      const db2 = getSharedDb();
-      await db2.init();
-      const { Embedder: Embedder2 } = await Promise.resolve().then(() => (init_embeddings(), embeddings_exports));
-      const embedder2 = new Embedder2(config.embedding);
-      const r = new HybridRetriever(db2, embedder2);
-      await r.buildNoisePrototypes();
-      return r;
-    })();
-  }
-  const retriever = await retrieverPromise;
-  if (bm25DirtyGlobal) {
-    retriever.markDirty();
-    bm25DirtyGlobal = false;
-  }
-  return retriever;
-}
-var SELECT_MEMORIES_SYSTEM_PROMPT = `You are selecting memories that will be useful for answering the user's query.
-You will be given a list of memory files with their names, descriptions, and categories.
-Return a JSON array of the memory IDs that will clearly be helpful (up to 8).
-Only include memories you are certain will be relevant. If none, return [].`;
-async function dualSelect(query, db2, topN = 8) {
+// src/cli/write.ts
+import { randomUUID } from "crypto";
+function safeParseJSON(raw, context, exitOnError = false) {
   try {
-    const all = await db2.getAllMemories();
-    if (!all.length) return [];
-    const manifest = all.filter((m) => m.deletedAt === null && m.name).map((m) => ({
-      id: m.id,
-      name: m.name,
-      description: m.description || m.text.slice(0, 200),
-      category: m.category
-    }));
-    if (!manifest.length) return [];
-    const config = await getConfig();
-    const body = manifest.map((m, i) => `[${i}] id=${m.id} name="${m.name}" category=${m.category} desc="${m.description.slice(0, 150)}"`).join("\n");
-    const response = await fetch(`${config.llm.baseURL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${config.llm.apiKey}`
-      },
-      body: JSON.stringify({
-        model: config.llm.model,
-        messages: [
-          { role: "system", content: SELECT_MEMORIES_SYSTEM_PROMPT },
-          { role: "user", content: `Query: ${query}
-
-Memories:
-${body}` }
-        ],
-        temperature: 0.1,
-        max_tokens: 500
-      })
-    });
-    if (!response.ok) return [];
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content || "";
-    const match = content.match(/\[[\s\S]*?\]/);
-    if (!match) return [];
-    const ids = JSON.parse(match[0]);
-    return ids.slice(0, topN);
+    return JSON.parse(raw);
   } catch (e) {
-    logger.warn({ err: e }, "dualSelect failed");
-    return [];
+    if (exitOnError) {
+      console.error(`[hawk migrate] FATAL: Failed to parse ${context}: ${e.message}`);
+      process.exit(1);
+    }
+    console.warn(`[hawk write] WARNING: Failed to parse ${context}: ${e.message}`);
+    return null;
   }
 }
-var FORGET_PATTERNS = [/^忘掉\s*(.+)/, /^忘记\s*(.+)/, /^别记得\s*(.+)/, /^不用记\s*(.+)/, /^forget\s+(.+)/i, /^delete\s+(.+)/i];
-var CORRECT_PATTERN = /^(?:纠正|correct)\s*[:：]\s*(.+)/i;
-var LOCK_PATTERNS = [/^锁定\s*(.+)/, /^lock\s+(.+)/i];
-var UNLOCK_PATTERNS = [/^解锁\s*(.+)/, /^unlock\s+(.+)/i];
-var EDIT_PATTERN = /^hawk\s*编辑(?:\s*(\d+))?/i;
-var HISTORY_PATTERN = /^hawk\s*历史(?:\s*[:：]\s*(.+))?/i;
-var CHECK_PATTERN = /^hawk\s*检查(?:\s+(\d+))?/i;
-var MEMORY_LIST_PATTERN = /^hawk\s*记忆(?:\s+([a-z]+))?(?:\s+(\d+))?$/i;
-var IMPORTANT_PATTERN = /^hawk\s*重要\s*(\d+)(?:\s*×?([\d.]+))?$/i;
-var UNIMPORTANT_PATTERN = /^hawk\s*不重要\s*(\d+)$/i;
-var REVIEW_PATTERN = /^hawk\s*回顾(?:\s+(\d+))?$/i;
-var SCOPE_PATTERN = /^hawk\s*(?:scope|作用域)\s*(\d+)\s+(personal|team|project)$/i;
-var CONFLICT_PATTERN = /^hawk\s*冲突\s*(\d+)$/i;
-var EXPORT_PATTERN = /^hawk\s*导出(?:\s+(.+?))?$/i;
-var RESTORE_PATTERN = /^hawk\s*恢复\s*(.+)$/i;
-var DRIFT_PATTERN = /^hawk\s*(?:drift|过期|陈旧)$/i;
-var SEARCH_HISTORY_PATTERN = /^hawk\s*搜索历史$/i;
-var CLEAR_PATTERN = /^hawk\s*清空$/i;
-var BATCHLOCK_PATTERN = /^hawk\s*锁定\s*all(?:\s+(.+))?$/i;
-var BATCHUNLOCK_PATTERN = /^hawk\s*解锁\s*all$/i;
-var COMPARE_PATTERN = /^hawk\s*对比\s*(\d+)\s+(\d+)$/i;
-var PURGE_PATTERN = /^hawk\s*清理$/i;
-var ADD_PATTERN = /^hawk\s*添加\s*(.+)$/i;
-var DELETE_IDX_PATTERN = /^hawk\s*删除\s*(\d+)$/i;
-var STATS_PATTERN = /^hawk\s*统计$/i;
-var QUALITY_PATTERN = /^hawk\s*质量$/i;
-var STATUS_PATTERN = /^hawk\s*状态$/i;
-var DENY_PATTERN = /^hawk\s*否认\s*(\d+)$/i;
-function matchFirst(text, patterns) {
-  for (const p of patterns) {
-    const m = text.trim().match(p);
-    if (m) return (m[1] ?? "").trim();
-  }
-  return null;
+var ARGV = process.argv.slice(2);
+function getArg(arg, fallback) {
+  const idx = ARGV.indexOf(arg);
+  return idx >= 0 && ARGV[idx + 1] !== void 0 ? ARGV[idx + 1] : fallback;
 }
-function relLabel(r) {
-  return r >= 0.7 ? "\u2705" : r >= 0.4 ? "\u26A0\uFE0F" : "\u274C";
+function hasFlag(flag) {
+  return ARGV.includes(flag);
 }
-function fmtRel(m) {
-  const r = m.reliability, b = m.baseReliability ?? r;
-  return Math.abs(r - b) < 0.01 ? `${Math.round(r * 100)}%` : `${Math.round(r * 100)}%(\u57FA\u7840${Math.round(b * 100)}%)`;
-}
-function formatTime(ts) {
-  const d = new Date(ts);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
-function formatMemoryRow(m, idx) {
-  const rel = relLabel(m.reliability);
-  const tag = m.locked ? " \u{1F512}" : "";
-  const imp = m.importanceOverride > 1.5 ? " \u2B50" : m.importanceOverride < 0.7 ? " \u2193" : "";
-  const cold = m.coldStartUntil && Date.now() < m.coldStartUntil ? " \u{1F6E1}" : "";
-  const corr = m.correctionCount > 0 ? ` [\u7EA0\u6B63\xD7${m.correctionCount}]` : "";
-  const scope = m.scope !== "personal" ? ` [${m.scope}]` : "";
-  return `${rel} ${fmtRel(m)}${tag}${imp}${cold}${corr}${scope} [${idx}] [${m.category}] ${m.text.slice(0, 75)}${m.text.length > 75 ? "..." : ""}`;
-}
-function formatRecallResults(memories, emoji) {
-  if (!memories.length) return "";
-  const lines = [`${emoji} ** hawk \u8BB0\u5FC6\u68C0\u7D22 **`];
-  const now = Date.now();
-  const DRIFT_MS = DRIFT_THRESHOLD_DAYS * 24 * 60 * 60 * 1e3;
-  for (const m of memories) {
-    const lock = m.locked ? " \u{1F512}" : "";
-    const imp = m.importanceOverride > 1.5 ? " \u2B50" : "";
-    const corr = m.correctionCount > 0 ? ` (\u7EA0\u6B63\xD7${m.correctionCount})` : "";
-    const score = `(${(m.score * 100).toFixed(0)}%\u76F8\u5173)`;
-    const reason = m.matchReason ? `
-   \u2192 ${m.matchReason}` : "";
-    const daysSince = m.lastVerifiedAt ? (now - m.lastVerifiedAt) / 864e5 : Infinity;
-    const drift = m.reliability >= 0.5 && daysSince > DRIFT_THRESHOLD_DAYS ? " \u{1F550}" : "";
-    lines.push(`${m.reliabilityLabel} ${score}${lock}${imp}${corr}${drift} [${m.category}] ${m.text}${reason}`);
-  }
-  return lines.join("\n");
-}
-function compressText(text, limit = 400) {
-  if (text.length <= limit) return text;
-  const first = text.slice(0, limit * 0.6);
-  const breakIdx = Math.max(
-    first.lastIndexOf("\u3002"),
-    first.lastIndexOf("\n"),
-    first.lastIndexOf("\uFF1A"),
-    first.lastIndexOf(".")
-  );
-  const head = breakIdx > limit * 0.3 ? text.slice(0, breakIdx + 1) : first;
-  const kw = extractKeywords(text).slice(0, 5);
-  return `${head.slice(0, limit - kw.join("\u3001").length - 5)}... [\u5173\u952E\u8BCD: ${kw.join("\u3001")}]`;
-}
-function compositeScore(m) {
-  return m.score * COMPOSITE_WEIGHT_SCORE + m.reliability * COMPOSITE_WEIGHT_RELIABILITY;
-}
-function extractKeywords(text) {
-  const stop = /* @__PURE__ */ new Set(["\u7684", "\u4E86", "\u662F", "\u5728", "\u548C", "\u4E5F", "\u6709", "\u5C31", "\u4E0D", "\u6211", "\u4F60", "\u4ED6", "\u5979", "\u5B83", "\u4EEC", "\u8FD9", "\u90A3", "\u4E2A", "\u4E0E", "\u6216", "\u88AB", "\u4E3A", "\u4E0A", "\u4E0B", "\u6765", "\u53BB"]);
-  const words = [];
-  for (let i = 0; i < text.length - 1; i++) {
-    const w = text.slice(i, i + 2);
-    if (!stop.has(w)) words.push(w);
-  }
-  for (let i = 0; i < text.length - 2; i++) {
-    const w = text.slice(i, i + 3);
-    if (!stop.has(w)) words.push(w);
-  }
-  return [...new Set(words)];
-}
-function textSimilarity(a, b) {
-  const kwA = extractKeywords(a);
-  const kwB = extractKeywords(b);
-  if (!kwA.length || !kwB.length) return 0;
-  const overlap = kwA.filter((k) => kwB.includes(k)).length;
-  const union = (/* @__PURE__ */ new Set([...kwA, ...kwB])).size;
-  return union > 0 ? overlap / union : 0;
-}
-function computeMatchReason(query, memory) {
-  const qKw = extractKeywords(query);
-  const mKw = extractKeywords(memory.text);
-  const overlap = qKw.filter((k) => mKw.includes(k));
-  if (overlap.length === 0) return "";
-  return `\u547D\u4E2D: "${overlap.slice(0, 3).join('", "')}"`;
-}
-async function findMemoryBySemanticMatch(db2, newContent) {
-  const all = await db2.getAllMemories();
-  if (!all.length) return null;
-  const keywords = extractKeywords(newContent);
-  let best = null;
-  for (const m of all) {
-    const memKw = extractKeywords(m.text);
-    const overlap = keywords.filter((k) => memKw.includes(k)).length;
-    const union = (/* @__PURE__ */ new Set([...keywords, ...memKw])).size;
-    const jaccard = union > 0 ? overlap / union : 0;
-    const lenPenalty = Math.min(m.text.length / Math.max(newContent.length, 1), newContent.length / Math.max(m.text.length, 1));
-    const score = jaccard * 0.7 + lenPenalty * 0.3;
-    if (!best || score > best.score) best = { id: m.id, score };
-  }
-  return best && best.score > 0.1 ? best : null;
-}
-var SANITIZE = [
-  [/(?:api[_-]?key|secret|token|password)\s*[:=]\s*["']?[\w-]{8,}["']?/gi, "$1: [REDACTED]"],
-  [/\b1[3-9]\d{9}\b/g, "[PHONE_REDACTED]"],
-  [/\b[\w.-]+@[\w.-]+\.\w{2,}\b/g, "[EMAIL_REDACTED]"],
-  [/\b[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b/g, "[ID_REDACTED]"]
-];
-function sanitize(text) {
-  let r = text;
-  for (const [p, repl] of SANITIZE) r = r.replace(p, repl);
-  return r;
-}
-var DRIFT_VERIFY_QUEUE = path3.join(homedir3(), ".hawk", "drift-verify-queue.jsonl");
-function checkDriftVerifyQueue() {
-  try {
-    if (!fs2.existsSync(DRIFT_VERIFY_QUEUE)) return [];
-    const lines = fs2.readFileSync(DRIFT_VERIFY_QUEUE, "utf-8").trim().split("\n").filter(Boolean);
-    return lines.map((l) => {
-      try {
-        return JSON.parse(l);
-      } catch {
-        return null;
-      }
-    }).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-var recallHandler = async (event) => {
-  if (event.type !== "agent" || event.action !== "bootstrap") return;
-  try {
-    const pending = checkDriftVerifyQueue();
-    if (pending.length > 0) {
-      const lines = [`\u26A0\uFE0F ** hawk \u5F85\u9A8C\u8BC1\u8FC7\u671F\u8BB0\u5FC6 (${pending.length}\u6761) **`];
-      for (const item of pending.slice(0, 10)) {
-        lines.push(`\u{1F550} [${item.memory_id}] ${(item.text || "").slice(0, 60)}`);
-      }
-      if (pending.length > 10) lines.push(`...\u8FD8\u6709 ${pending.length - 10} \u6761`);
-      lines.push(`
-\u63D0\u793A: \u4F7F\u7528 hawk\u8FC7\u671F \u67E5\u770B\u8BE6\u60C5\uFF0Chawk\u786E\u8BA4 N \u5BF9 \u9A8C\u8BC1\u8BB0\u5FC6`);
-      event.messages?.push("\n" + lines.join("\n") + "\n");
-    }
-    const config = await getConfig();
-    const { topK, injectEmoji, minScore } = config.recall;
-    const sessionEntry = event.context?.sessionEntry;
-    if (!sessionEntry) return;
-    const messages = sessionEntry.messages || [];
-    let latestUserMessage = "";
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.role === "user" && msg.content) {
-        latestUserMessage = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
-        break;
-      }
-    }
-    if (!latestUserMessage?.trim()) return;
-    const db2 = getSharedDb();
-    await db2.init();
-    const trimmed = latestUserMessage.trim();
-    const sessionId = sessionEntry.sessionId ?? void 0;
-    const ctx = event.context;
-    if (m = trimmed.match(MEMORY_LIST_PATTERN)) {
-      const category = m[1] || "";
-      const page = Math.max(1, parseInt(m[2] || "1", 10));
-      const PAGE_SIZE = 20;
-      let all = await db2.getAllMemories();
-      if (!all.length) {
-        event.messages.push(`
-${injectEmoji} \u8FD8\u6CA1\u6709\u4EFB\u4F55\u8BB0\u5FC6\u3002
-`);
-        return;
-      }
-      if (category && ["fact", "preference", "decision", "entity", "other"].includes(category)) {
-        all = all.filter((x) => x.category === category);
-      }
-      const sorted2 = [...all].sort((a, b) => {
-        if (a.locked !== b.locked) return a.locked ? -1 : 1;
-        return b.reliability - a.reliability;
-      });
-      const totalPages = Math.ceil(sorted2.length / PAGE_SIZE);
-      const pageItems = sorted2.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-      const lines = [`${injectEmoji} ** hawk \u8BB0\u5FC6 ${page}/${totalPages}\u9875 \u5171${sorted2.length}\u6761 **${category ? ` [${category}]` : ""}**`];
-      for (let i = 0; i < pageItems.length; i++) {
-        lines.push(formatMemoryRow(pageItems[i], (page - 1) * PAGE_SIZE + i + 1));
-      }
-      if (totalPages > 1) lines.push(`
-\u2192 hawk\u8BB0\u5FC6 ${category} ${page + 1}`);
-      lines.push(`
-\u2192 hawk\u91CD\u8981 N \xD72  \u6807\u8BB0\u4E3A\u91CD\u8981`);
-      lines.push(`\u2192 hawk\u4E0D\u91CD\u8981 N     \u964D\u4F4E\u91CD\u8981\u6027`);
-      lines.push(`\u2192 hawk\u5220\u9664 N       \u5220\u9664\u8BB0\u5FC6`);
-      event.messages.push(`
-${lines.join("\n")}
-`);
-      ctx._hawkListIndex = sorted2.map((mem) => mem.id);
-      return;
-    }
-    var m = trimmed.match(IMPORTANT_PATTERN);
-    if (m) {
-      const idx = parseInt(m[1], 10);
-      const mult = parseFloat(m[2] || "2");
-      const all = await getSortedMemories(db2, getAgentId(ctx));
-      if (idx < 1 || idx > all.length) {
-        event.messages.push(`
-${injectEmoji} \u65E0\u6548\u7F16\u53F7 (1-${all.length})
-`);
-        return;
-      }
-      const mem = all[idx - 1];
-      await db2.markImportant(mem.id, mult);
-      const lines = [`${injectEmoji} ** \u5DF2\u6807\u8BB0\u4E3A\u91CD\u8981 **`];
-      lines.push(formatMemoryRow(mem, idx));
-      lines.push(`
-\u2192 importanceOverride: ${mem.importanceOverride} \u2192 ${mult}`);
-      event.messages.push(`
-${lines.join("\n")}
-`);
-      return;
-    }
-    var m = trimmed.match(UNIMPORTANT_PATTERN);
-    if (m) {
-      const idx = parseInt(m[1], 10);
-      const all = await getSortedMemories(db2, getAgentId(ctx));
-      if (idx < 1 || idx > all.length) {
-        event.messages.push(`
-${injectEmoji} \u65E0\u6548\u7F16\u53F7 (1-${all.length})
-`);
-        return;
-      }
-      const mem = all[idx - 1];
-      await db2.update(mem.id, { importanceOverride: 0.5 });
-      event.messages.push(`
-${injectEmoji} \u5DF2\u964D\u4F4E\u4F18\u5148\u7EA7\u3002
-`);
-      return;
-    }
-    var m = trimmed.match(SCOPE_PATTERN);
-    if (m) {
-      const idx = parseInt(m[1], 10);
-      const scopeVal = m[2];
-      const all = await getSortedMemories(db2, getAgentId(ctx));
-      if (idx < 1 || idx > all.length) {
-        event.messages.push(`
-${injectEmoji} \u65E0\u6548\u7F16\u53F7 (1-${all.length})
-`);
-        return;
-      }
-      await db2.update(all[idx - 1].id, { scope: scopeVal });
-      event.messages.push(`
-${injectEmoji} \u5DF2\u8BBE\u7F6E\u4F5C\u7528\u57DF\u4E3A [${scopeVal}]
-`);
-      return;
-    }
-    var m = trimmed.match(EDIT_PATTERN);
-    if (m) {
-      const all = await getSortedMemories(db2, getAgentId(ctx));
-      if (!all.length) {
-        event.messages.push(`
-${injectEmoji} \u8FD8\u6CA1\u6709\u4EFB\u4F55\u8BB0\u5FC6\u3002
-`);
-        return;
-      }
-      if (!m[1]) {
-        const lines = [`${injectEmoji} ** \u9009\u62E9\u8981\u7F16\u8F91\u7684\u8BB0\u5FC6 **`];
-        for (let i = 0; i < Math.min(5, all.length); i++) lines.push(`[${i + 1}] ${formatMemoryRow(all[i], i + 1)}`);
-        lines.push(`
-\u2192 hawk\u7F16\u8F91 <\u7F16\u53F7>`);
-        event.messages.push(`
-${lines.join("\n")}
-`);
-        return;
-      }
-      const idx = parseInt(m[1], 10) - 1;
-      if (idx < 0 || idx >= all.length) {
-        event.messages.push(`
-${injectEmoji} \u65E0\u6548\u7F16\u53F7 (1-${all.length})
-`);
-        return;
-      }
-      const mem = all[idx];
-      ctx._hawkEditTarget = mem.id;
-      const scopeMap = { personal: "\u4E2A\u4EBA", team: "\u56E2\u961F", project: "\u9879\u76EE" };
-      event.messages.push(
-        `
-${injectEmoji} ** \u7F16\u8F91\u8BB0\u5FC6 [#${idx + 1}] **
-\u5206\u7C7B: ${mem.category} | \u53EF\u9760\u6027: ${fmtRel(mem)} | \u4F5C\u7528\u57DF: ${scopeMap[mem.scope] ?? mem.scope}
-\u521B\u5EFA: ${formatTime(mem.createdAt)} | \u4FEE\u6539: ${formatTime(mem.updatedAt)}` + (mem.sessionId ? `
-session: ${mem.sessionId}` : "") + `
-\u5185\u5BB9: ${mem.text}` + (mem.correctionCount > 0 ? `
-\u7EA0\u6B63\u5386\u53F2: ${mem.correctionCount}\u6B21` : "") + `
-
-\u2192 hawk\u65B0\u5185\u5BB9 <\u6587\u672C>
-\u2192 hawk\u6539\u5206\u7C7B <fact|preference|decision|entity|other>
-\u2192 hawk\u91CD\u8981 \xD72    \u2192 hawk\u4E0D\u91CD\u8981    \u2192 hawk\u4F5C\u7528\u57DF personal|team|project
-\u2192 hawk\u51B2\u7A81 ${idx + 1}  \u68C0\u67E5\u662F\u5426\u4E0E\u65B0\u5185\u5BB9\u51B2\u7A81
-`
-      );
-      return;
-    }
-    if (trimmed.startsWith("hawk\u65B0\u5185\u5BB9 ")) {
-      const newText = trimmed.slice("hawk\u65B0\u5185\u5BB9 ".length).trim();
-      const targetId = ctx._hawkEditTarget;
-      if (!targetId || !newText) {
-        event.messages.push(`
-${injectEmoji} \u65E0\u6548\u7F16\u8F91\u8BF7\u6C42\u3002
-`);
-        return;
-      }
-      const ok = await db2.update(targetId, { text: newText });
-      delete ctx._hawkEditTarget;
-      event.messages.push(`
-${injectEmoji} ${ok ? "\u2705 \u5DF2\u66F4\u65B0" : "\u274C \u5931\u8D25"} \u2192 ${newText.slice(0, 60)}
-`);
-      return;
-    }
-    if (trimmed.startsWith("hawk\u6539\u5206\u7C7B ")) {
-      const cat = trimmed.slice("hawk\u6539\u5206\u7C7B ".length).trim();
-      const valid = ["fact", "preference", "decision", "entity", "other"];
-      if (!valid.includes(cat)) {
-        event.messages.push(`
-${injectEmoji} \u65E0\u6548\u5206\u7C7B: ${valid.join(", ")}
-`);
-        return;
-      }
-      const targetId = ctx._hawkEditTarget;
-      if (!targetId) {
-        event.messages.push(`
-${injectEmoji} \u8BF7\u5148\u6267\u884C hawk\u7F16\u8F91 \u9009\u62E9\u8BB0\u5FC6\u3002
-`);
-        return;
-      }
-      const ok = await db2.update(targetId, { category: cat });
-      delete ctx._hawkEditTarget;
-      event.messages.push(`
-${injectEmoji} ${ok ? `\u2705 \u5DF2\u66F4\u65B0\u4E3A [${cat}]` : "\u274C \u5931\u8D25"}
-`);
-      return;
-    }
-    var m = trimmed.match(HISTORY_PATTERN);
-    if (m) {
-      const kw = m[1]?.trim() || "";
-      const all = await db2.getAllMemories();
-      const withHistory = all.filter((x) => x.correctionHistory.length > 0);
-      const relevant = kw ? withHistory.filter((x) => x.text.toLowerCase().includes(kw.toLowerCase())) : withHistory;
-      if (!relevant.length) {
-        event.messages.push(`
-${injectEmoji} \u6CA1\u6709\u627E\u5230${kw ? `"${kw}"\u76F8\u5173` : ""}\u7684\u7EA0\u6B63\u5386\u53F2\u3002
-`);
-        return;
-      }
-      const lines = [`${injectEmoji} ** \u7EA0\u6B63\u5386\u53F2 ${kw ? `(\u5173\u952E\u8BCD: ${kw}) ` : ""}\u5171${relevant.length}\u6761 **`];
-      for (const mem of relevant) {
-        lines.push(`
-\u{1F4CC} [${mem.category}] ${mem.text.slice(0, 60)}`);
-        for (let i = 0; i < mem.correctionHistory.length; i++) {
-          const c = mem.correctionHistory[i];
-          lines.push(`   ${i + 1}. ${formatTime(c.ts)}: "${c.oldText.slice(0, 40)}" \u2192 "${c.newText.slice(0, 40)}"`);
-        }
-      }
-      event.messages.push(`
-${lines.join("\n")}
-`);
-      return;
-    }
-    var m = trimmed.match(CONFLICT_PATTERN);
-    if (m) {
-      const idx = parseInt(m[1], 10);
-      const all = await getSortedMemories(db2, getAgentId(ctx));
-      if (idx < 1 || idx > all.length) {
-        event.messages.push(`
-${injectEmoji} \u65E0\u6548\u7F16\u53F7
-`);
-        return;
-      }
-      const mem = all[idx - 1];
-      const conflicts = await db2.detectConflicts(mem.text, mem.category);
-      if (!conflicts.length) {
-        event.messages.push(`
-${injectEmoji} \u672A\u68C0\u6D4B\u5230\u4E0E[#${idx}]\u51B2\u7A81\u7684\u8BB0\u5FC6\u3002
-`);
-        return;
-      }
-      const lines = [`${injectEmoji} \u26A0\uFE0F ** \u68C0\u6D4B\u5230 ${conflicts.length} \u6761\u53EF\u80FD\u51B2\u7A81 **`];
-      for (const c of conflicts) {
-        lines.push(`
-\u{1F534} [${c.category}] "${c.text.slice(0, 60)}"`);
-        lines.push(`   \u53EF\u9760\u6027: ${fmtRel(c)} | \u521B\u5EFA: ${formatTime(c.createdAt)}`);
-      }
-      event.messages.push(`
-${lines.join("\n")}
-`);
-      return;
-    }
-    var m = trimmed.match(COMPARE_PATTERN);
-    if (m) {
-      const idxA = parseInt(m[1], 10) - 1;
-      const idxB = parseInt(m[2], 10) - 1;
-      const all = await getSortedMemories(db2, getAgentId(ctx));
-      if (idxA < 0 || idxA >= all.length || idxB < 0 || idxB >= all.length) {
-        event.messages.push(`
-${injectEmoji} \u65E0\u6548\u7F16\u53F7 (1-${all.length})
-`);
-        return;
-      }
-      const memA = all[idxA];
-      const memB = all[idxB];
-      const sim = textSimilarity(memA.text, memB.text);
-      const kwA = extractKeywords(memA.text);
-      const kwB = extractKeywords(memB.text);
-      const overlap = kwA.filter((k) => kwB.includes(k));
-      const lines = [
-        `${injectEmoji} ** \u8BB0\u5FC6\u5BF9\u6BD4 [#${idxA + 1} vs #${idxB + 1}] **`,
-        ``,
-        `[#${idxA + 1}] ${relLabel(memA.reliability)} ${fmtRel(memA)} [${memA.category}]`,
-        `\u5185\u5BB9: ${memA.text.slice(0, 80)}`,
-        `\u521B\u5EFA: ${formatTime(memA.createdAt)} | \u9A8C\u8BC1: ${memA.verificationCount}\u6B21`,
-        ``,
-        `[#${idxB + 1}] ${relLabel(memB.reliability)} ${fmtRel(memB)} [${memB.category}]`,
-        `\u5185\u5BB9: ${memB.text.slice(0, 80)}`,
-        `\u521B\u5EFA: ${formatTime(memB.createdAt)} | \u9A8C\u8BC1: ${memB.verificationCount}\u6B21`,
-        ``,
-        `\u76F8\u4F3C\u5EA6: ${(sim * 100).toFixed(0)}%`,
-        `\u5171\u540C\u5173\u952E\u8BCD: ${overlap.length > 0 ? overlap.slice(0, 5).join(", ") : "\u65E0"}`,
-        sim >= 0.6 ? `\u26A0\uFE0F \u53EF\u80FD\u77DB\u76FE\uFF08\u76F8\u4F3C\u4F46\u4E0D\u540C\uFF09` : sim < 0.3 ? `\u2705 \u5B8C\u5168\u4E0D\u540C` : `\u26A1 \u90E8\u5206\u91CD\u53E0`
-      ];
-      event.messages.push(`
-${lines.join("\n")}
-`);
-      return;
-    }
-    var m = trimmed.match(EXPORT_PATTERN);
-    if (m) {
-      const filepath = m[1]?.trim() || path3.join(homedir3(), ".hawk", `export-${Date.now()}.json`);
-      const all = await db2.getAllMemories();
-      const exported = all.map((m2) => ({
-        id: m2.id,
-        text: m2.text,
-        category: m2.category,
-        reliability: m2.reliability,
-        scope: m2.scope,
-        locked: m2.locked,
-        verificationCount: m2.verificationCount,
-        createdAt: formatTime(m2.createdAt),
-        updatedAt: formatTime(m2.updatedAt),
-        correctionHistory: m2.correctionHistory
-      }));
-      try {
-        const { writeFileSync: writeFileSync2, mkdirSync: mkdirSync3, existsSync: existsSync4 } = __require("fs");
-        const dir = path3.dirname(filepath);
-        if (!existsSync4(dir)) mkdirSync3(dir, { recursive: true });
-        writeFileSync2(filepath, JSON.stringify({ exported_at: (/* @__PURE__ */ new Date()).toISOString(), count: exported.length, memories: exported }, null, 2));
-        event.messages.push(`
-${injectEmoji} \u2705 \u5DF2\u5BFC\u51FA ${exported.length} \u6761\u8BB0\u5FC6\u5230
-${filepath}
-`);
-      } catch (err) {
-        event.messages.push(`
-${injectEmoji} \u274C \u5BFC\u51FA\u5931\u8D25: ${err.message}
-`);
-      }
-      return;
-    }
-    if (DRIFT_PATTERN.test(trimmed)) {
-      const all = await db2.getAllMemories(getAgentId(ctx));
-      if (!all.length) {
-        event.messages.push(`
-${injectEmoji} \u8FD8\u6CA1\u6709\u4EFB\u4F55\u8BB0\u5FC6\u3002
-`);
-        return;
-      }
-      const now = Date.now();
-      const DRIFT_MS = DRIFT_THRESHOLD_DAYS * 24 * 60 * 60 * 1e3;
-      const stale = all.filter((m2) => m2.deletedAt === null && m2.reliability >= 0.5 && (!m2.lastVerifiedAt || now - m2.lastVerifiedAt > DRIFT_MS));
-      const lines = [`${injectEmoji} ** hawk \u8FC7\u671F\u68C0\u6D4B ** (${DRIFT_THRESHOLD_DAYS}\u5929\u672A\u9A8C\u8BC1)`];
-      if (!stale.length) {
-        lines.push("\u2705 \u6240\u6709\u8BB0\u5FC6\u90FD\u662F\u65B0\u9C9C\u7684");
-      } else {
-        stale.sort((a, b) => {
-          const aDays = a.lastVerifiedAt ? (now - a.lastVerifiedAt) / 864e5 : Infinity;
-          const bDays = b.lastVerifiedAt ? (now - b.lastVerifiedAt) / 864e5 : Infinity;
-          return bDays - aDays;
-        });
-        for (const m2 of stale.slice(0, 20)) {
-          const days = m2.lastVerifiedAt ? ((now - m2.lastVerifiedAt) / 864e5).toFixed(0) : "\u4ECE\u672A";
-          lines.push(`\u{1F550} [${days}\u5929\u672A\u9A8C\u8BC1] [${m2.category}] ${m2.text.slice(0, 80)}${m2.text.length > 80 ? "..." : ""}`);
-        }
-        if (stale.length > 20) lines.push(`...\u8FD8\u6709 ${stale.length - 20} \u6761`);
-        lines.push(`
-\u63D0\u793A: \u4F7F\u7528 hawk\u786E\u8BA4 N \u5BF9 \u6765\u9A8C\u8BC1\u8BB0\u5FC6\uFF0C\u6216 hawk\u5426\u8BA4 N \u6765\u6807\u8BB0\u4E0D\u53EF\u9760`);
-      }
-      event.messages.push("\n" + lines.join("\n") + "\n");
-      return;
-    }
-    var m = trimmed.match(RESTORE_PATTERN);
-    if (m) {
-      const filepath = m[1].trim();
-      try {
-        const { readFileSync: readFileSync3, existsSync: existsSync4 } = __require("fs");
-        if (!existsSync4(filepath)) {
-          event.messages.push(`
-${injectEmoji} \u274C \u6587\u4EF6\u4E0D\u5B58\u5728: ${filepath}
-`);
-          return;
-        }
-        const raw = JSON.parse(readFileSync3(filepath, "utf-8"));
-        const memories2 = raw.memories || [];
-        if (!memories2.length) {
-          event.messages.push(`
-${injectEmoji} \u6587\u4EF6\u4E3A\u7A7A\u6216\u683C\u5F0F\u9519\u8BEF: ${filepath}
-`);
-          return;
-        }
-        const embedderInstance = await getEmbedder();
-        let imported = 0, skipped = 0, failed = 0;
-        const existingIds = new Set((await db2.getAllMemories()).map((m2) => m2.id));
-        for (const mem of memories2) {
-          if (existingIds.has(mem.id)) {
-            skipped++;
-            continue;
-          }
-          try {
-            const [vector] = await embedderInstance.embed([mem.text]);
-            await db2.store({
-              id: mem.id || "hawk_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8),
-              text: mem.text,
-              vector,
-              category: mem.category || "fact",
-              scope: mem.scope || "global",
-              importance: mem.importance ?? 0.5,
-              timestamp: mem.createdAt ? new Date(mem.createdAt).getTime() : Date.now(),
-              expiresAt: 0,
-              locked: mem.locked ?? false,
-              metadata: { source: "hawk-restore", original_id: mem.id }
-            });
-            imported++;
-          } catch {
-            failed++;
-          }
-        }
-        event.messages.push(`
-${injectEmoji} \u2705 \u6062\u590D\u5B8C\u6210\uFF1A\u5BFC\u5165 ${imported}\uFF0C\u8DF3\u8FC7\uFF08\u5DF2\u5B58\u5728\uFF09${skipped}\uFF0C\u5931\u8D25 ${failed}
-`);
-      } catch (err) {
-        event.messages.push(`
-${injectEmoji} \u274C \u6062\u590D\u5931\u8D25: ${err.message}
-`);
-      }
-      return;
-    }
-    if (SEARCH_HISTORY_PATTERN.test(trimmed)) {
-      if (!searchHistory.length) {
-        event.messages.push(`
-${injectEmoji} \u6682\u65E0\u641C\u7D22\u5386\u53F2\u3002
-`);
-        return;
-      }
-      const lines = [`
-${injectEmoji} ** \u6700\u8FD1\u641C\u7D22\u5386\u53F2 **
-`];
-      for (let i = 0; i < searchHistory.length; i++) {
-        const h = searchHistory[i];
-        const time = new Date(h.ts).toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-        lines.push(`  ${i + 1}. [${time}] "${h.q}" \u2192 ${h.resultCount} \u6761`);
-      }
-      event.messages.push(lines.join("\n") + "\n");
-      return;
-    }
-    if (CLEAR_PATTERN.test(trimmed)) {
-      const all = await db2.getAllMemories();
-      const unlocked = all.filter((m2) => !m2.locked);
-      if (!unlocked.length) {
-        event.messages.push(`
-${injectEmoji} \u6CA1\u6709\u53EF\u6E05\u7A7A\u7684\u8BB0\u5FC6\uFF08\u5168\u90E8\u5DF2\u9501\u5B9A\uFF09
-`);
-        return;
-      }
-      let cleared = 0;
-      for (const m2 of unlocked) {
-        if (await db2.forget(m2.id)) cleared++;
-      }
-      event.messages.push(`
-${injectEmoji} \u2705 \u5DF2\u6E05\u7A7A ${cleared} \u6761\u672A\u9501\u5B9A\u8BB0\u5FC6\u3002
-`);
-      return;
-    }
-    var m = trimmed.match(BATCHLOCK_PATTERN);
-    if (m) {
-      const cat = m[1]?.trim();
-      const all = await db2.getAllMemories();
-      const targets = cat ? all.filter((x) => x.category === cat && !x.locked) : all.filter((x) => !x.locked);
-      if (!targets.length) {
-        event.messages.push(`
-${injectEmoji} \u6CA1\u6709\u627E\u5230${cat ? `[${cat}]` : ""}\u672A\u9501\u5B9A\u7684\u8BB0\u5FC6\u3002
-`);
-        return;
-      }
-      let locked = 0;
-      for (const t of targets) {
-        if (await db2.lock(t.id)) locked++;
-      }
-      event.messages.push(`
-${injectEmoji} \u{1F512} \u5DF2\u9501\u5B9A ${locked} \u6761${cat ? `[${cat}]` : ""}\u8BB0\u5FC6\u3002
-`);
-      return;
-    }
-    if (BATCHUNLOCK_PATTERN.test(trimmed)) {
-      const all = await db2.getAllMemories();
-      const locked = all.filter((x) => x.locked);
-      if (!locked.length) {
-        event.messages.push(`
-${injectEmoji} \u6CA1\u6709\u5DF2\u9501\u5B9A\u7684\u8BB0\u5FC6\u3002
-`);
-        return;
-      }
-      let unlocked = 0;
-      for (const t of locked) {
-        if (await db2.unlock(t.id)) unlocked++;
-      }
-      event.messages.push(`
-${injectEmoji} \u{1F513} \u5DF2\u89E3\u9501 ${unlocked} \u6761\u8BB0\u5FC6\u3002
-`);
-      return;
-    }
-    if (PURGE_PATTERN.test(trimmed)) {
-      const { exec: exec2 } = __require("child_process");
-      const { promisify: promisify2 } = __require("util");
-      const execAsync = promisify2(exec2);
-      const distDecay = path3.join(process.cwd(), "dist/cli/decay.js");
-      try {
-        const { stdout } = await execAsync(`node "${distDecay}"`, { timeout: 3e4 });
-        event.messages.push(`
-${injectEmoji} ${stdout.trim()}
-`);
-      } catch (err) {
-        event.messages.push(`
-${injectEmoji} \u274C \u6E05\u7406\u5931\u8D25: ${err.message}
-`);
-      }
-      return;
-    }
-    if (STATS_PATTERN.test(trimmed)) {
-      const all = await db2.getAllMemories(getAgentId(ctx));
-      if (!all.length) {
-        event.messages.push(`
-${injectEmoji} \u6682\u65E0\u8BB0\u5FC6\u3002
-`);
-        return;
-      }
-      const total = all.length;
-      const locked = all.filter((m2) => m2.locked).length;
-      const byCat = {};
-      const byScope = {};
-      const byRel = {};
-      const now = Date.now();
-      for (const m2 of all) {
-        byCat[m2.category] = (byCat[m2.category] || 0) + 1;
-        byScope[m2.scope] = (byScope[m2.scope] || 0) + 1;
-        const relBand = m2.reliability >= 0.8 ? "high" : m2.reliability >= 0.5 ? "mid" : "low";
-        byRel[relBand] = (byRel[relBand] || 0) + 1;
-      }
-      const avgImp = (all.reduce((s, m2) => s + m2.importance, 0) / total).toFixed(2);
-      const expired = all.filter((m2) => m2.expiresAt > 0 && m2.expiresAt < now).length;
-      const lines = [
-        `
-${injectEmoji} ** hawk \u8BB0\u5FC6\u7EDF\u8BA1 **
-`,
-        `\u603B\u8BB0\u5FC6: ${total} | \u9501\u5B9A: ${locked} | \u5DF2\u8FC7\u671F: ${expired}`,
-        `\u5E73\u5747\u91CD\u8981\u6027: ${avgImp}`,
-        ``,
-        `**\u6309\u7C7B\u522B**:`,
-        ...Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${k}: ${v}`),
-        ``,
-        `**\u6309\u4F5C\u7528\u57DF**:`,
-        ...Object.entries(byScope).sort((a, b) => b[1] - a[1]).map(([k, v]) => `  ${k}: ${v}`),
-        ``,
-        `**\u6309\u53EF\u9760\u6027**: high\u226580%:${byRel.high || 0} | mid50-80%:${byRel.mid || 0} | low<50%:${byRel.low || 0}`
-      ];
-      event.messages.push(lines.join("\n") + "\n");
-      return;
-    }
-    if (QUALITY_PATTERN.test(trimmed)) {
-      const all = await db2.getAllMemories(getAgentId(ctx));
-      if (!all.length) {
-        event.messages.push(`
-${injectEmoji} \u6682\u65E0\u8BB0\u5FC6\u3002
-`);
-        return;
-      }
-      const total = all.length;
-      const now = Date.now();
-      const avgRel = all.reduce((s, m2) => s + m2.reliability, 0) / total;
-      const avgImp = all.reduce((s, m2) => s + m2.importance, 0) / total;
-      const lockedRatio = all.filter((m2) => m2.locked).length / total;
-      const expiredCount = all.filter((m2) => m2.expiresAt > 0 && m2.expiresAt < now).length;
-      const recentCount = all.filter((m2) => now - m2.timestamp < 7 * 864e5).length;
-      const relScore = avgRel * 40;
-      const impScore = avgImp * 25;
-      const lockScore = lockedRatio * 15;
-      const recencyScore = Math.min(recentCount / Math.max(total * 0.3, 1), 1) * 20;
-      const healthScore = Math.round(relScore + impScore + lockScore + recencyScore);
-      const grade = healthScore >= 80 ? "\u{1F7E2} \u4F18\u79C0" : healthScore >= 60 ? "\u{1F7E1} \u826F\u597D" : healthScore >= 40 ? "\u{1F7E0} \u4E00\u822C" : "\u{1F534} \u9700\u4F18\u5316";
-      event.messages.push(
-        `
-${injectEmoji} ** hawk \u8BB0\u5FC6\u5065\u5EB7\u8BC4\u5206 **
-\u5065\u5EB7\u5EA6: ${grade} (${healthScore}/100)
-\u5E73\u5747\u53EF\u9760\u6027: ${(avgRel * 100).toFixed(1)}% | \u5E73\u5747\u91CD\u8981\u6027: ${(avgImp * 100).toFixed(1)}%
-\u603B\u8BB0\u5FC6: ${total} | \u9501\u5B9A: ${lockedRatio > 0 ? (lockedRatio * 100).toFixed(1) + "%" : "0"} | \u5DF2\u8FC7\u671F: ${expiredCount}
-\u8FD17\u5929\u65B0\u589E: ${recentCount} \u6761
-
-\u8BC4\u5206\u8BF4\u660E: \u53EF\u9760\u602740% + \u91CD\u8981\u602725% + \u9501\u5B9A\u738715% + \u6D3B\u8DC3\u5EA620%
-`
-      );
-      return;
-    }
-    if (STATUS_PATTERN.test(trimmed)) {
-      const all = await db2.getAllMemories(getAgentId(ctx));
-      const now = Date.now();
-      const total = all.length;
-      const expired = all.filter((m2) => m2.expiresAt > 0 && m2.expiresAt < now).length;
-      const locked = all.filter((m2) => m2.locked).length;
-      const embedderInstance = await getSharedEmbedder();
-      const cacheSize = embedderInstance.cache?.size ?? 0;
-      let bm25Size = 0;
-      try {
-        const retriever = await getRetriever();
-        bm25Size = retriever.corpus?.length ?? 0;
-      } catch {
-      }
-      let dbSizeMB = 0;
-      try {
-        const stats = await db2.getDBStats?.();
-        if (stats) dbSizeMB = stats.sizeMB;
-      } catch {
-      }
-      const lastDecay = global.__hawk_last_decay__;
-      const decayAgo = lastDecay ? Math.round((now - lastDecay) / 6e4) + " \u5206\u949F\u524D" : "\u4ECE\u672A";
-      event.messages.push(
-        `
-${injectEmoji} ** hawk \u7CFB\u7EDF\u72B6\u6001 **
-\u8BB0\u5FC6\u603B\u6570: ${total} | \u5DF2\u8FC7\u671F: ${expired} | \u9501\u5B9A: ${locked}
-\u6570\u636E\u5E93: ${dbSizeMB > 0 ? dbSizeMB.toFixed(2) + " MB" : "(\u8BA1\u7B97\u4E2D...)"}
-BM25\u7D22\u5F15: ${bm25Size} \u6761
-Embed\u7F13\u5B58: ${cacheSize} \u6761
-\u6700\u540EDecay: ${decayAgo}
-\u641C\u7D22\u5386\u53F2: ${searchHistory.length} \u6761
-`
-      );
-      return;
-    }
-    var m = trimmed.match(REVIEW_PATTERN);
-    if (m) {
-      const count = Math.min(10, Math.max(1, parseInt(m[1] || "3", 10)));
-      const reviewConfig = config.review;
-      const minRel = reviewConfig?.minReliability ?? 0.5;
-      const batch = reviewConfig?.batchSize ?? 5;
-      const candidates = await db2.getReviewCandidates(minRel, batch);
-      if (!candidates.length) {
-        event.messages.push(`
-${injectEmoji} \u6CA1\u6709\u9700\u8981\u56DE\u987E\u7684\u8BB0\u5FC6\uFF08\u53EF\u9760\u6027\u5747\u2265${Math.round(minRel * 100)}%\uFF09\u3002
-`);
-        return;
-      }
-      const lines = [`${injectEmoji} ** \u4E3B\u52A8\u56DE\u987E (${candidates.length}\u6761\u6700\u4F4E\u53EF\u9760\u6027) **`];
-      for (let i = 0; i < candidates.length; i++) {
-        const mem = candidates[i];
-        lines.push(`
-${i + 1}. ${relLabel(mem.reliability)} ${fmtRel(mem)} [${mem.category}] ${mem.text.slice(0, 70)}`);
-        lines.push(`   \u2192 \u56DE\u590D"${i + 1} \u5BF9"\u786E\u8BA4 \u6216 "${i + 1} \u7EA0\u6B63: \u6B63\u786E\u5185\u5BB9"`);
-      }
-      event.messages.push(`
-${lines.join("\n")}
-`);
-      ctx._hawkCheckIndex = candidates.map((m2) => m2.id);
-      return;
-    }
-    var m = trimmed.match(CHECK_PATTERN);
-    if (m) {
-      const count = Math.min(10, Math.max(1, parseInt(m[1] || "3", 10)));
-      const candidates = await db2.getReviewCandidates(0.5, count);
-      if (!candidates.length) {
-        event.messages.push(`
-${injectEmoji} \u6CA1\u6709\u9700\u8981\u68C0\u67E5\u7684\u8BB0\u5FC6\u3002
-`);
-        return;
-      }
-      const lines = [`${injectEmoji} ** \u4E3B\u52A8\u68C0\u67E5 (${candidates.length}\u6761) **`];
-      for (let i = 0; i < candidates.length; i++) {
-        const mem = candidates[i];
-        lines.push(`
-${i + 1}. ${relLabel(mem.reliability)} ${fmtRel(mem)} [${mem.category}] ${mem.text.slice(0, 70)}`);
-        lines.push(`   \u2192 "${i + 1} \u5BF9" \u6216 "${i + 1} \u7EA0\u6B63: \u6B63\u786E\u5185\u5BB9"`);
-      }
-      event.messages.push(`
-${lines.join("\n")}
-`);
-      ctx._hawkCheckIndex = candidates.map((m2) => m2.id);
-      return;
-    }
-    const confirmMatch = trimmed.match(/^hawk确认\s+(\d+)\s+(.+)/i);
-    if (confirmMatch) {
-      const idx = parseInt(confirmMatch[1], 10) - 1;
-      const action = confirmMatch[2].trim();
-      const targetIds = ctx._hawkCheckIndex || [];
-      if (idx < 0 || idx >= targetIds.length) {
-        event.messages.push(`
-${injectEmoji} \u65E0\u6548\u7F16\u53F7
-`);
-        return;
-      }
-      const id = targetIds[idx];
-      if (action === "\u5BF9" || action === "\u6B63\u786E") {
-        await db2.verify(id, true);
-        event.messages.push(`
-${injectEmoji} \u2705 \u5DF2\u786E\u8BA4\uFF0C\u53EF\u9760\u6027\u63D0\u5347\u3002
-`);
-      } else if (/^纠正/.test(action)) {
-        const correct = action.replace(/^纠正[:：]?\s*/, "").trim();
-        await db2.verify(id, false, correct);
-        event.messages.push(`
-${injectEmoji} \u2705 \u5DF2\u7EA0\u6B63 \u2192 ${correct}
-`);
-      } else {
-        event.messages.push(`
-${injectEmoji} \u65E0\u6548\u64CD\u4F5C\u3002\u7528"${idx + 1} \u5BF9"\u6216"${idx + 1} \u7EA0\u6B63: \u6B63\u786E\u5185\u5BB9"
-`);
-      }
-      return;
-    }
-    var m = trimmed.match(DENY_PATTERN);
-    if (m) {
-      const idx = parseInt(m[1], 10) - 1;
-      const targetIds = ctx._hawkCheckIndex || [];
-      if (idx < 0 || idx >= targetIds.length) {
-        event.messages.push(`
-${injectEmoji} \u65E0\u6548\u7F16\u53F7
-`);
-        return;
-      }
-      const id = targetIds[idx];
-      await db2.flagUnhelpful(id, 0.05);
-      event.messages.push(`
-${injectEmoji} \u5DF2\u6807\u8BB0\u8BE5\u8BB0\u5FC6\u4E3A\u4E0D\u53EF\u9760\uFF08reliability -5%\uFF09
-`);
-      return;
-    }
-    {
-      const keyword = matchFirst(trimmed, LOCK_PATTERNS);
-      if (keyword !== null) {
-        const all = await db2.getAllMemories();
-        const match = all.find((x) => x.text.toLowerCase().includes(keyword.toLowerCase()));
-        if (match) {
-          await db2.lock(match.id);
-          event.messages.push(`
-${injectEmoji} \u{1F512} \u5DF2\u9501\u5B9A\u3002
-`);
-        } else event.messages.push(`
-${injectEmoji} \u6CA1\u6709\u627E\u5230\u4E0E"${keyword}"\u76F8\u5173\u7684\u8BB0\u5FC6\u3002
-`);
-        return;
-      }
-    }
-    {
-      const keyword = matchFirst(trimmed, UNLOCK_PATTERNS);
-      if (keyword !== null) {
-        const all = await db2.getAllMemories();
-        const match = all.find((x) => x.text.toLowerCase().includes(keyword.toLowerCase()));
-        if (match) {
-          await db2.unlock(match.id);
-          event.messages.push(`
-${injectEmoji} \u{1F513} \u5DF2\u89E3\u9501\u3002
-`);
-        } else event.messages.push(`
-${injectEmoji} \u6CA1\u6709\u627E\u5230\u4E0E"${keyword}"\u76F8\u5173\u7684\u8BB0\u5FC6\u3002
-`);
-        return;
-      }
-    }
-    {
-      const keyword = matchFirst(trimmed, FORGET_PATTERNS);
-      if (keyword !== null) {
-        const all = await db2.getAllMemories();
-        const match = all.find((x) => x.text.toLowerCase().includes(keyword.toLowerCase()));
-        if (match) {
-          const ok = await db2.forget(match.id);
-          event.messages.push(`
-${injectEmoji} ${ok ? "\u2705 \u5DF2\u9057\u5FD8\u3002" : "\u274C \u5DF2\u9501\u5B9A\uFF0C\u65E0\u6CD5\u9057\u5FD8\u3002"}
-`);
-        } else {
-          event.messages.push(`
-${injectEmoji} \u6CA1\u6709\u627E\u5230\u4E0E"${keyword}"\u76F8\u5173\u7684\u8BB0\u5FC6\u3002
-`);
-        }
-        return;
-      }
-    }
-    {
-      const m2 = trimmed.match(ADD_PATTERN);
-      if (m2) {
-        const text = m2[1].trim();
-        if (text.length < 5) {
-          event.messages.push(`
-${injectEmoji} \u5185\u5BB9\u592A\u77ED\uFF0C\u81F3\u5C115\u4E2A\u5B57\u3002
-`);
-          return;
-        }
-        const embedderInstance = await getSharedEmbedder();
-        try {
-          const [vector] = await embedderInstance.embed([text]);
-          await db2.store({
-            id: "hawk_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8),
-            text,
-            vector,
-            category: "fact",
-            scope: "personal",
-            importance: 0.8,
-            timestamp: Date.now(),
-            expiresAt: 0,
-            locked: false,
-            metadata: { source: "hawk-\u6DFB\u52A0" }
-          });
-          event.messages.push(`
-${injectEmoji} \u2705 \u5DF2\u6DFB\u52A0\u8BB0\u5FC6\uFF1A${text.slice(0, 60)}${text.length > 60 ? "..." : ""}
-`);
-        } catch (err) {
-          event.messages.push(`
-${injectEmoji} \u274C \u6DFB\u52A0\u5931\u8D25: ${err.message}
-`);
-        }
-        return;
-      }
-    }
-    {
-      const m2 = trimmed.match(DELETE_IDX_PATTERN);
-      if (m2) {
-        const idx = parseInt(m2[1], 10) - 1;
-        const targetIds = ctx._hawkListIndex || [];
-        const id = targetIds[idx];
-        if (!id) {
-          const all = await db2.getAllMemories(getAgentId(ctx));
-          const sorted2 = [...all].sort((a, b) => {
-            if (a.locked !== b.locked) return a.locked ? -1 : 1;
-            return b.reliability - a.reliability;
-          });
-          if (idx < 0 || idx >= sorted2.length) {
-            event.messages.push(`
-${injectEmoji} \u65E0\u6548\u7F16\u53F7\u3002
-`);
-            return;
-          }
-          const mem = sorted2[idx];
-          const ok2 = await db2.forget(mem.id);
-          event.messages.push(`
-${injectEmoji} ${ok2 ? "\u2705 \u5DF2\u5220\u9664\uFF1A" + mem.text.slice(0, 50) + "..." : "\u274C \u5DF2\u9501\u5B9A\uFF0C\u65E0\u6CD5\u5220\u9664\u3002"}
-`);
-          return;
-        }
-        const ok = await db2.forget(id);
-        event.messages.push(`
-${injectEmoji} ${ok ? "\u2705 \u5DF2\u5220\u9664\u3002" : "\u274C \u5DF2\u9501\u5B9A\uFF0C\u65E0\u6CD5\u5220\u9664\u3002"}
-`);
-        return;
-      }
-    }
-    {
-      const correct = matchFirst(trimmed, [CORRECT_PATTERN]);
-      if (correct !== null) {
-        const result2 = await findMemoryBySemanticMatch(db2, correct);
-        if (result2) {
-          await db2.verify(result2.id, false, correct);
-          event.messages.push(`
-${injectEmoji} \u2705 \u5DF2\u7EA0\u6B63 \u2192 ${correct}
-`);
-        } else {
-          event.messages.push(`
-${injectEmoji} \u6CA1\u6709\u627E\u5230\u9700\u8981\u7EA0\u6B63\u7684\u8BB0\u5FC6\u3002
-`);
-        }
-        return;
-      }
-    }
-    let memories = [];
-    const selectedIds = await dualSelect(trimmed, db2, topK * 2);
-    if (selectedIds.length > 0) {
-      const retriever = await getRetriever();
-      const allResults = await retriever.search(trimmed, topK * 3);
-      memories = allResults.filter((m2) => selectedIds.includes(m2.id));
-      if (memories.length < topK) {
-        const selectedSet = new Set(selectedIds);
-        const unselected = allResults.filter((m2) => !selectedSet.has(m2.id)).slice(0, topK - memories.length);
-        memories = [...memories, ...unselected];
-      }
-    } else {
-      const retriever = await getRetriever();
-      memories = await retriever.search(trimmed, topK);
-    }
-    const useable = memories.filter((m2) => m2.score >= minScore || m2.reliability >= RELIABILITY_THRESHOLD_HIGH);
-    recordSearch(trimmed, useable.length);
-    if (!useable.length) {
-      const all = await db2.getAllMemories(getAgentId(ctx));
-      if (all.length > 0) {
-        const queryWords = trimmed.toLowerCase().split(/\s+/);
-        const suggestions = all.map((m2) => {
-          const textWords = m2.text.toLowerCase().split(/\s+/);
-          const overlap = queryWords.filter((w) => textWords.some((tw) => tw.includes(w) || w.includes(tw))).length;
-          return { id: m2.id, text: m2.text, overlap };
-        }).filter((s) => s.overlap > 0).sort((a, b) => b.overlap - a.overlap).slice(0, 3);
-        if (suggestions.length > 0) {
-          const tips = suggestions.map((s) => `  \xB7 "${s.text.slice(0, 50)}"`).join("\n");
-          event.messages.push(`
-${injectEmoji} \u6CA1\u627E\u5230\u76F4\u63A5\u5339\u914D\u7684\u3002\u662F\u4E0D\u662F\u6307\uFF1A
-${tips}
-`);
-        }
-      }
-      return;
-    }
-    const withEvolution = useable.map((m2) => {
-      const src = m2.metadata?.source || "";
-      let score = compositeScore(m2);
-      if (src === "evolution-success") {
-        score = Math.min(1, score + EVOLUTION_SUCCESS * 0.3);
-      } else if (src === "evolution-failure") {
-        score = score * 0.5;
-      }
-      return { ...m2, _evolutionScore: score };
-    });
-    const sorted = [...withEvolution].sort((a, b) => {
-      const aEvol = a.metadata?.source === "evolution-success";
-      const bEvol = b.metadata?.source === "evolution-success";
-      if (aEvol && !bEvol) return -1;
-      if (!aEvol && bEvol) return 1;
-      return b._evolutionScore - a._evolutionScore;
-    });
-    const result = [];
-    let totalChars = 0;
-    for (const m2 of sorted) {
-      if (result.length >= INJECTION_LIMIT) break;
-      const compressed = compressText(m2.text);
-      if (totalChars + compressed.length > MAX_INJECTION_CHARS) continue;
-      result.push(m2);
-      totalChars += compressed.length;
-    }
-    if (!result.length) return;
-    const withReasons = result.map((m2) => ({
-      ...m2,
-      matchReason: computeMatchReason(trimmed, m2),
-      text: sanitize(compressText(m2.text))
-    }));
-    event.messages.push(`
-${formatRecallResults(withReasons, injectEmoji)}
-`);
-    for (const m2 of useable) {
-      if (m2.score >= minScore) await db2.verify(m2.id, true);
-    }
-    if (config.audit?.enabled) {
-      try {
-        const { appendFileSync: appendFileSync2, join: join5 } = __require("fs");
-        const { homedir: homedir5 } = __require("os");
-        appendFileSync2(
-          join5(homedir5(), ".hawk", "audit.log"),
-          JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), action: "recall", count: sanitized.length, query: trimmed.slice(0, 100) }) + "\n"
-        );
-      } catch {
-      }
-    }
-  } catch (err) {
-    logger.error({ err }, "hawk-recall handler error");
-    memoryErrors.inc({ type: "recall_handler" });
-  }
-};
-function getAgentId(ctx) {
-  return ctx?.agentId ?? null;
-}
-async function getSortedMemories(db2, agentId) {
-  const all = await db2.getAllMemories(agentId);
-  return [...all].sort((a, b) => {
-    if (a.locked !== b.locked) return a.locked ? -1 : 1;
-    return b.reliability - a.reliability;
-  });
-}
-var handler_default = recallHandler;
-
-// src/hooks/hawk-capture/handler.ts
-import { spawn, exec as execSync } from "child_process";
-import { promisify } from "util";
-import * as fs3 from "fs";
-import * as path4 from "path";
-import * as os3 from "os";
-init_embeddings();
-init_logger();
-init_metrics();
-var exec = promisify(execSync);
-var db = null;
-var embedder = null;
-async function getDB() {
-  if (!db) {
-    db = await getMemoryStore();
-  }
-  return db;
-}
-async function getEmbedder2() {
-  if (!embedder) {
-    const config = await getConfig();
-    embedder = new Embedder(config.embedding);
-  }
-  return embedder;
-}
-var AUDIT_LOG_PATH = path4.join(os3.homedir(), ".hawk", "audit.log");
-async function withRetry(fn, maxAttempts = 3, delayMs = 1e3) {
-  let lastErr;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (attempt < maxAttempts) {
-        logger.warn({ attempt, maxAttempts, delayMs: delayMs * attempt, err: err.message }, "Capture attempt failed, retrying");
-        await new Promise((res) => setTimeout(res, delayMs * attempt));
-      } else {
-        logger.error({ err: err.message }, "All capture attempts failed");
-      }
-    }
-  }
-  throw lastErr;
-}
-function audit(action, reason, text) {
-  const entry = JSON.stringify({
-    ts: (/* @__PURE__ */ new Date()).toISOString(),
-    action,
-    reason,
-    text: text.slice(0, 200)
-    // truncate for log safety
-  }) + "\n";
-  try {
-    const dir = path4.dirname(AUDIT_LOG_PATH);
-    if (!fs3.existsSync(dir)) {
-      fs3.mkdirSync(dir, { recursive: true });
-    }
-    fs3.appendFileSync(AUDIT_LOG_PATH, entry);
-  } catch (err) {
-    logger.error({ err: err?.message }, "Failed to write audit log");
-  }
-}
-function normalizeText(text) {
-  let t = text;
-  t = t.replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u2028-\u202F\uFEFF]/g, "");
-  t = t.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  t = t.replace(/<[^>]+>/g, "");
-  t = t.replace(/!\[([^\]]*)\]\([^)]+\)/g, "[\u56FE\u7247]");
-  t = t.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-  t = t.replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, "$1");
-  t = t.replace(/^#{1,6}\s+/gm, "");
-  t = t.replace(/```[\w*]*\n([\s\S]*?)```/g, (_, code) => code.trim());
-  t = t.replace(/`([^`]+)`/g, "$1");
-  t = t.replace(/^>\s+/gm, "");
-  t = t.replace(/^[\s]*[-*+]\s+/gm, "");
-  t = t.replace(/^[\s]*\d+\.\s+/gm, "");
-  t = t.replace(/\bconsole\s*\.\s*(log|debug|info|warn|error)\s*\([^)]*\)/gi, "[\u65E5\u5FD7]");
-  t = t.replace(/\bprint\s*\([^)]*\)/g, "[\u65E5\u5FD7]");
-  t = t.replace(/\bprint\b(?!\s*=)/g, "[\u65E5\u5FD7]");
-  t = t.replace(/\blogger\s*\.\s*(debug|info|warn|error)\s*\([^)]*\)/gi, "[\u65E5\u5FD7]");
-  t = t.replace(
-    /(^\tat\s+[^\n]+\n)((\tat\s+[^\n]+\n)*)(\bat\s+[^\n]+$)/gm,
-    (_, head, middle, tail) => head + (middle ? "\n  ...\n" : "") + tail
-  );
-  t = t.replace(/(https?:\/\/[^\s\n,，]+)[\n-]([^\s,，]+)/g, "$1$2");
-  t = t.replace(
-    /(https?:\/\/[^\s　'"<>】】]+)\/([^\s　'"<>】】]{0,60}[^\s　'"<>】】]*)/g,
-    (_, domain, path5) => {
-      const fullPath = path5.length > 60 ? path5.slice(0, 60) + "..." : path5;
-      return domain + "/" + fullPath;
-    }
-  );
-  t = t.replace(
-    /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2300}-\u{23FF}]|[\u{2B50}]|[\u{1FA00}-\u{1FAFF}]|[\u{1F900}-\u{1F9FF}]/gu,
-    ""
-  );
-  t = t.replace(/。/g, ".").replace(/，/g, ",").replace(/；/g, ";").replace(/：/g, ":").replace(/？/g, "?").replace(/！/g, "!").replace(/"/g, '"').replace(/"/g, '"').replace(/'/g, "'").replace(/'/g, "'").replace(/（/g, "(").replace(/）/g, ")").replace(/【/g, "[").replace(/】/g, "]").replace(/《/g, "<").replace(/》/g, ">").replace(/、/g, ",").replace(/…/g, "...").replace(/～/g, "~");
-  t = t.replace(
-    /\b(?:\d{4}[-/年]\d{1,2}[-/月]\d{1,2}[日]?\s*(?:[时分]?\s*\d{1,2}[：:]\d{1,2}(?:[：:]\d{1,2})?\s*(?:AM|PM|am|pm)?)?|\d{1,2}[-/月]\d{1,2}[日]?(?:\s*\d{1,2}:\d{2}(?::\d{2})?)?)\b/g,
-    "[\u65F6\u95F4]"
-  );
-  t = t.replace(/[ \t]{2,}/g, " ");
-  t = t.replace(/\n{3,}/g, "\n\n");
-  t = t.split("\n").map((line) => line.trim()).join("\n");
-  t = t.trim();
-  t = t.replace(/\b(\d{1,3}(?:,\d{3}){2,})(?:\b|[^\d])/g, (match) => {
-    const num = parseInt(match.replace(/,/g, ""), 10);
-    if (num >= 1e9) return (num / 1e9).toFixed(1) + "B";
-    if (num >= 1e6) return (num / 1e6).toFixed(1) + "M";
-    if (num >= 1e3) return (num / 1e3).toFixed(1) + "K";
-    return match;
-  });
-  t = t.replace(/\b[A-Za-z0-9+/]{100,}={0,2}\b/g, "[BASE64\u6570\u636E]");
-  t = t.replace(/(\{"[^"]+":\s*"[^"]+"\})/g, (json2) => {
-    try {
-      return JSON.stringify(JSON.parse(json2));
-    } catch {
-      return json2;
-    }
-  });
-  {
-    const sentences = t.split(/(?<=[.!?])\s+/);
-    const seen = /* @__PURE__ */ new Set();
-    t = sentences.filter((s) => {
-      const normalized = s.toLowerCase().trim();
-      if (seen.has(normalized)) return false;
-      seen.add(normalized);
-      return true;
-    }).join(" ");
-  }
-  {
-    const paras = t.split(/\n\n+/);
-    const seenPara = /* @__PURE__ */ new Set();
-    t = paras.filter((p) => {
-      const normalized = p.trim().toLowerCase();
-      if (seenPara.has(normalized)) return false;
-      seenPara.add(normalized);
-      return true;
-    }).join("\n\n");
-  }
-  t = t.replace(/([\u4e00-\u9fff])([A-Za-z])/g, "$1$2");
-  t = t.replace(/([A-Za-z])([\u4e00-\u9fff])/g, "$1$2");
-  return t;
-}
-function isValidChunk(text) {
-  if (!text || typeof text !== "string") return false;
-  const trimmed = text.trim();
-  if (trimmed.length < MIN_CHUNK_SIZE) return false;
-  if (trimmed.length > MAX_TEXT_LEN) return false;
-  if (/^[\d\s.+-]+$/.test(trimmed)) return false;
-  if (/^[^\w\u4e00-\u9fff]+$/.test(trimmed)) return false;
-  return true;
-}
-var SKIP_PATTERNS = [
-  // Code patterns / file paths (derivable from reading code)
-  [/\b(function|class|const|let|var|import|export|interface|type)\s+\w+/g, "code_pattern"],
-  [/\b(file|path|directory|folder)\s+[:=]\s*['"`][\w./-]+['"`]/g, "file_path"],
-  [/`[^`]*\.(ts|js|py|go|rs|java|cpp|c|h|md|json|yaml|yml)`/g, "code_reference"],
-  // Git history / who-changed-what (use git log/blame instead)
-  [/\b(git|commit|branch|merge|PR|pull.request|checkout|rebase)\b/gi, "git_history"],
-  // Debug solutions / fix recipes (the fix is in the code, commit has context)
-  [/\b(fix|bug|issue|error|exception|crash|patch)\s+(was|is|to|:)/gi, "debug_solution"],
-  // Ephemeral task details
-  [/^(TODO|FIXME|HACK|XXX|NOTE|BUG|NB):/gm, "dev_note"],
-  // Already in CLAUDE.md files
-  [/\bCLAUDE\.(md|local\.md|rules)/gi, "already_documented"]
-];
-function shouldSkipChunk(text) {
-  for (const [pattern, label] of SKIP_PATTERNS) {
-    if (pattern.test(text)) {
-      return { skip: true, reason: label };
-    }
-  }
-  return { skip: false, reason: "" };
-}
-function truncate(text, maxLen = MAX_CHUNK_SIZE) {
-  if (text.length <= maxLen) return text;
-  return text.slice(0, maxLen).replace(/\s+\S*$/, "");
-}
-var HARMFUL_PATTERNS = [
-  /kill|murder|suicide|attack/i,
-  /bomb|explosive|terror/i,
-  /child(?:porn|sexual)|CSAM/i,
-  /fraud|scam|phishing/i,
-  /hack|crack(?:ing)?\s+(?:password|account)/i
-];
-function isHarmful(text) {
-  for (const pattern of HARMFUL_PATTERNS) {
-    if (pattern.test(text)) return true;
-  }
-  return false;
-}
-var SANITIZE_PATTERNS = [
-  [/(?:api[_-]?key|secret|token|password|passwd|pwd|private[_-]?key)\s*[:=]\s*["']?([\w-]{8,})["']?/gi, "$1: [REDACTED]"],
-  [/(Bearer\s+)[\w.-]{10,}/gi, "$1[REDACTED]"],
-  [/(AKIA[0-9A-Z]{16})/g, "[AWS_KEY_REDACTED]"],
-  [/(ghp_[a-zA-Z0-9]{36}|gho_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{22,})/g, "[GITHUB_TOKEN_REDACTED]"],
-  [/\b[a-zA-Z0-9]{32,}\b/g, "[KEY_REDACTED]"],
-  [/\b1[3-9]\d{9}\b/g, "[PHONE_REDACTED]"],
-  [/\b[\w.-]+@[\w.-]+\.\w{2,}\b/g, "[EMAIL_REDACTED]"],
-  [/\b[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b/g, "[ID_REDACTED]"],
-  [/\b(?:\d{4}[- ]?){3}\d{4}\b/g, "[CARD_REDACTED]"],
-  [/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[IP_REDACTED]"],
-  [/\/\/[^:@\/]+:[^@\/]+@/g, "//[CREDS_REDACTED]@"]
-];
-function sanitize2(text) {
-  let result = text;
-  for (const [pattern, replacement] of SANITIZE_PATTERNS) {
-    result = result.replace(pattern, replacement);
-  }
-  return result;
-}
-function textSimilarity2(a, b) {
-  if (a === b) return 1;
-  if (!a.length || !b.length) return 0;
-  if (Math.abs(a.length - b.length) / Math.max(a.length, b.length) > 0.3) return 0;
-  const setA = new Set(a.split(""));
-  const setB = new Set(b.split(""));
-  const intersection = [...setA].filter((c) => setB.has(c)).length;
-  const union = (/* @__PURE__ */ new Set([...setA, ...setB])).size;
-  return union > 0 ? intersection / union : 0;
-}
-async function isDuplicate(text, threshold = DEDUP_SIMILARITY) {
-  try {
-    const dbInstance = await getDB();
-    const recent = await dbInstance.listRecent(20);
-    for (const m of recent) {
-      if (textSimilarity2(text, m.text) >= threshold) return true;
-    }
-  } catch {
-  }
-  return false;
-}
-async function handleSaturation(text, threshold = 0.7) {
-  try {
-    const dbInstance = await getDB();
-    const recent = await dbInstance.listRecent(50);
-    const similar = recent.filter((m) => textSimilarity2(text, m.text) >= threshold);
-    if (similar.length >= 3) {
-      for (const m of similar) {
-        await dbInstance.incrementAccess(m.id);
-      }
-      return true;
-    }
-  } catch {
-  }
-  return false;
-}
-var SESSIONS_JSON_PATH = path4.join(os3.homedir(), ".openclaw", "agents", "main", "sessions", "sessions.json");
-async function handleSessionCompaction(event) {
-  try {
-    const config = await getConfig();
-    if (!config.capture.enabled) return;
-    const sessionKey = event.sessionKey;
-    if (!sessionKey) return;
-    let transcriptPath = null;
-    try {
-      const content = await fs3.promises.readFile(SESSIONS_JSON_PATH, "utf-8");
-      const sessionsMap = JSON.parse(content);
-      const entry = sessionsMap[sessionKey];
-      transcriptPath = entry?.sessionFile ?? null;
-    } catch (lookupErr) {
-      logger.warn({ err: lookupErr, sessionKey }, "Could not look up session transcript path");
-      return;
-    }
-    if (!transcriptPath) {
-      logger.debug({ sessionKey }, "No transcript path found");
-      return;
-    }
-    const scriptPath = path4.join(
-      os3.homedir(),
-      ".openclaw",
-      "workspace",
-      "hawk-bridge",
-      "python",
-      "hawk_session_history.py"
-    );
-    const { stdout } = await exec(
-      `python3 "${scriptPath}" "${transcriptPath}" 30`
-    );
-    let result;
-    try {
-      result = JSON.parse(stdout);
-    } catch {
-      logger.warn({ parseError: stdout.slice(0, 200) }, "Failed to parse session history output");
-      return;
-    }
-    if (result.error || !result.messages?.length) {
-      if (result.error) {
-        logger.warn({ error: result.error }, "Session history script error");
-      }
-      return;
-    }
-    const store = await getDB();
-    const embed = await getEmbedder2();
-    const { importanceThreshold } = config.capture;
-    let storedCount = 0;
-    for (const msg of result.messages) {
-      const text = msg.text;
-      if (!text || text.length < 30) continue;
-      const trimmed = text.trim();
-      if (/^[\d\s.,]+$/.test(trimmed)) continue;
-      if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]{1,3}$/u.test(trimmed)) continue;
-      if (trimmed.length < 30) continue;
-      const sourceType = msg.role === "user" ? "user-message" : "hawk-capture";
-      try {
-        const [vector] = await embed.embed([text]);
-        await store.store({
-          id: generateId(),
-          text,
-          vector,
-          category: "conversation",
-          scope: "global",
-          importance: 0.5,
-          metadata: {
-            capture_trigger: "session_compaction",
-            source_type: sourceType,
-            sender_id: "session:" + sessionKey,
-            session_msg_id: msg.id,
-            session_timestamp: msg.timestamp
-          }
-        }, sessionKey);
-        storedCount++;
-        audit("compact", "success", text.slice(0, 80));
-      } catch (storeErr) {
-        audit("compact", "store_error:" + String(storeErr), text.slice(0, 80));
-      }
-    }
-    if (storedCount > 0) {
-      logger.info({ storedCount, sessionKey }, "Stored memories from session compaction");
-      audit("compact", "stored", `Stored ${storedCount} memories`);
-      markBm25Dirty();
-    }
-  } catch (err) {
-    logger.error({ err }, "session:compact:after handler error");
-    memoryErrors.inc({ type: "compaction_handler" });
-  }
-}
-var captureHandler = async (event, ctx) => {
-  logger.debug({ type: event.type, action: event.action, sessionKey: event.sessionKey }, "hawk-capture: event received");
-  const isTypedHookEvent = !event.type && !event.action && "content" in event;
-  if (isTypedHookEvent) {
-    const typedEvent = event;
-    const typedCtx = ctx;
-    const channelId = typedCtx?.channelId || "feishu";
-    const conversationId = typedCtx?.conversationId || typedEvent.from || "";
-    const sessionKey = `agent:main:${channelId}:direct:${conversationId}`;
-    event.sessionKey = sessionKey;
-    event.type = "message";
-    event.action = "received";
-    event.context = {
-      from: typedEvent.from || typedEvent.metadata?.senderId || "",
-      content: typedEvent.content,
-      timestamp: typedEvent.timestamp,
-      metadata: typedEvent.metadata || {},
-      channelId: typedCtx?.channelId,
-      accountId: typedCtx?.accountId,
-      conversationId: typedCtx?.conversationId
-    };
-  }
-  if (event.type === "session:compact:after") {
-    await handleSessionCompaction(event);
-    return;
-  }
-  const isOutbound = event.action === "sent";
-  const isInbound = event.action === "received" || event.type === "message:preprocessed";
-  if (event.type !== "message" && !isInbound) return;
-  if (isOutbound && !event.context?.success) return;
-  try {
-    const config = await getConfig();
-    if (!config.capture.enabled) return;
-    const { maxChunks, importanceThreshold, ttlMs } = config.capture;
-    const sourceType = isInbound ? "user-message" : "hawk-capture";
-    const senderId = event.context?.metadata?.senderId || event.context?.from || "";
-    const content = event.context?.content;
-    if (typeof content !== "string" || content.length < 50) return;
-    const trimmedContent = content.trim();
-    if (/^[\d\s.,]+$/.test(trimmedContent)) return;
-    if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]{1,3}$/u.test(trimmedContent)) return;
-    if (trimmedContent.length < 30) return;
-    const CODE_BLOCK_RE = /```(?:\w+)?\n([\s\S]{20,500}?)```/g;
-    const codeBlockMemories = [];
-    let codeMatch;
-    while ((codeMatch = CODE_BLOCK_RE.exec(content)) !== null) {
-      const code = codeMatch[1].trim();
-      if (code.length < 20) continue;
-      const fenceWithLang = content.slice(Math.max(0, codeMatch.index - 10), codeMatch.index);
-      const langMatch = fenceWithLang.match(/```(\w+)/);
-      const lang = langMatch ? langMatch[1] : "code";
-      codeBlockMemories.push({
-        text: `[${lang.toUpperCase()}] ${code.slice(0, 200)}${code.length > 200 ? "..." : ""}`,
-        category: "fact",
-        importance: 0.8,
-        abstract: `\u4EE3\u7801\u7247\u6BB5 (${lang})\uFF0C${code.split("\n").length} \u884C`,
-        overview: `\u7528\u6237\u5206\u4EAB\u7684 ${lang} \u4EE3\u7801\uFF1A${code.slice(0, 100)}`
-      });
-    }
-    const URL_RE = /(?:https?:\/\/[^\s\n，,。!?）\]]+)/g;
-    const urlMemories = [];
-    let urlMatch;
-    const seenUrls = /* @__PURE__ */ new Set();
-    while ((urlMatch = URL_RE.exec(content)) !== null) {
-      const url = urlMatch[0];
-      if (seenUrls.has(url)) continue;
-      seenUrls.add(url);
-      const ctxStart = Math.max(0, urlMatch.index - 80);
-      const ctx2 = content.slice(ctxStart, urlMatch.index).replace(/\n/g, " ").trim();
-      urlMemories.push({
-        text: `\u5206\u4EAB\u94FE\u63A5: ${url}`,
-        category: "fact",
-        importance: 0.7,
-        abstract: `\u94FE\u63A5\u5206\u4EAB: ${url}`,
-        overview: ctx2 || `\u5206\u4EAB\u7684\u94FE\u63A5: ${url}`
-      });
-    }
-    let enrichedContent = content;
-    const USER_MSG_RE = /^user:\s*(.+)/gim;
-    const userMessages = [];
-    let um;
-    while ((um = USER_MSG_RE.exec(content)) !== null) {
-      userMessages.push({ text: um[1], idx: um.index });
-    }
-    if (userMessages.length >= 2) {
-      const merged = [];
-      for (const msg of userMessages) {
-        const prev = merged[merged.length - 1];
-        if (prev && msg.idx - prev.end < 200) {
-          prev.text += "\n" + msg.text;
-          prev.end = msg.idx + msg.text.length + 5;
-        } else {
-          merged.push({ text: msg.text, start: msg.idx, end: msg.idx + msg.text.length + 5 });
-        }
-      }
-      enrichedContent = merged.map((m) => `user: ${m.text}`).join("\n\n");
-    }
-    const memories = await withRetry(() => callExtractor(enrichedContent, config), 3, 2e3);
-    if (!memories || !memories.length) return;
-    const allMemories = [
-      ...codeBlockMemories,
-      ...urlMemories,
-      ...memories
-    ];
-    const significant = allMemories.filter(
-      (m) => m.importance >= importanceThreshold
-    ).slice(0, maxChunks);
-    if (!significant.length) return;
-    const [dbInstance, embedderInstance] = await Promise.all([
-      getDB(),
-      getEmbedder2()
-    ]);
-    const { batchStore } = dbInstance;
-    let storedCount = 0;
-    for (const m of significant) {
-      let text = m.text.trim();
-      text = normalizeText(text);
-      const { skip, reason } = shouldSkipChunk(text);
-      if (skip) {
-        audit("skip", reason, text);
-        continue;
-      }
-      if (!isValidChunk(text)) {
-        audit("skip", "invalid_chunk", text);
-        continue;
-      }
-      if (isHarmful(text)) {
-        audit("reject", "harmful_content", text);
-        continue;
-      }
-      text = sanitize2(text);
-      text = truncate(text);
-      if (await isDuplicate(text)) {
-        audit("skip", "duplicate", text);
-        continue;
-      }
-      if (await handleSaturation(text)) {
-        audit("skip", "saturated", text);
-        continue;
-      }
-      const effectiveTtl = ttlMs || MEMORY_TTL_MS;
-      const expiresAt = effectiveTtl > 0 ? Date.now() + effectiveTtl : 0;
-      const sessionId = event.context?.sessionEntry?.sessionId ?? void 0;
-      if (m.category === "entity") {
-        const existing = await dbInstance.findSimilarEntity(text);
-        if (existing) {
-          await dbInstance.update(existing.id, {
-            text,
-            importance: Math.max(existing.importance, m.importance)
-          });
-          storedCount++;
-          audit("capture", `entity_merge:${existing.id}`, text);
-          continue;
-        }
-      }
-      const id = generateId();
-      const capture_trigger = m.category === "entity" ? "new_entity" : m.category === "decision" ? "decision_made" : m.category === "preference" ? "preference_signal" : "general_content";
-      try {
-        const [vector] = await withRetry(() => embedderInstance.embed([text]), 3, 1e3);
-        await dbInstance.store({
-          id,
-          text,
-          vector,
-          category: m.category,
-          scope: "global",
-          importance: m.importance,
-          timestamp: Date.now(),
-          expiresAt,
-          metadata: {
-            capture_trigger,
-            capture_confidence: m.importance,
-            l0_abstract: m.abstract,
-            l1_overview: m.overview,
-            name: m.name || "",
-            description: m.description || "",
-            source_type: sourceType,
-            sender_id: senderId
-          }
-        }, sessionId);
-        storedCount++;
-        audit("capture", "success", text);
-      } catch (storeErr) {
-        audit("reject", "store_error:" + String(storeErr), text);
-      }
-    }
-    if (storedCount > 0) {
-      logger.info({ storedCount }, "Stored memories");
-      audit("capture", "stored", `Stored ${storedCount} memories`);
-      markBm25Dirty();
-    }
-  } catch (err) {
-    logger.error({ err }, "hawk-capture handler error");
-    memoryErrors.inc({ type: "capture_handler" });
-  }
-};
-function callExtractor(conversationText, config) {
-  return new Promise((resolve) => {
-    const apiKey = config.llm?.apiKey || config.embedding.apiKey || "";
-    const model = config.llm?.model || "MiniMax-M2.7";
-    const provider = config.llm?.provider || "openclaw";
-    const baseURL = config.llm?.baseURL || "";
-    const proc = spawn(
-      config.python.pythonPath,
-      ["-c", buildExtractorScript(conversationText, apiKey, model, provider, baseURL)]
-    );
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => {
-      logger.warn("Subprocess timeout, killing");
-      proc.kill("SIGTERM");
-    }, 3e4);
-    proc.stdout.on("data", (d) => {
-      stdout += d.toString();
-    });
-    proc.stderr.on("data", (d) => {
-      stderr += d.toString();
-    });
-    proc.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        logger.error({ code, stderr }, "Extractor subprocess error");
-        resolve([]);
-        return;
-      }
-      try {
-        const result = JSON.parse(stdout.trim());
-        if (Array.isArray(result)) {
-          resolve(result);
-        } else {
-          logger.warn({ output: stdout.slice(0, 200) }, "Unexpected extractor output, discarding");
-          resolve([]);
-        }
-      } catch {
-        logger.warn("Extractor JSON parse failed, discarding output");
-        resolve([]);
-      }
-    });
-    proc.on("error", (err) => {
-      clearTimeout(timer);
-      logger.error({ err: err.message }, "Subprocess error");
-      resolve([]);
-    });
-  });
-}
-function buildExtractorScript(conversation, apiKey, model, provider, baseURL) {
-  const safeConv = JSON.stringify(conversation);
-  const safeKey = JSON.stringify(apiKey);
-  const safeModel = JSON.stringify(model);
-  const safeProvider = JSON.stringify(provider);
-  const safeBaseURL = JSON.stringify(baseURL);
-  return `
-import sys, json, os
-sys.path.insert(0, os.path.expanduser('~/.openclaw/workspace/hawk-bridge/python'))
-try:
-    from hawk_memory import extract_memories
-    conv = json.loads(${safeConv})
-    key = json.loads(${safeKey})
-    mdl = json.loads(${safeModel})
-    prov = json.loads(${safeProvider})
-    burl = json.loads(${safeBaseURL})
-    result = extract_memories(conv, key, mdl, prov, burl)
-    print(json.dumps(result))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-`;
-}
-function generateId() {
-  return "hawk_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
-}
-var handler_default2 = captureHandler;
-
-// src/index.ts
-init_embeddings();
-init_metrics();
-async function rateMemory(memoryId, rating, sessionId) {
+async function reinit() {
+  const fs2 = await import("fs/promises");
   const store = await getMemoryStore();
-  await store.rateMemory(memoryId, rating, sessionId);
-}
-var METRICS_PORT = parseInt(process.env.HAWK_METRICS_PORT || "9090", 10);
-async function healthCheck() {
-  try {
-    const config = await getConfig();
-    const embedder2 = new Embedder(config.embedding);
-    await embedder2.embed(["health check probe"]);
-    return { status: "ok" };
-  } catch (err) {
-    return { status: "degraded", error: "embedding unavailable" };
-  }
-}
-function startMetricsServer() {
-  const server = http2.createServer(async (req, res) => {
-    const url = new URL2(req.url || "/", `http://localhost:${METRICS_PORT}`);
-    const pathname = url.pathname;
-    const start = Date.now();
-    try {
-      const recordMetrics = (status) => {
-        httpRequestsTotal.inc({ method: req.method || "GET", path: pathname, status: String(status) });
-        httpRequestDuration.observe({ method: req.method || "GET", path: pathname }, (Date.now() - start) / 1e3);
+  await store.init();
+  const memories = await store.exportAll();
+  const timestamp2 = Date.now();
+  const backupPath = path3.join(os3.homedir(), ".hawk", `migrate-backup-${timestamp2}.json`);
+  await fs2.mkdir(path3.join(os3.homedir(), ".hawk"), { recursive: true });
+  await fs2.writeFile(backupPath, JSON.stringify({ memories, exportedAt: (/* @__PURE__ */ new Date()).toISOString() }, null, 2));
+  console.log(`[hawk migrate] Found ${memories.length} records to migrate`);
+  console.log(`[hawk migrate] Backup written to ${backupPath}`);
+  await store.reset();
+  await store.init();
+  console.log(`[hawk migrate] Table recreated with HAWK_EMBEDDING_DIM=${process.env.HAWK_EMBEDDING_DIM || "384"}`);
+  const BATCH = 50;
+  let migrated = 0;
+  let errors = 0;
+  for (let i = 0; i < memories.length; i += BATCH) {
+    const batch = memories.slice(i, i + BATCH);
+    const texts = batch.map((m) => m.text);
+    const vectors = await store.embed(texts);
+    for (let j = 0; j < batch.length; j++) {
+      const mem = batch[j];
+      const vector = vectors[j];
+      const now = Date.now();
+      const entry = {
+        ...mem,
+        id: randomUUID(),
+        // New ID (old vector IDs can't be reused across schema)
+        vector,
+        createdAt: now,
+        updatedAt: now,
+        lastAccessedAt: now,
+        accessCount: 0,
+        verificationCount: mem.verificationCount ?? 0,
+        reliability: mem.reliability ?? 0.5,
+        correctionHistory: mem.correctionHistory ?? [],
+        coldStartUntil: mem.coldStartUntil ?? null,
+        driftNote: mem.driftNote ?? null,
+        driftDetectedAt: mem.driftDetectedAt ?? null,
+        last_used_at: mem.last_used_at ?? null,
+        usefulness_score: mem.usefulness_score ?? null
       };
-      if (pathname === "/health" || pathname === "/healthz") {
-        const result = await healthCheck();
-        const status = result.status === "ok" ? 200 : 503;
-        res.writeHead(status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({
-          status: result.status,
-          timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-          error: result.error
-        }));
-        recordMetrics(status);
-        return;
+      try {
+        await store.store(entry);
+        migrated++;
+      } catch (e) {
+        console.warn(`[hawk migrate] Failed to migrate record: ${e.message}`);
+        errors++;
       }
-      if (pathname === "/metrics") {
-        res.writeHead(200, { "Content-Type": register3.getMetrics() });
-        res.end(await register3.metrics());
-        recordMetrics(200);
-        return;
+    }
+    process.stdout.write(`[hawk migrate] Progress: ${Math.min(i + BATCH, memories.length)}/${memories.length}\r`);
+  }
+  const verifyCount = Math.min(3, migrated);
+  let verifyFailed = false;
+  for (let k = 0; k < verifyCount; k++) {
+    const all = await store.getAllMemories();
+    if (all.length > 0) {
+      const sample = all[k % all.length];
+      const nonZero = sample.vector && sample.vector.some((v) => v !== 0);
+      if (!nonZero) {
+        console.warn(`[hawk migrate] WARNING: Memory ${sample.id} has zero vector`);
+        verifyFailed = true;
       }
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "not found" }));
-      recordMetrics(404);
-    } catch (err) {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "internal error" }));
     }
-  });
-  server.listen(METRICS_PORT, "127.0.0.1", () => {
-    console.log(`[hawk-bridge] Metrics server listening on http://127.0.0.1:${METRICS_PORT}`);
-    console.log(`[hawk-bridge]   /health  \u2014 health check`);
-    console.log(`[hawk-bridge]   /metrics \u2014 Prometheus scrape endpoint`);
-  });
-  server.on("error", (err) => {
-    if (err.code !== "EADDRINUSE") {
-      console.warn(`[hawk-bridge] Metrics server error: ${err.message}`);
+  }
+  if (verifyFailed) {
+    console.error(`[hawk migrate] VERIFICATION FAILED \u2014 restoring from backup`);
+    try {
+      const raw = await fs2.readFile(backupPath, "utf-8");
+      const backup = safeParseJSON(raw, "backup file", true);
+      if (!backup) return;
+      await store.reset();
+      await store.init();
+      for (const mem of backup.memories) {
+        await store.store(mem);
+      }
+      console.log(`[hawk migrate] Restored ${backup.memories.length} records from backup`);
+    } catch (restoredErr) {
+      console.error(`[hawk migrate] RESTORE FAILED: ${restoredErr.message}`);
     }
+    throw new Error(`Migration verification failed \u2014 restored from backup at ${backupPath}`);
+  }
+  console.log(`[hawk migrate] Verification passed (${verifyCount} samples checked)`);
+  try {
+    await fs2.unlink(backupPath);
+    console.log(`[hawk migrate] Backup file deleted`);
+  } catch {
+    console.warn(`[hawk migrate] Could not delete backup file (non-critical)`);
+  }
+  console.log(`
+[hawk migrate] Done \u2014 ${migrated} migrated, ${errors} errors`);
+  return { migrated, errors };
+}
+async function writeEntry() {
+  const text = getArg("--text");
+  const category = getArg("--category", "fact");
+  const importance = parseFloat(getArg("--importance", "0.5") || "0.5");
+  const source = getArg("--source", "user-import");
+  const metadataArg = getArg("--metadata");
+  if (!text) {
+    console.error('Usage: node dist/cli/write.js --text "..." --category fact --importance 0.9\nOr: node dist/cli/write.js --reinit (to migrate to new embedding dimension)');
+    process.exit(1);
+  }
+  const metadata = safeParseJSON(metadataArg || "{}", "--metadata JSON", false) ?? {};
+  const store = await getMemoryStore();
+  await store.init();
+  const vectors = await store.embed([text]);
+  const vector = vectors[0];
+  const now = Date.now();
+  const entry = {
+    id: randomUUID(),
+    name: text.slice(0, 80),
+    description: text.slice(0, 200),
+    text,
+    vector,
+    category,
+    importance,
+    timestamp: now,
+    expiresAt: 0,
+    accessCount: 0,
+    lastAccessedAt: now,
+    deletedAt: null,
+    reliability: 0.5,
+    verificationCount: 0,
+    lastVerifiedAt: null,
+    locked: false,
+    correctionHistory: [],
+    sessionId: null,
+    createdAt: now,
+    updatedAt: now,
+    scope: "personal",
+    importanceOverride: 1,
+    coldStartUntil: null,
+    metadata,
+    source_type: "text",
+    source,
+    driftNote: null,
+    driftDetectedAt: null,
+    last_used_at: null,
+    usefulness_score: null
+  };
+  await store.store(entry);
+  console.log(JSON.stringify({ id: entry.id, success: true }));
+}
+var reinitMode = hasFlag("--reinit");
+if (reinitMode) {
+  reinit().catch((err) => {
+    console.error("[hawk migrate] Error:", err.message);
+    process.exit(1);
+  });
+} else {
+  writeEntry().catch((err) => {
+    console.error("[hawk write] Error:", err.message);
+    process.exit(1);
   });
 }
-function register3(api) {
-  api.registerHook(["agent:bootstrap"], handler_default, {
-    name: "hawk-recall",
-    description: "Inject relevant hawk memories before agent starts"
-  });
-  api.registerHook(["message:sent"], handler_default2, {
-    name: "hawk-capture-sent",
-    description: "Auto-extract memories from agent outbound messages"
-  });
-  api.on("message_received", handler_default2, {
-    name: "hawk-capture-received",
-    description: "Auto-extract memories from user inbound messages"
-  });
-  api.registerHook(["gateway:startup"], async (event) => {
-    if (global.__hawk_metrics_server_started) return;
-    global.__hawk_metrics_server_started = true;
-    startMetricsServer();
-  }, {
-    name: "hawk-metrics",
-    description: "Health check and Prometheus metrics server"
-  });
-}
-var index_default = { register: register3 };
-export {
-  index_default as default,
-  handler_default2 as "hawk-capture",
-  handler_default as "hawk-recall",
-  rateMemory
-};
 /*! Bundled license information:
 
 js-yaml/dist/js-yaml.mjs:

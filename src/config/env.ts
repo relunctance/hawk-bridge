@@ -25,6 +25,8 @@ const DEPRECATED_VARS: Array<{ var: string; message: string }> = [
   { var: 'HAWK_RERANK', message: 'Use HAWK__RECALL__RERANK_ENABLED instead' },
   { var: 'HAWK_RERANK_MODEL', message: 'Use HAWK__RECALL__RERANK_MODEL instead' },
   { var: 'HAWK_LOG_LEVEL', message: 'Use HAWK__LOGGING__LEVEL instead (or use HAWK__LOGGING__LEVEL directly — handled by logger, not config)' },
+  { var: 'HAWK_PYTHON_HTTP_MODE', message: 'Use HAWK__PYTHON__HTTP_MODE instead' },
+  { var: 'HAWK_API_BASE', message: 'Use HAWK__PYTHON__HTTP_BASE instead' },
 ];
 
 let deprecationWarningsPrinted = false;
@@ -169,6 +171,12 @@ function parseDeprecatedEnvVars(): Partial<HawkConfig> {
   }
   if (process.env.HAWK_CAPTURE_ENABLED !== undefined) {
     config.capture = { ...(config.capture || {}), enabled: process.env.HAWK_CAPTURE_ENABLED !== 'false' };
+  }
+  if (process.env.HAWK_PYTHON_HTTP_MODE !== undefined) {
+    config.python = { ...(config.python || {}), httpMode: process.env.HAWK_PYTHON_HTTP_MODE === 'true' };
+  }
+  if (process.env.HAWK_API_BASE) {
+    config.python = { ...(config.python || {}), httpBase: process.env.HAWK_API_BASE };
   }
 
   return config;
