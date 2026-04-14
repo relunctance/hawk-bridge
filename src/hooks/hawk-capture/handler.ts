@@ -389,10 +389,11 @@ async function handleSaturation(text: string, threshold: number = 0.70): Promise
 const captureHandler = async (event: HookEvent) => {
   logger.debug({ type: event.type, action: event.action, sessionKey: event.sessionKey }, 'hawk-capture: event received');
 
-  // Only handle message:sent events
+  // Handle both message:sent (agent outbound) and message:received (user inbound)
   if (event.type !== 'message') return;
-  if (event.action !== 'sent') return;
-  if (!event.context?.success) return;
+  if (!['sent', 'received'].includes(event.action)) return;
+  // Only require success for outbound 'sent'; 'received' has no success field
+  if (event.action === 'sent' && !event.context?.success) return;
 
   try {
     const config = await getConfig();
@@ -400,10 +401,10 @@ const captureHandler = async (event: HookEvent) => {
 
     const { maxChunks, importanceThreshold, ttlMs } = config.capture;
 
-    const sourceType = 'hawk-capture';
+    const sourceType = event.action === 'received' ? 'hawk-capture:received' : 'hawk-capture:sent';
 
     const content = event.context?.content;
-    if (typeof content !== 'string' || content.length < 50) return;
+    if (typeof content !== 'string') return;
 
     // Pre-filter: skip obviously low-value content
     const trimmedContent = content.trim();
@@ -411,8 +412,6 @@ const captureHandler = async (event: HookEvent) => {
     if (/^[\d\s.,]+$/.test(trimmedContent)) return;
     // Single emoji or reaction
     if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]{1,3}$/u.test(trimmedContent)) return;
-    // Too short to contain meaningful info (before enrichment)
-    if (trimmedContent.length < 30) return;
 
     // ─── Pre-extraction: Code blocks ─────────────────────────────────────
     // Extract fenced code blocks as high-importance fact memories

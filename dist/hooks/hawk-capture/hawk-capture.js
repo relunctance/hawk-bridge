@@ -4708,19 +4708,18 @@ async function handleSaturation(text, threshold = 0.7) {
 var captureHandler = async (event) => {
   logger.debug({ type: event.type, action: event.action, sessionKey: event.sessionKey }, "hawk-capture: event received");
   if (event.type !== "message") return;
-  if (event.action !== "sent") return;
-  if (!event.context?.success) return;
+  if (!["sent", "received"].includes(event.action)) return;
+  if (event.action === "sent" && !event.context?.success) return;
   try {
     const config = await getConfig();
     if (!config.capture.enabled) return;
     const { maxChunks, importanceThreshold, ttlMs } = config.capture;
-    const sourceType = "hawk-capture";
+    const sourceType = event.action === "received" ? "hawk-capture:received" : "hawk-capture:sent";
     const content = event.context?.content;
-    if (typeof content !== "string" || content.length < 50) return;
+    if (typeof content !== "string") return;
     const trimmedContent = content.trim();
     if (/^[\d\s.,]+$/.test(trimmedContent)) return;
     if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]{1,3}$/u.test(trimmedContent)) return;
-    if (trimmedContent.length < 30) return;
     const CODE_BLOCK_RE = /```(?:\w+)?\n([\s\S]{20,500}?)```/g;
     const codeBlockMemories = [];
     let codeMatch;
