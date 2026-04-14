@@ -4410,16 +4410,26 @@ var HTTPAdapter = class {
   }
   async request(method, path3, body) {
     const url = `${this.baseUrl}${path3}`;
-    const res = await fetch(url, {
-      method,
-      headers: { "Content-Type": "application/json" },
-      body: body ? JSON.stringify(body) : void 0
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`HTTP ${method} ${path3} failed ${res.status}: ${text}`);
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY = 0.5;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const res = await fetch(url, {
+          method,
+          headers: { "Content-Type": "application/json" },
+          body: body ? JSON.stringify(body) : void 0
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`HTTP ${method} ${path3} failed ${res.status}: ${text}`);
+        }
+        return res.json();
+      } catch (err) {
+        if (attempt === MAX_RETRIES) throw err;
+        await new Promise((r) => setTimeout(r, RETRY_DELAY * Math.pow(2, attempt - 1)));
+      }
     }
-    return res.json();
+    throw new Error("unreachable");
   }
   // ─── MemoryStore Interface ───────────────────────────────────────────────────
   async init() {
@@ -4456,11 +4466,29 @@ var HTTPAdapter = class {
     return result.length > 0 ? this._retrievedToEntry(result[0]) : null;
   }
   async getAllMemories(agentId) {
-    return [];
+    const all = [];
+    let offset = 0;
+    const pageSize = 100;
+    while (true) {
+      const result = await this.request(
+        "GET",
+        `/memories/recent?limit=${pageSize}&offset=${offset}`
+      );
+      if (!result.length) break;
+      for (const m of result) {
+        all.push(this._memoryItemToEntry(m));
+      }
+      if (result.length < pageSize) break;
+      offset += pageSize;
+    }
+    return all;
   }
   async listRecent(limit) {
-    const result = await this.search("", limit);
-    return result.map((r) => this._retrievedToEntry(r));
+    const result = await this.request(
+      "GET",
+      `/memories/recent?limit=${limit}&offset=0`
+    );
+    return result.map((m) => this._memoryItemToEntry(m));
   }
   async getReviewCandidates(minReliability, batchSize) {
     return [];
@@ -4522,7 +4550,47 @@ var HTTPAdapter = class {
   }
   async incrementImportance(id, _delta) {
   }
+  async decrementImportance(id) {
+    await this.delete(id);
+  }
   // ─── Private helpers ────────────────────────────────────────────────────────
+  _memoryItemToEntry(m) {
+    const reliability = m.reliability ?? 0.7;
+    return {
+      id: m.id,
+      text: m.text,
+      vector: [],
+      // Not returned by /memories/recent
+      category: m.category,
+      importance: m.importance,
+      timestamp: m.created_at,
+      expiresAt: 0,
+      accessCount: m.recall_count ?? 0,
+      lastAccessedAt: m.last_accessed_at ?? m.created_at,
+      deletedAt: null,
+      reliability,
+      verificationCount: 0,
+      lastVerifiedAt: null,
+      locked: false,
+      correctionHistory: [],
+      sessionId: m.session_id,
+      createdAt: m.created_at,
+      updatedAt: m.updated_at,
+      scope: m.scope,
+      importanceOverride: 1,
+      coldStartUntil: null,
+      metadata: m.metadata,
+      source_type: "text",
+      source: m.source,
+      driftNote: null,
+      driftDetectedAt: null,
+      last_used_at: m.last_accessed_at,
+      usefulness_score: m.usefulness_score,
+      recall_count: m.recall_count ?? 0,
+      name: m.name ?? "",
+      description: m.description ?? ""
+    };
+  }
   _apiToRetrieved(m) {
     const reliability = m.reliability ?? 0.7;
     return {
