@@ -1,13 +1,11 @@
 ---
 name: hawk-capture
-description: "Auto-extract and store memories from both inbound user messages and outbound agent responses"
+description: "Auto-extract and store memories after agent sends a message"
 homepage: https://github.com/relunctance/hawk-bridge
 metadata:
-  { "openclaw": { "emoji": "🦅", "events": ["message:sent", "message:received", "session:compact:after"], "requires": {} } }
+  { "openclaw": { "emoji": "🦅", "events": ["message:sent"], "requires": {} } }
 ---
 
 # hawk-capture
 
-Auto-extract and store memories from both:
-- **`message:received`**: inbound user messages → stored with `source_type: user-message`
-- **`message:sent`**: outbound agent responses → stored with `source_type: hawk-capture`
+Triggered on **`message:sent`**: after the agent sends a response, extract meaningful content (facts, code blocks, URLs) from the conversation and store in LanceDB.

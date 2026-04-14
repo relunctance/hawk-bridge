@@ -83,7 +83,7 @@ __export(embeddings_exports, {
 });
 import http from "http";
 import https from "https";
-import { URL } from "url";
+import { URL as URL2 } from "url";
 import { HttpsProxyAgent } from "https-proxy-agent";
 async function fetchWithRetry(url, options = {}, retries = 3) {
   let lastError = null;
@@ -125,7 +125,7 @@ function getProxyAgent() {
   return _proxyAgent;
 }
 async function fetchWithTimeout(url, init, timeoutMs) {
-  const parsedUrl = new URL(url);
+  const parsedUrl = new URL2(url);
   const isHttps = parsedUrl.protocol === "https:";
   const agent = getProxyAgent();
   const body = init?.body || null;
@@ -448,8 +448,8 @@ var init_embeddings = __esm({
 });
 
 // src/index.ts
-import http2 from "http";
-import { URL as URL2 } from "url";
+import http3 from "http";
+import { URL as URL3 } from "url";
 
 // src/hooks/hawk-recall/handler.ts
 import * as path3 from "path";
@@ -3118,7 +3118,9 @@ var DEPRECATED_VARS = [
   { var: "HAWK_MIN_SCORE", message: "Use HAWK__RECALL__MIN_SCORE instead" },
   { var: "HAWK_RERANK", message: "Use HAWK__RECALL__RERANK_ENABLED instead" },
   { var: "HAWK_RERANK_MODEL", message: "Use HAWK__RECALL__RERANK_MODEL instead" },
-  { var: "HAWK_LOG_LEVEL", message: "Use HAWK__LOGGING__LEVEL instead (or use HAWK__LOGGING__LEVEL directly \u2014 handled by logger, not config)" }
+  { var: "HAWK_LOG_LEVEL", message: "Use HAWK__LOGGING__LEVEL instead (or use HAWK__LOGGING__LEVEL directly \u2014 handled by logger, not config)" },
+  { var: "HAWK_PYTHON_HTTP_MODE", message: "Use HAWK__PYTHON__HTTP_MODE instead" },
+  { var: "HAWK_API_BASE", message: "Use HAWK__PYTHON__HTTP_BASE instead" }
 ];
 var deprecationWarningsPrinted = false;
 function printDeprecationWarnings() {
@@ -3222,6 +3224,12 @@ function parseDeprecatedEnvVars() {
   }
   if (process.env.HAWK_CAPTURE_ENABLED !== void 0) {
     config.capture = { ...config.capture || {}, enabled: process.env.HAWK_CAPTURE_ENABLED !== "false" };
+  }
+  if (process.env.HAWK_PYTHON_HTTP_MODE !== void 0) {
+    config.python = { ...config.python || {}, httpMode: process.env.HAWK_PYTHON_HTTP_MODE === "true" };
+  }
+  if (process.env.HAWK_API_BASE) {
+    config.python = { ...config.python || {}, httpBase: process.env.HAWK_API_BASE };
   }
   return config;
 }
@@ -3343,7 +3351,9 @@ var DEFAULT_CONFIG = {
   },
   python: {
     pythonPath: "python3",
-    hawkDir: "~/.openclaw/hawk"
+    hawkDir: "~/.openclaw/hawk",
+    httpMode: false,
+    httpBase: "http://127.0.0.1:18360"
   }
 };
 function resolveEnvVars(raw) {
@@ -5932,6 +5942,8 @@ import { promisify } from "util";
 import * as fs3 from "fs";
 import * as path4 from "path";
 import * as os3 from "os";
+import * as http2 from "http";
+import * as https2 from "https";
 init_embeddings();
 init_logger();
 init_metrics();
@@ -6173,132 +6185,16 @@ async function handleSaturation(text, threshold = 0.7) {
   }
   return false;
 }
-var SESSIONS_JSON_PATH = path4.join(os3.homedir(), ".openclaw", "agents", "main", "sessions", "sessions.json");
-async function handleSessionCompaction(event) {
-  try {
-    const config = await getConfig();
-    if (!config.capture.enabled) return;
-    const sessionKey = event.sessionKey;
-    if (!sessionKey) return;
-    let transcriptPath = null;
-    try {
-      const content = await fs3.promises.readFile(SESSIONS_JSON_PATH, "utf-8");
-      const sessionsMap = JSON.parse(content);
-      const entry = sessionsMap[sessionKey];
-      transcriptPath = entry?.sessionFile ?? null;
-    } catch (lookupErr) {
-      logger.warn({ err: lookupErr, sessionKey }, "Could not look up session transcript path");
-      return;
-    }
-    if (!transcriptPath) {
-      logger.debug({ sessionKey }, "No transcript path found");
-      return;
-    }
-    const scriptPath = path4.join(
-      os3.homedir(),
-      ".openclaw",
-      "workspace",
-      "hawk-bridge",
-      "python",
-      "hawk_session_history.py"
-    );
-    const { stdout } = await exec(
-      `python3 "${scriptPath}" "${transcriptPath}" 30`
-    );
-    let result;
-    try {
-      result = JSON.parse(stdout);
-    } catch {
-      logger.warn({ parseError: stdout.slice(0, 200) }, "Failed to parse session history output");
-      return;
-    }
-    if (result.error || !result.messages?.length) {
-      if (result.error) {
-        logger.warn({ error: result.error }, "Session history script error");
-      }
-      return;
-    }
-    const store = await getDB();
-    const embed = await getEmbedder2();
-    const { importanceThreshold } = config.capture;
-    let storedCount = 0;
-    for (const msg of result.messages) {
-      const text = msg.text;
-      if (!text || text.length < 30) continue;
-      const trimmed = text.trim();
-      if (/^[\d\s.,]+$/.test(trimmed)) continue;
-      if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]{1,3}$/u.test(trimmed)) continue;
-      if (trimmed.length < 30) continue;
-      const sourceType = msg.role === "user" ? "user-message" : "hawk-capture";
-      try {
-        const [vector] = await embed.embed([text]);
-        await store.store({
-          id: generateId(),
-          text,
-          vector,
-          category: "conversation",
-          scope: "global",
-          importance: 0.5,
-          metadata: {
-            capture_trigger: "session_compaction",
-            source_type: sourceType,
-            sender_id: "session:" + sessionKey,
-            session_msg_id: msg.id,
-            session_timestamp: msg.timestamp
-          }
-        }, sessionKey);
-        storedCount++;
-        audit("compact", "success", text.slice(0, 80));
-      } catch (storeErr) {
-        audit("compact", "store_error:" + String(storeErr), text.slice(0, 80));
-      }
-    }
-    if (storedCount > 0) {
-      logger.info({ storedCount, sessionKey }, "Stored memories from session compaction");
-      audit("compact", "stored", `Stored ${storedCount} memories`);
-      markBm25Dirty();
-    }
-  } catch (err) {
-    logger.error({ err }, "session:compact:after handler error");
-    memoryErrors.inc({ type: "compaction_handler" });
-  }
-}
-var captureHandler = async (event, ctx) => {
+var captureHandler = async (event) => {
   logger.debug({ type: event.type, action: event.action, sessionKey: event.sessionKey }, "hawk-capture: event received");
-  const isTypedHookEvent = !event.type && !event.action && "content" in event;
-  if (isTypedHookEvent) {
-    const typedEvent = event;
-    const typedCtx = ctx;
-    const channelId = typedCtx?.channelId || "feishu";
-    const conversationId = typedCtx?.conversationId || typedEvent.from || "";
-    const sessionKey = `agent:main:${channelId}:direct:${conversationId}`;
-    event.sessionKey = sessionKey;
-    event.type = "message";
-    event.action = "received";
-    event.context = {
-      from: typedEvent.from || typedEvent.metadata?.senderId || "",
-      content: typedEvent.content,
-      timestamp: typedEvent.timestamp,
-      metadata: typedEvent.metadata || {},
-      channelId: typedCtx?.channelId,
-      accountId: typedCtx?.accountId,
-      conversationId: typedCtx?.conversationId
-    };
-  }
-  if (event.type === "session:compact:after") {
-    await handleSessionCompaction(event);
-    return;
-  }
-  const isOutbound = event.action === "sent";
-  const isInbound = event.action === "received" || event.type === "message:preprocessed";
-  if (event.type !== "message" && !isInbound) return;
-  if (isOutbound && !event.context?.success) return;
+  if (event.type !== "message") return;
+  if (event.action !== "sent") return;
+  if (!event.context?.success) return;
   try {
     const config = await getConfig();
     if (!config.capture.enabled) return;
     const { maxChunks, importanceThreshold, ttlMs } = config.capture;
-    const sourceType = isInbound ? "user-message" : "hawk-capture";
-    const senderId = event.context?.metadata?.senderId || event.context?.from || "";
+    const sourceType = "hawk-capture";
     const content = event.context?.content;
     if (typeof content !== "string" || content.length < 50) return;
     const trimmedContent = content.trim();
@@ -6331,13 +6227,13 @@ var captureHandler = async (event, ctx) => {
       if (seenUrls.has(url)) continue;
       seenUrls.add(url);
       const ctxStart = Math.max(0, urlMatch.index - 80);
-      const ctx2 = content.slice(ctxStart, urlMatch.index).replace(/\n/g, " ").trim();
+      const ctx = content.slice(ctxStart, urlMatch.index).replace(/\n/g, " ").trim();
       urlMemories.push({
         text: `\u5206\u4EAB\u94FE\u63A5: ${url}`,
         category: "fact",
         importance: 0.7,
         abstract: `\u94FE\u63A5\u5206\u4EAB: ${url}`,
-        overview: ctx2 || `\u5206\u4EAB\u7684\u94FE\u63A5: ${url}`
+        overview: ctx || `\u5206\u4EAB\u7684\u94FE\u63A5: ${url}`
       });
     }
     let enrichedContent = content;
@@ -6464,6 +6360,72 @@ function callExtractor(conversationText, config) {
     const model = config.llm?.model || "MiniMax-M2.7";
     const provider = config.llm?.provider || "openclaw";
     const baseURL = config.llm?.baseURL || "";
+    const httpMode = config.python?.httpMode ?? false;
+    const httpBase = config.python?.httpBase || process.env.HAWK_API_BASE || "http://127.0.0.1:18789";
+    if (httpMode) {
+      const postData = JSON.stringify({
+        text: conversationText,
+        provider,
+        model,
+        api_key: apiKey,
+        base_url: baseURL
+      });
+      const url = new URL(httpBase + "/extract");
+      const isHttps = url.protocol === "https:";
+      const client = isHttps ? https2 : http2;
+      const req = client.request(
+        url.toString(),
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(postData)
+          },
+          timeout: 3e4
+        },
+        (res) => {
+          let body = "";
+          res.on("data", (chunk) => {
+            body += chunk;
+          });
+          res.on("end", () => {
+            if (res.statusCode !== 200) {
+              logger.warn({ status: res.statusCode }, "HTTP extractor error, falling back to subprocess");
+              resolve(callExtractorSubprocess(conversationText, config));
+              return;
+            }
+            try {
+              const data = JSON.parse(body);
+              resolve(Array.isArray(data.memories) ? data.memories : []);
+            } catch {
+              logger.warn("HTTP extractor JSON parse failed, falling back to subprocess");
+              resolve(callExtractorSubprocess(conversationText, config));
+            }
+          });
+        }
+      );
+      req.on("error", (err) => {
+        logger.warn({ err: err.message }, "HTTP extractor connection error, falling back to subprocess");
+        resolve(callExtractorSubprocess(conversationText, config));
+      });
+      req.on("timeout", () => {
+        req.destroy();
+        logger.warn("HTTP extractor timeout, falling back to subprocess");
+        resolve(callExtractorSubprocess(conversationText, config));
+      });
+      req.write(postData);
+      req.end();
+      return;
+    }
+    resolve(callExtractorSubprocess(conversationText, config));
+  });
+}
+function callExtractorSubprocess(conversationText, config) {
+  return new Promise((resolve) => {
+    const apiKey = config.llm?.apiKey || config.embedding.apiKey || "";
+    const model = config.llm?.model || "MiniMax-M2.7";
+    const provider = config.llm?.provider || "openclaw";
+    const baseURL = config.llm?.baseURL || "";
     const proc = spawn(
       config.python.pythonPath,
       ["-c", buildExtractorScript(conversationText, apiKey, model, provider, baseURL)]
@@ -6553,8 +6515,8 @@ async function healthCheck() {
   }
 }
 function startMetricsServer() {
-  const server = http2.createServer(async (req, res) => {
-    const url = new URL2(req.url || "/", `http://localhost:${METRICS_PORT}`);
+  const server = http3.createServer(async (req, res) => {
+    const url = new URL3(req.url || "/", `http://localhost:${METRICS_PORT}`);
     const pathname = url.pathname;
     const start = Date.now();
     try {
