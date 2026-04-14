@@ -157,7 +157,7 @@ const DEFAULT_CONFIG: HawkConfig = {
     pythonPath: 'python3',
     hawkDir: '~/.openclaw/hawk',
     httpMode: false,
-    httpBase: 'http://127.0.0.1:18789',
+    httpBase: 'http://127.0.0.1:18360',
   },
 };
 
