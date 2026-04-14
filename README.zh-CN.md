@@ -130,7 +130,7 @@ Session（持久化磁盘）
 
 | # | 功能 | 说明 |
 |---|------|------|
-| 1 | **自动捕获钩子** | `message:sent` → hawk 自动提取 6 类记忆 |
+| 1 | **自动捕获钩子** | `message:sent` + `message:received` → hawk 自动提取 6 类记忆 |
 | 2 | **自动召回钩子** | `agent:bootstrap` → 新会话前注入相关记忆 |
 | 3 | **混合检索** | BM25 + 向量搜索 + RRF 融合 — 无需 API key 也能用 |
 | 4 | **零配置降级** | 开箱即用，Jina 免费额度默认启用 |
@@ -178,7 +178,7 @@ Session（持久化磁盘）
 │                     OpenClaw Gateway                              │
 ├───────────────────┬───────────────────────────────────────────────┤
 │                   │                                                │
-│  agent:bootstrap │  message:sent                                │
+│  agent:bootstrap │  message:sent, message:received             │
 │         ↓         │         ↓                                    │
 │  ┌────────────────┴───────────┐                                 │
 │  │       🦅 hawk-recall       │  ← 在首次回复前              │
@@ -730,7 +730,7 @@ hawk-bridge/
 │       ├── hawk-recall/      # agent:bootstrap Hook
 │       │   ├── handler.ts
 │       │   └── HOOK.md
-│       └── hawk-capture/     # message:sent Hook
+│       └── hawk-capture/     # message:sent + message:received Hook
 │           ├── handler.ts
 │           └── HOOK.md
 └── python/                   # context-hawk（由 install.sh 克隆）
@@ -746,7 +746,7 @@ hawk-bridge/
 | **向量数据库** | LanceDB（本地、无服务器） |
 | **检索方式** | BM25 + ANN 向量搜索 + RRF 融合 |
 | **向量生成** | Ollama / sentence-transformers / Jina AI / OpenAI / Minimax |
-| **Hook 事件** | `agent:bootstrap`（召回）、`message:sent`（捕获） |
+| **Hook 事件** | `agent:bootstrap`（召回）、`message:sent` + `message:received`（捕获） |
 | **依赖** | 零硬依赖 — 全部可选，自动降级 |
 | **持久化** | 本地文件系统，无需外部数据库 |
 | **许可证** | MIT |
