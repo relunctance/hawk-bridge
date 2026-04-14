@@ -6569,7 +6569,7 @@ function register3(api) {
     name: "hawk-capture-sent",
     description: "Auto-extract memories from agent outbound messages"
   });
-  api.on("message_received", handler_default2, {
+  api.registerHook(["message:received"], handler_default2, {
     name: "hawk-capture-received",
     description: "Auto-extract memories from user inbound messages"
   });

@@ -128,9 +128,8 @@ function register(api: any) {
     description: 'Auto-extract memories from agent outbound messages',
   });
 
-  // Typed plugin hook: message_received (inbound user messages)
-  // This is the hook that dispatchReplyFromConfig actually calls
-  api.on('message_received', captureHandler, {
+  // Hook for inbound user messages (message:received)
+  api.registerHook(['message:received'], captureHandler, {
     name: 'hawk-capture-received',
     description: 'Auto-extract memories from user inbound messages',
   });
