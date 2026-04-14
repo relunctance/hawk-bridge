@@ -1,7 +1,7 @@
 /**
  * HTTP Adapter — implements MemoryStore interface by forwarding to hawk-memory-api.
  * All LanceDB read/write goes through the HTTP API on port 18360.
- * 
+ *
  * 使用方式: HAWK_DB_PROVIDER=http
  */
 
@@ -10,6 +10,26 @@ import type { MemoryStore } from '../interface.js';
 import { getConfig } from '../../config.js';
 
 const DEFAULT_BASE = 'http://127.0.0.1:18360';
+
+/** Shape returned by /memories/recent */
+interface MemoryItem {
+  id: string;
+  text: string;
+  category: string;
+  importance: number;
+  reliability: number;
+  created_at: number;
+  updated_at: number;
+  last_accessed_at?: number;
+  scope: string;
+  name: string;
+  description: string;
+  session_id: string | null;
+  source: string;
+  metadata: Record<string, unknown>;
+  recall_count?: number;
+  usefulness_score?: number | null;
+}
 
 export class HTTPAdapter implements MemoryStore {
   private baseUrl: string;
@@ -82,15 +102,29 @@ export class HTTPAdapter implements MemoryStore {
   }
 
   async getAllMemories(agentId?: string | null): Promise<MemoryEntry[]> {
-    // hawk-memory-api doesn't expose a direct get-all endpoint.
-    // Use /stats to get counts, then paginated /recall with empty query.
-    // For now, return empty array — this is a limitation of the HTTP API.
-    return [];
+    // Use the new /memories/recent endpoint with pagination to get all memories
+    const all: MemoryEntry[] = [];
+    let offset = 0;
+    const pageSize = 100;
+    while (true) {
+      const result = await this.request<MemoryItem[]>(
+        'GET', `/memories/recent?limit=${pageSize}&offset=${offset}`
+      );
+      if (!result.length) break;
+      for (const m of result) {
+        all.push(this._memoryItemToEntry(m));
+      }
+      if (result.length < pageSize) break;
+      offset += pageSize;
+    }
+    return all;
   }
 
   async listRecent(limit: number): Promise<MemoryEntry[]> {
-    const result = await this.search('', limit);
-    return result.map(r => this._retrievedToEntry(r));
+    const result = await this.request<MemoryItem[]>(
+      'GET', `/memories/recent?limit=${limit}&offset=0`
+    );
+    return result.map(m => this._memoryItemToEntry(m));
   }
 
   async getReviewCandidates(minReliability: number, batchSize: number): Promise<MemoryEntry[]> {
@@ -199,7 +233,48 @@ export class HTTPAdapter implements MemoryStore {
     // Not supported by hawk-memory-api
   }
 
+  async decrementImportance(id: string): Promise<void> {
+    await this.delete(id);
+  }
+
   // ─── Private helpers ────────────────────────────────────────────────────────
+
+  private _memoryItemToEntry(m: MemoryItem): MemoryEntry {
+    const reliability = m.reliability ?? 0.7;
+    return {
+      id: m.id,
+      text: m.text,
+      vector: [], // Not returned by /memories/recent
+      category: m.category as MemoryEntry['category'],
+      importance: m.importance,
+      timestamp: m.created_at,
+      expiresAt: 0,
+      accessCount: m.recall_count ?? 0,
+      lastAccessedAt: m.last_accessed_at ?? m.created_at,
+      deletedAt: null,
+      reliability,
+      verificationCount: 0,
+      lastVerifiedAt: null,
+      locked: false,
+      correctionHistory: [],
+      sessionId: m.session_id,
+      createdAt: m.created_at,
+      updatedAt: m.updated_at,
+      scope: m.scope,
+      importanceOverride: 1.0,
+      coldStartUntil: null,
+      metadata: m.metadata,
+      source_type: 'text',
+      source: m.source,
+      driftNote: null,
+      driftDetectedAt: null,
+      last_used_at: m.last_accessed_at,
+      usefulness_score: m.usefulness_score,
+      recall_count: m.recall_count ?? 0,
+      name: m.name ?? '',
+      description: m.description ?? '',
+    };
+  }
 
   private _apiToRetrieved(m: {
     id: string;
