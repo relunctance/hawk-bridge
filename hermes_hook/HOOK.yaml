@@ -1,0 +1,5 @@
+name: hawk-bridge-hermes
+description: "Hermes Hook Bridge for hawk-bridge memory system. Provides auto-capture on agent:end and auto-recall on agent:start."
+events:
+  - agent:start
+  - agent:end
