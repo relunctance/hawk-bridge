@@ -27,6 +27,8 @@ HAWK_API_BASE = os.environ.get("HAWK_API_BASE", "http://127.0.0.1:18360")
 HAWK_API_TIMEOUT = float(os.environ.get("HAWK_API_TIMEOUT", "10.0"))
 HAWK_INJECTION_LIMIT = int(os.environ.get("HAWK_INJECTION_LIMIT", "5"))
 HAWK_INJECTION_MAX_CHARS = int(os.environ.get("HAWK_INJECTION_MAX_CHARS", "2000"))
+# Recall mode: global（全共享，默认）| platform_only（仅同平台）| federated（指定平台）
+HAWK_RECALL_MODE = os.environ.get("HAWK_RECALL_MODE", "global")
 
 
 # ─── HTTP Client ───────────────────────────────────────────────────────────────
@@ -122,6 +124,7 @@ async def handle_agent_start(context: dict) -> None:
                 "user_id": user_id,
                 "top_k": HAWK_INJECTION_LIMIT,
                 "min_score": 0.3,
+                "mode": HAWK_RECALL_MODE,
             },
         )
 
