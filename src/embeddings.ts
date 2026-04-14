@@ -307,21 +307,28 @@ export class Embedder {
   }
 
   // ---- OpenAI ----
+  // NOTE: Use raw fetch instead of OpenAI SDK to avoid dimension truncation issues
+  // with OpenAI-compatible servers (e.g. Xinference returns 1024-dim but SDK truncates to 256)
   private async embedOpenAI(texts: string[]): Promise<number[][]> {
     const start = Date.now();
     try {
-      const { OpenAI } = await import('openai');
-      const client = new OpenAI({
-        apiKey: this.config.apiKey || process.env.OPENAI_API_KEY,
-        baseURL: this.config.baseURL || undefined,
-        timeout: FETCH_TIMEOUT_MS,
-        // @ts-ignore — Node-specific http agent for proxy
-        httpAgent: getProxyAgent(),
-        httpsAgent: getProxyAgent(),
-      });
+      const baseURL = this.config.baseURL;
+      const apiKey = this.config.apiKey || process.env.OPENAI_API_KEY || '';
       const model = this.config.model || 'text-embedding-3-small';
-      const resp = await client.embeddings.create({ model, input: texts });
-      const result = resp.data.map((item: any) => item.embedding);
+      const resp = await fetchWithRetry(`${baseURL}/embeddings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify({ model, input: texts }),
+      });
+      if (!resp.ok) {
+        const err = await resp.text();
+        throw new Error(`OpenAI embedding error: ${resp.status} ${err}`);
+      }
+      const data = await resp.json() as any;
+      const result = data.data.map((item: any) => item.embedding);
       embeddingLatency.observe({ provider: 'openai' }, (Date.now() - start) / 1000);
       return result;
     } catch (err) {
