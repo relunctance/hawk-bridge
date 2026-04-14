@@ -130,7 +130,7 @@ Session (persistent, on disk)
 
 | # | Feature | Description |
 |---|---------|-------------|
-| 1 | **Auto-Capture Hook** | `message:sent` → hawk extracts 6 categories of memories automatically |
+| 1 | **Auto-Capture Hook** | `message:sent` + `message:received` → hawk extracts 6 categories of memories automatically |
 | 2 | **Auto-Recall Hook** | `agent:bootstrap` → hawk injects relevant memories before first response |
 | 3 | **Hybrid Retrieval** | BM25 + vector search + RRF fusion — no API key required for baseline |
 | 4 | **Zero-Config Fallback** | Works out-of-the-box, no API keys needed (Jina free tier default) |
@@ -177,7 +177,7 @@ Session (persistent, on disk)
 │                     OpenClaw Gateway                             │
 ├───────────────────┬───────────────────────────────────────────────┤
 │                   │                                               │
-│  agent:bootstrap │  message:sent                               │
+│  agent:bootstrap │  message:sent, message:received             │
 │         ↓         │         ↓                                   │
 │  ┌────────────────┴───────────┐                                │
 │  │       🦅 hawk-recall       │  ← Injects relevant memories  │
@@ -781,7 +781,7 @@ hawk-bridge/
 │       ├── hawk-recall/       # agent:bootstrap hook
 │       │   ├── handler.ts
 │       │   └── HOOK.md
-│       └── hawk-capture/      # message:sent hook
+│       └── hawk-capture/      # message:sent + message:received hook
 │           ├── handler.ts
 │           └── HOOK.md
 └── python/                    # context-hawk (installed by install.sh)
@@ -796,7 +796,7 @@ hawk-bridge/
 | **Runtime** | Node.js 18+ (ESM), Python 3.12+ |
 | **Vector DB** | LanceDB (local, serverless) |
 | **Retrieval** | BM25 + ANN vector search + RRF fusion |
-| **Hook Events** | `agent:bootstrap` (recall), `message:sent` (capture) |
+| **Hook Events** | `agent:bootstrap` (recall), `message:sent` + `message:received` (capture) |
 | **Dependencies** | Zero hard dependencies — all optional with auto-fallback |
 | **Persistence** | Local filesystem, no external DB required |
 | **License** | MIT |
