@@ -1,5 +1,6 @@
 import type { MemoryStore } from './interface.js';
 import { LanceDBAdapter } from './adapters/lancedb.js';
+import { HTTPAdapter } from './adapters/http.js';
 
 let storeInstance: MemoryStore | null = null;
 
@@ -7,6 +8,8 @@ export async function createMemoryStore(provider: string = 'lancedb'): Promise<M
   switch (provider) {
     case 'lancedb':
       return new LanceDBAdapter();
+    case 'http':
+      return new HTTPAdapter();
     case 'qdrant':
       // TODO: implement qdrant adapter
       throw new Error('Qdrant adapter not implemented yet');
