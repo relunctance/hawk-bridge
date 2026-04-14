@@ -332,21 +332,28 @@ var init_embeddings = __esm({
         }
       }
       // ---- OpenAI ----
+      // NOTE: Use raw fetch instead of OpenAI SDK to avoid dimension truncation issues
+      // with OpenAI-compatible servers (e.g. Xinference returns 1024-dim but SDK truncates to 256)
       async embedOpenAI(texts) {
         const start = Date.now();
         try {
-          const { OpenAI } = await import("openai");
-          const client = new OpenAI({
-            apiKey: this.config.apiKey || process.env.OPENAI_API_KEY,
-            baseURL: this.config.baseURL || void 0,
-            timeout: FETCH_TIMEOUT_MS,
-            // @ts-ignore — Node-specific http agent for proxy
-            httpAgent: getProxyAgent(),
-            httpsAgent: getProxyAgent()
-          });
+          const baseURL = this.config.baseURL;
+          const apiKey = this.config.apiKey || process.env.OPENAI_API_KEY || "";
           const model = this.config.model || "text-embedding-3-small";
-          const resp = await client.embeddings.create({ model, input: texts });
-          const result = resp.data.map((item) => item.embedding);
+          const resp = await fetchWithRetry(`${baseURL}/embeddings`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...apiKey ? { "Authorization": `Bearer ${apiKey}` } : {}
+            },
+            body: JSON.stringify({ model, input: texts })
+          });
+          if (!resp.ok) {
+            const err = await resp.text();
+            throw new Error(`OpenAI embedding error: ${resp.status} ${err}`);
+          }
+          const data = await resp.json();
+          const result = data.data.map((item) => item.embedding);
           embeddingLatency.observe({ provider: "openai" }, (Date.now() - start) / 1e3);
           return result;
         } catch (err) {
@@ -4458,12 +4465,206 @@ var LanceDBAdapter = class {
   }
 };
 
+// src/store/adapters/http.ts
+var DEFAULT_BASE = "http://127.0.0.1:18360";
+var HTTPAdapter = class {
+  baseUrl;
+  constructor(baseUrl) {
+    const cfg = getConfig();
+    this.baseUrl = baseUrl ?? cfg.python?.httpBase ?? DEFAULT_BASE;
+  }
+  async request(method, path5, body) {
+    const url = `${this.baseUrl}${path5}`;
+    const res = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : void 0
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`HTTP ${method} ${path5} failed ${res.status}: ${text}`);
+    }
+    return res.json();
+  }
+  // ─── MemoryStore Interface ───────────────────────────────────────────────────
+  async init() {
+    const health = await this.request("GET", "/health");
+    if (health.status !== "ok") {
+      throw new Error(`hawk-memory-api health check failed: ${health.status}`);
+    }
+  }
+  async close() {
+  }
+  async store(entry, sessionId) {
+    await this.request("POST", "/capture", {
+      session_id: sessionId ?? entry.sessionId ?? "",
+      user_id: entry.metadata?.user_id ?? "",
+      message: entry.text,
+      response: "",
+      // No agent response for programmatic storage
+      platform: entry.source || "hawk-bridge"
+    });
+  }
+  async update(id, fields) {
+    try {
+      await this.delete(id);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  async delete(id) {
+    await this.request("POST", `/forget?memory_id=${encodeURIComponent(id)}`);
+  }
+  async getById(id) {
+    const result = await this.search(id, 1);
+    return result.length > 0 ? this._retrievedToEntry(result[0]) : null;
+  }
+  async getAllMemories(agentId) {
+    return [];
+  }
+  async listRecent(limit) {
+    const result = await this.search("", limit);
+    return result.map((r) => this._retrievedToEntry(r));
+  }
+  async getReviewCandidates(minReliability, batchSize) {
+    return [];
+  }
+  async embed(texts) {
+    throw new Error("HTTP adapter does not support raw embedding");
+  }
+  async vectorSearch(query, topK) {
+    const result = await this.request("POST", "/recall", {
+      query,
+      top_k: topK,
+      offset: 0,
+      min_score: 0
+    });
+    return result.memories.map((m) => this._apiToRetrieved(m));
+  }
+  async search(query, topK, _scope) {
+    return this.vectorSearch(query, topK);
+  }
+  async findSimilarEntity(text, _threshold) {
+    const result = await this.request(
+      "POST",
+      "/extract",
+      { text }
+    );
+    if (result.memories.length === 0) return null;
+    const searchResults = await this.search(text, 1);
+    return searchResults.length > 0 ? this._retrievedToEntry(searchResults[0]) : null;
+  }
+  async verify(id, correct, _correctText) {
+    if (!correct) {
+      await this.delete(id);
+    }
+  }
+  async lock(id) {
+  }
+  async unlock(id) {
+  }
+  async flagUnhelpful(id, _penalty) {
+    await this.delete(id);
+  }
+  async incrementAccess(id) {
+  }
+  async reset() {
+  }
+  async decay() {
+    return { updated: 0, deleted: 0 };
+  }
+  async purgeForgotten(_graceDays) {
+    return 0;
+  }
+  async rateMemory(id, rating, _sessionId) {
+    if (rating === "harmful") {
+      await this.delete(id);
+    }
+  }
+  async demoteMemory(id) {
+    await this.delete(id);
+  }
+  async incrementImportance(id, _delta) {
+  }
+  // ─── Private helpers ────────────────────────────────────────────────────────
+  _apiToRetrieved(m) {
+    const reliability = m.reliability ?? 0.7;
+    return {
+      id: m.id,
+      text: m.text,
+      vector: [],
+      // Not returned by /recall
+      score: m.score ?? 0,
+      category: m.category,
+      metadata: m.metadata ?? {},
+      source_type: "text",
+      source: m.source,
+      reliability,
+      reliabilityLabel: reliability >= 0.7 ? "\u2705" : reliability >= 0.4 ? "\u26A0\uFE0F" : "\u274C",
+      locked: false,
+      correctionCount: 0,
+      baseReliability: reliability,
+      sessionId: m.session_id ?? null,
+      createdAt: m.created_at,
+      updatedAt: m.updated_at,
+      scope: m.scope ?? "personal",
+      importanceOverride: 1,
+      coldStartUntil: null,
+      name: m.name ?? "",
+      description: m.description ?? "",
+      driftNote: null,
+      driftDetectedAt: null,
+      last_used_at: null,
+      usefulness_score: null,
+      recall_count: 0
+    };
+  }
+  _retrievedToEntry(r) {
+    return {
+      id: r.id,
+      text: r.text,
+      vector: r.vector,
+      category: r.category,
+      importance: r.score,
+      timestamp: r.createdAt,
+      expiresAt: 0,
+      accessCount: r.recall_count,
+      lastAccessedAt: r.last_used_at ?? Date.now(),
+      deletedAt: null,
+      reliability: r.reliability,
+      verificationCount: 0,
+      lastVerifiedAt: null,
+      locked: r.locked,
+      correctionHistory: [],
+      sessionId: r.sessionId,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+      scope: r.scope,
+      importanceOverride: r.importanceOverride,
+      coldStartUntil: r.coldStartUntil,
+      metadata: r.metadata ?? {},
+      source_type: r.source_type,
+      source: r.source,
+      driftNote: r.driftNote,
+      driftDetectedAt: r.driftDetectedAt,
+      last_used_at: r.last_used_at,
+      usefulness_score: r.usefulness_score,
+      recall_count: r.recall_count,
+      name: r.name,
+      description: r.description
+    };
+  }
+};
+
 // src/store/factory.ts
 var storeInstance = null;
 async function createMemoryStore(provider = "lancedb") {
   switch (provider) {
     case "lancedb":
       return new LanceDBAdapter();
+    case "http":
+      return new HTTPAdapter();
     case "qdrant":
       throw new Error("Qdrant adapter not implemented yet");
     default:

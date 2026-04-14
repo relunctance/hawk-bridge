@@ -71,8 +71,8 @@ export class HTTPAdapter implements MemoryStore {
   }
 
   async delete(id: string): Promise<void> {
-    // hawk-memory-api /forget expects { ids: string[] }
-    await this.request('POST', '/forget', { ids: [id] });
+    // hawk-memory-api /forget takes memory_id as query parameter, not body
+    await this.request('POST', `/forget?memory_id=${encodeURIComponent(id)}`);
   }
 
   async getById(id: string): Promise<MemoryEntry | null> {
