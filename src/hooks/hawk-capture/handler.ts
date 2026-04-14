@@ -7,6 +7,8 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as http from 'http';
+import * as https from 'https';
 import type { HookEvent } from '../../../../../.npm-global/lib/node_modules/openclaw/dist/v10/types/hooks.js';
 import type { PluginHookMessageContext } from '../../../../../.npm-global/lib/node_modules/openclaw/dist/plugin-sdk/src/plugins/hooks.d.ts';
 type HookContext = PluginHookMessageContext;
@@ -777,6 +779,80 @@ const captureHandler = async (event: HookEvent, ctx?: HookContext) => {
 // ─── Python Extractor ─────────────────────────────────────────────────────────
 
 function callExtractor(conversationText: string, config: any): Promise<any[]> {
+  return new Promise((resolve) => {
+    const apiKey = config.llm?.apiKey || config.embedding.apiKey || '';
+    const model = config.llm?.model || 'MiniMax-M2.7';
+    const provider = config.llm?.provider || 'openclaw';
+    const baseURL = config.llm?.baseURL || '';
+    const httpMode = config.python?.httpMode ?? false;
+    const httpBase = config.python?.httpBase || process.env.HAWK_API_BASE || 'http://127.0.0.1:18789';
+
+    // ── HTTP mode: call hawk-memory-api /extract endpoint ──────────────────────
+    if (httpMode) {
+      const postData = JSON.stringify({
+        text: conversationText,
+        provider,
+        model,
+        api_key: apiKey,
+        base_url: baseURL,
+      });
+
+      const url = new URL(httpBase + '/extract');
+      const isHttps = url.protocol === 'https:';
+      const client = isHttps ? https : http;
+
+      const req = client.request(
+        url.toString(),
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(postData),
+          },
+          timeout: 30000,
+        },
+        (res) => {
+          let body = '';
+          res.on('data', (chunk) => { body += chunk; });
+          res.on('end', () => {
+            if (res.statusCode !== 200) {
+              logger.warn({ status: res.statusCode }, 'HTTP extractor error, falling back to subprocess');
+              resolve(callExtractorSubprocess(conversationText, config));
+              return;
+            }
+            try {
+              const data = JSON.parse(body);
+              resolve(Array.isArray(data.memories) ? data.memories : []);
+            } catch {
+              logger.warn('HTTP extractor JSON parse failed, falling back to subprocess');
+              resolve(callExtractorSubprocess(conversationText, config));
+            }
+          });
+        },
+      );
+
+      req.on('error', (err) => {
+        logger.warn({ err: err.message }, 'HTTP extractor connection error, falling back to subprocess');
+        resolve(callExtractorSubprocess(conversationText, config));
+      });
+
+      req.on('timeout', () => {
+        req.destroy();
+        logger.warn('HTTP extractor timeout, falling back to subprocess');
+        resolve(callExtractorSubprocess(conversationText, config));
+      });
+
+      req.write(postData);
+      req.end();
+      return;
+    }
+
+    // ── Default: subprocess mode ───────────────────────────────────────────────
+    resolve(callExtractorSubprocess(conversationText, config));
+  });
+}
+
+function callExtractorSubprocess(conversationText: string, config: any): Promise<any[]> {
   return new Promise((resolve) => {
     const apiKey = config.llm?.apiKey || config.embedding.apiKey || '';
     const model = config.llm?.model || 'MiniMax-M2.7';

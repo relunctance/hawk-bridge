@@ -96,6 +96,10 @@ export interface HawkConfig {
   python: {
     pythonPath: string;
     hawkDir: string;
+    /** Use hawk-memory-api HTTP server instead of spawning subprocess for extraction */
+    httpMode?: boolean;
+    /** Base URL of hawk-memory-api server (default: http://127.0.0.1:18789) */
+    httpBase?: string;
   };
   /** 多模态记忆配置 */
   multimodal?: {
