@@ -86,24 +86,29 @@ def format_recall_results(memories: list, emoji: str = "🦅") -> str:
 
 # ─── agent:start handler ────────────────────────────────────────────────────────
 
-async def handle_agent_start(context: dict) -> str | None:
+async def handle_agent_start(context: dict) -> None:
     """
     Called on agent:start.
-    Action: recall memories from hawk-memory-api and return formatted string
-           to inject into the agent context.
+    Action: recall memories from hawk-memory-api and inject into context dict.
+
+    The gateway reads context["_hawk_recall"] after all hooks run and appends
+    the value to the context_prompt fed to the agent.
 
     context keys (from Hermes HookRegistry):
         - platform: str        (e.g. "feishu")
         - user_id: str
         - session_id: str
         - message: str         (user's message, first 500 chars)
+
+    Modifies:
+        - context["_hawk_recall"]: str | None  — formatted recall string
     """
     session_id = context.get("session_id", "")
     user_id = context.get("user_id", "")
     message = context.get("message", "")
 
     if not session_id and not user_id:
-        return None
+        return
 
     try:
         client = await get_http_client()
@@ -122,13 +127,13 @@ async def handle_agent_start(context: dict) -> str | None:
 
         if resp.status_code != 200:
             logger.warning(f"hawk-bridge recall API error: {resp.status_code} {resp.text}")
-            return None
+            return
 
         data = resp.json()
         memories = data.get("memories", [])
 
         if not memories:
-            return None
+            return
 
         formatted = format_recall_results(memories)
 
@@ -136,14 +141,13 @@ async def handle_agent_start(context: dict) -> str | None:
         if len(formatted) > HAWK_INJECTION_MAX_CHARS:
             formatted = formatted[:HAWK_INJECTION_MAX_CHARS] + "\n... (记忆过多，已截断)"
 
-        return "\n" + formatted + "\n"
+        # Inject directly into context dict — gateway reads context["_hawk_recall"]
+        context["_hawk_recall"] = "\n" + formatted + "\n"
 
     except httpx.TimeoutException:
         logger.warning("hawk-bridge recall timeout")
-        return None
     except Exception as e:
         logger.warning(f"hawk-bridge recall error: {e}")
-        return None
 
 
 # ─── agent:end handler ─────────────────────────────────────────────────────────
@@ -197,22 +201,14 @@ async def handle(event_type: str, context: dict) -> None:
     Hermes HookRegistry entry point.
     event_type: "agent:start" or "agent:end"
     context: dict with keys described above
+
+    For agent:start: writes formatted recall string into context["_hawk_recall"]
+    For agent:end: side-effect only (capture to hawk-memory-api)
     """
     if event_type == "agent:start":
-        # agent:start does not return anything to Hermes;
-        # We inject into context by returning a string from handle_agent_start,
-        # which Hermes will prepend to the conversation.
-        result = await handle_agent_start(context)
-        if result:
-            # For Hermes, we store the injection text in context for the agent to pick up
-            if "_hawk_recall" not in context:
-                context["_hawk_recall"] = result
-
+        await handle_agent_start(context)
     elif event_type == "agent:end":
         await handle_agent_end(context)
-
-    else:
-        logger.debug(f"hawk-bridge-hermes: unhandled event {event_type}")
 
 
 # ─── Sync wrapper (for compatibility with HookRegistry that may call sync fns) ─
@@ -230,5 +226,5 @@ def handle_sync(event_type: str, context: dict) -> None:
         asyncio.run(_run_async(event_type, context))
 
 
-async def _run_async(event_type: str, context: dict) -> None:
-    await handle(event_type, context)
+async def _run_async(event_type: str, context: dict) -> str | None:
+    return await handle(event_type, context)
