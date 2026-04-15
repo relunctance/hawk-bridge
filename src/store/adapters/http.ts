@@ -250,6 +250,25 @@ export class HTTPAdapter implements MemoryStore {
     await this.delete(id);
   }
 
+  async batchCapture(items: Array<{
+    message: string;
+    response: string;
+    sessionId?: string;
+    userId?: string;
+    platform?: string;
+  }>): Promise<{ stored: number; extracted: number }> {
+    const result = await this.request<{ stored: number; extracted: number }>('POST', '/capture/batch', {
+      items: items.map(item => ({
+        message: item.message,
+        response: item.response,
+        session_id: item.sessionId ?? '',
+        user_id: item.userId ?? '',
+        platform: item.platform ?? 'hawk-bridge',
+      })),
+    });
+    return result;
+  }
+
   // ─── Private helpers ────────────────────────────────────────────────────────
 
   private _memoryItemToEntry(m: MemoryItem): MemoryEntry {

@@ -1192,4 +1192,142 @@ export class LanceDBAdapter implements MemoryStore {
     }
   }
 
+  async batchCapture(items: Array<{
+    message: string;
+    response: string;
+    sessionId?: string;
+    userId?: string;
+    platform?: string;
+  }>): Promise<{ stored: number; extracted: number }> {
+    if (!this.table) await this.init();
+    const config = await getConfig();
+    const captureCfg = config.capture ?? {};
+    const maxChunks = captureCfg.maxChunks ?? 3;
+    const threshold = captureCfg.importanceThreshold ?? 0.5;
+
+    // Parallel LLM extraction for all items
+    const extractionResults = await Promise.allSettled(
+      items.map(item => this._extractMemories(item.message, item.response, config))
+    );
+
+    let totalStored = 0;
+    let totalExtracted = 0;
+
+    for (const result of extractionResults) {
+      if (result.status !== 'fulfilled') continue;
+      const { memories } = result.value;
+
+      for (const mem of memories) {
+        if (mem.importance < threshold) continue;
+        totalExtracted++;
+
+        const now = Date.now();
+        const entry: MemoryEntry = {
+          id: crypto.randomUUID(),
+          name: (mem as any).name ?? mem.text.slice(0, 80),
+          description: (mem as any).description ?? mem.text.slice(0, 200),
+          text: mem.text,
+          vector: [], // Will be populated below
+          category: mem.category,
+          importance: mem.importance,
+          timestamp: now,
+          expiresAt: 0,
+          accessCount: 0,
+          lastAccessedAt: now,
+          deletedAt: null,
+          reliability: 0.5,
+          verificationCount: 0,
+          lastVerifiedAt: null,
+          locked: false,
+          correctionHistory: [],
+          sessionId: null,
+          createdAt: now,
+          updatedAt: now,
+          scope: 'personal',
+          importanceOverride: 1.0,
+          coldStartUntil: null,
+          metadata: {},
+          source_type: 'text',
+          source: 'batch-capture',
+          driftNote: null,
+          driftDetectedAt: null,
+          last_used_at: null,
+          usefulness_score: null,
+          recall_count: 0,
+          platform: (mem as any).platform ?? 'hawk-bridge',
+        };
+
+        const [vector] = await this.embed([mem.text]);
+        entry.vector = vector;
+        await this.store(entry);
+        totalStored++;
+      }
+    }
+
+    logger.info({ items: items.length, extracted: totalExtracted, stored: totalStored }, 'batchCapture complete');
+    return { stored: totalStored, extracted: totalExtracted };
+  }
+
+  /**
+   * Extract memories from a conversation turn via LLM (subprocess mode).
+   * Mirrors the logic from hawk-capture/handler.ts.
+   */
+  private async _extractMemories(
+    message: string,
+    response: string,
+    config: any
+  ): Promise<{ memories: Array<{ text: string; category: string; importance: number; name?: string; description?: string }> }> {
+    const conversation = `用户: ${message}\n助手: ${response}`;
+
+    const apiKey = config.llm?.apiKey || config.embedding?.apiKey || '';
+    const model = config.llm?.model || 'MiniMax-M2.7';
+    const provider = config.llm?.provider || 'openclaw';
+    const baseURL = config.llm?.baseURL || '';
+
+    // Build LLM prompt for extraction
+    const prompt = `你是一个记忆提取助手。从以下对话中提取值得保存的记忆片段（事实、偏好、决定、实体等），用 JSON 格式返回。
+返回格式：
+{"memories":[{"text":"记忆内容","category":"fact|preference|decision|entity|other","importance":0.0-1.0,"name":"简短名称","description":"一句话描述"}]}
+
+对话：
+${conversation}
+
+只返回 JSON，不要其他内容。`;
+
+    try {
+      const { fetchWithRetry: fetchRetry } = await import('../../embeddings.js');
+      const body = JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 1024,
+        temperature: 0.1,
+      });
+
+      const response2 = await fetchRetry(
+        `${baseURL}/v1/chat/completions`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+          },
+          body,
+        },
+        3
+      );
+
+      const data = await response2.json() as any;
+      const content = data.choices?.[0]?.message?.content ?? '';
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return { memories: Array.isArray(parsed.memories) ? parsed.memories : [] };
+      }
+    } catch (err) {
+      logger.warn({ err }, 'batchCapture _extractMemories failed');
+    }
+
+    return { memories: [] };
+  }
+
 }

@@ -36,4 +36,18 @@ export interface MemoryStore {
   rateMemory(id: string, rating: 'helpful' | 'neutral' | 'harmful', sessionId?: string): Promise<void>;
   demoteMemory(id: string): Promise<void>;
   incrementImportance(id: string, delta: number): Promise<void>;
+
+  // Batch operations
+  /**
+   * Batch capture: send multiple conversation items for extraction + storage.
+   * Uses parallel LLM extraction server-side for efficiency.
+   * Items are structured conversation turns, not pre-extracted memories.
+   */
+  batchCapture(items: Array<{
+    message: string;
+    response: string;
+    sessionId?: string;
+    userId?: string;
+    platform?: string;
+  }>): Promise<{ stored: number; extracted: number }>;
 }
