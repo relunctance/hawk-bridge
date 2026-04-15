@@ -8,8 +8,12 @@ import { HawkConfig } from './types.js';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { logger } from './logger.js';
 import { embeddingLatency } from './metrics.js';
+import { CircuitBreaker, CircuitOpenError } from './utils/circuit-breaker.js';
 
 const FETCH_TIMEOUT_MS = 15000;
+
+// Circuit breaker for embedding calls — opens after 5 consecutive failures
+const embedBreaker = new CircuitBreaker(5, 30_000);
 
 // ─── Retry helper ──────────────────────────────────────────────────────────────
 
