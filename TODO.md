@@ -549,6 +549,283 @@ async function consistencyCheck(): Promise<ConsistencyReport> {
 
 ---
 
+## 🧠 反幻觉体系（Anti-Hallucination）
+
+> **新增：2026-04-15 · 基于 autoself 幻觉解决方案**
+
+LLM 幻觉 = 听起来合理但实际错误的内容。记忆系统如果存储了幻觉内容，会像病毒一样传播到所有后续对话。
+
+**核心原则：记忆系统不产生幻觉，但可以成为幻觉的放大器——必须从源头阻止。**
+
+---
+
+### 幻觉的 4 类根因
+
+| 类型 | 说明 | 在 hawk-bridge 中的表现 |
+|------|------|------------------------|
+| **边界模糊** | 不知道知识边界在哪 | LLM 推理出的"事实"写入记忆 |
+| **推理链错误** | 中间步骤推错了 | 向量相似度高但实际错了 |
+| **上下文冲突** | 上下文没有却当成有 | 跨 session 残留的虚假记忆 |
+| **过时信息** | 信息过期了还在用 | 旧记忆召回当实时信息 |
+
+---
+
+### 🔴 P0 — 必须实现
+
+#### [ ] 1. Hallucination Risk Score（幻觉风险评分）
+
+**问题**：无法区分"高可信记忆"和"低可信推理"
+
+**实现**：记忆条目增加 `risk_score` 字段（0-1），召回时附带
+
+```typescript
+interface MemoryEntry {
+  // ... 现有字段
+  /**
+   * 幻觉风险评分（0-1）
+   * 0.0-0.3: 低风险（直接观察/用户确认的事实）
+   * 0.3-0.6: 中风险（LLM 推理但有依据）
+   * 0.6-1.0: 高风险（纯 LLM 推断，无外部验证）
+   */
+  risk_score: number;
+  risk_factors: string[];  // ['llm_inference', 'single_source', 'outdated', ...]
+}
+
+// 写入时自动评估 risk_score
+async function assessRisk(entry: MemoryEntry): Promise<{
+  risk_score: number;
+  risk_factors: string[];
+}> {
+  let score = 0.0;
+  const factors: string[] = [];
+
+  // LLM 推理 → +0.3
+  if (entry.source === 'agent_inference') { score += 0.3; factors.push('llm_inference'); }
+
+  // 单一来源 → +0.2
+  if (entry.source_count < 2) { score += 0.2; factors.push('single_source'); }
+
+  // 过时（> 30天）→ +0.2
+  if (Date.now() - entry.updated_at > 30 * 24 * 60 * 60 * 1000) {
+    score += 0.2; factors.push('stale');
+  }
+
+  // 无外部引用 → +0.1
+  if (!entry.external_ref) { score += 0.1; factors.push('no_external_ref'); }
+
+  // 注入可疑 → +0.2
+  if (entry.injection_suspected) { score += 0.2; factors.push('injection_suspected'); }
+
+  return { risk_score: Math.min(score, 1.0), risk_factors: factors };
+}
+```
+
+**状态**：❌ 未实现
+
+---
+
+#### [ ] 2. Confidence-Gated Recall（置信度过滤召回）
+
+**问题**：低置信度记忆被召回当成真实信息
+
+**实现**：recall 时默认排除 risk_score > 0.6 的记忆
+
+```typescript
+// hawk-recall 改造
+async function recall(
+  query: string,
+  options: {
+    sessionId: string;
+    minRiskScore?: number;  // 默认 0.6，recall 时过滤高风险
+    includeStale?: boolean; // 默认 false，不返回过时记忆
+  }
+): Promise<RetrievedMemory[]> {
+
+  const results = await hybridSearch(query, {
+    ...options,
+    // 高风险记忆默认不返回
+    preFilter: `
+      session_id = '${options.sessionId}'
+      AND deleted_at IS NULL
+      AND (risk_score IS NULL OR risk_score < ${options.minRiskScore ?? 0.6})
+    `,
+  });
+
+  // 对召回的记忆做风险说明
+  return results.map(r => ({
+    ...r,
+    risk_warnings: r.risk_score > 0.3
+      ? `⚠️ 此记忆风险评分 ${r.risk_score}（${r.risk_factors.join(', ')}），建议验证`
+      : undefined,
+    age_days: Math.floor((Date.now() - r.updated_at) / 86400000),
+  }));
+}
+```
+
+**状态**：❌ 未实现
+
+---
+
+#### [ ] 3. Source Tracing（来源追溯）
+
+**问题**：召回时不知道记忆从哪来、什么时候写入的
+
+**实现**：recall 结果必须附带来源信息
+
+```typescript
+// recall 返回时附带 citation
+interface RetrievedMemory {
+  // ... 现有字段
+  citation: {
+    source: 'user_input' | 'agent_inference' | 'system_detected' | 'import';
+    confidence: number;       // 写入时的置信度
+    risk_score: number;      // 幻觉风险评分
+    created_at: number;      // 写入时间
+    age_days: number;        // _age
+    verified: boolean;        // 是否经过人工验证
+    verification_count: number;
+  };
+}
+
+// 在 hawk-recall 返回时附加强制 citation
+function formatRecallResult(memory: RetrievedMemory): string {
+  const age = Math.floor((Date.now() - memory.updated_at) / 86400000);
+  const riskLabel = memory.risk_score > 0.6 ? '⚠️高风险' :
+                    memory.risk_score > 0.3 ? '🟡中风险' : '✅低风险';
+
+  return `${memory.text}
+
+---
+[${riskLabel}] ${age}天前 · ${memory.citation.source} · 置信度${Math.round(memory.confidence * 100)}%`;
+}
+```
+
+**状态**：❌ 未实现
+
+---
+
+#### [ ] 4. Stale Memory Warning（过时记忆警告）
+
+**问题**：召回的记忆可能是过时的，但 LLM 不知道
+
+**实现**：给记忆加"年龄"标签，LLM 可据此判断是否过时
+
+```typescript
+// 在 config 中配置 stale 阈值
+interface RecallConfig {
+  staleThresholdDays: number;   // 默认 30 天
+  veryStaleThresholdDays: number; // 默认 90 天
+}
+
+// 记忆年龄标签
+function getAgeLabel(updatedAt: number): string {
+  const days = (Date.now() - updatedAt) / 86400000;
+  if (days > 90) return '[❌已过期90天+]';
+  if (days > 30) return '[⚠️可能过期30天+]';
+  if (days > 7) return '[🕐近期7天+]';
+  return '[✅实时]';
+}
+```
+
+**状态**：❌ 未实现
+
+---
+
+### 🟡 P1 — 重要
+
+#### [ ] 5. LLM Self-Verification Hook（LLM 自我验证）
+
+**问题**：没有机制让 LLM 在写入前验证内容
+
+**实现**：高风险记忆写入前，触发 LLM 二次验证
+
+```typescript
+// hawk-capture 中增加验证钩子
+async function verifyBeforeWrite(text: string, options: CaptureOptions): Promise<{
+  verified: boolean;
+  confidence: number;
+  issues?: string[];
+}> {
+  const { risk_score } = await assessRisk({ text, ...options });
+
+  // risk_score > 0.5 → 触发验证
+  if (risk_score > 0.5) {
+    const verification = await llm.verify(`
+      请验证以下记忆是否准确：
+      "${text}"
+
+      请检查：
+      1. 是否有事实性错误？
+      2. 数字、日期、名字是否可验证？
+      3. 是否有"可能是错的"部分？
+
+      返回：
+      - verified: true/false
+      - confidence: 0-1
+      - issues: [具体问题列表]
+    `);
+
+    if (!verification.verified) {
+      logger.warn({ text: text.substring(0, 50), issues: verification.issues },
+        'Memory verification failed, downgrading confidence');
+      return { verified: false, confidence: verification.confidence * 0.5, issues: verification.issues };
+    }
+
+    return verification;
+  }
+
+  return { verified: true, confidence: 1.0 - risk_score };
+}
+```
+
+**状态**：❌ 未实现
+
+---
+
+#### [ ] 6. Factuality Classification（事实性分类）
+
+**问题**：事实性内容（必须准确）和观点性内容（可以主观）混在一起
+
+**实现**：记忆写入时分类，不同类型不同处理
+
+```typescript
+type FactualityLevel = 'factual' | 'inferential' | 'opinion' | 'preference';
+
+interface MemoryEntry {
+  // ...
+  factuality: FactualityLevel;
+}
+
+// 分类逻辑
+async function classifyFactuality(text: string): Promise<FactualityLevel> {
+  // factual: 含具体数字/日期/名字/可验证事实
+  // inferential: LLM 从上下文推理出的结论
+  // opinion: 主观看法、偏好
+  // preference: 用户偏好、设置
+
+  const result = await llm.classify(`
+    判断以下内容的类型：
+    "${text}"
+
+    factual: 包含可验证的具体信息（数字/日期/人名/地点）
+    inferential: 基于上下文推理得出的结论（无法直接验证）
+    opinion: 主观看法或评价
+    preference: 用户偏好或设置
+  `);
+
+  return result.factuality;
+}
+
+// factual 记忆：更高验证标准
+// opinion 记忆：低风险，不做严格校验
+```
+
+**状态**：❌ 未实现
+
+---
+
+### 防御层次总览
+
 ### 防御层次总览
 
 ```
@@ -575,31 +852,36 @@ async function consistencyCheck(): Promise<ConsistencyReport> {
 
 ```
 Phase 0（安全底线 · 必须优先）:
-  1. Session/Agent Fencing — P0 查询隔离（立即做，防止泄漏）
+  1. Session/Agent Fencing — P0 查询隔离（防止泄漏）
   2. Injection Detector — P0 注入检测（防止攻击写入）
   3. Audit Log — P0 写入审计（污染后可追溯）
+  4. Hallucination Risk Score — P0 幻觉风险评分（写入时）
 
 Phase 1（立即）:
-  4. Write Confidence Threshold — 低于 0.7 不写入
-  5. MemoryManager 接口定义 — 所有其他能力的基础
-  6. Background Prefetch — 性能提升，立即可见
+  5. Write Confidence Threshold — 低于 0.7 不写入
+  6. Confidence-Gated Recall — 高风险记忆不召回
+  7. MemoryManager 接口定义 — 所有其他能力的基础
+  8. Background Prefetch — 性能提升，立即可见
 
 Phase 2（L6 支撑）:
-  7. Context Fencing — L6 编排必须
-  8. Session Insights — tangseng-brain 成本分析的输入
-  9. Drift Detector — 漂移检测
+  9. Context Fencing — L6 编排必须
+  10. Session Insights — tangseng-brain 成本分析的输入
+  11. Drift Detector — 漂移检测
+  12. Source Tracing — recall 附来源追溯
 
 Phase 3（进化支撑）:
-  10. Upsert with Version — 版本链保留
-  11. Skill Auto-Creation — autoself L5 进化的输出落地
-  12. User Modeling — soul-force USER.md 的结构化
+  13. Stale Memory Warning — 过时记忆警告
+  14. LLM Self-Verification Hook — 写入前二次验证
+  15. Upsert with Version — 版本链保留
+  16. Skill Auto-Creation — autoself L5 进化的输出落地
 
 Phase 4（长期）:
-  13. Memory Quarantine — 污染隔离区
-  14. Consistency Check Cron — 每日一致性巡检
-  15. Skills Hub 兼容层
-  16. Auto-Compression
-  17. Multi-tenant
+  17. Factuality Classification — 事实性分类
+  18. Memory Quarantine — 污染隔离区
+  19. Consistency Check Cron — 每日一致性巡检
+  20. Skills Hub 兼容层
+  21. Auto-Compression
+  22. Multi-tenant
 ```
 
 ## Done ✅
@@ -610,31 +892,36 @@ Phase 4（长期）:
 
 ```
 Phase 0（安全底线 · 必须优先）:
-  1. Session/Agent Fencing — P0 查询隔离（立即做，防止泄漏）
+  1. Session/Agent Fencing — P0 查询隔离（防止泄漏）
   2. Injection Detector — P0 注入检测（防止攻击写入）
   3. Audit Log — P0 写入审计（污染后可追溯）
+  4. Hallucination Risk Score — P0 幻觉风险评分（写入时）
 
 Phase 1（立即）:
-  4. Write Confidence Threshold — 低于 0.7 不写入
-  5. MemoryManager 接口定义 — 所有其他能力的基础
-  6. Background Prefetch — 性能提升，立即可见
+  5. Write Confidence Threshold — 低于 0.7 不写入
+  6. Confidence-Gated Recall — 高风险记忆不召回
+  7. MemoryManager 接口定义 — 所有其他能力的基础
+  8. Background Prefetch — 性能提升，立即可见
 
 Phase 2（L6 支撑）:
-  7. Context Fencing — L6 编排必须
-  8. Session Insights — tangseng-brain 成本分析的输入
-  9. Drift Detector — 漂移检测
+  9. Context Fencing — L6 编排必须
+  10. Session Insights — tangseng-brain 成本分析的输入
+  11. Drift Detector — 漂移检测
+  12. Source Tracing — recall 附来源追溯
 
 Phase 3（进化支撑）:
-  10. Upsert with Version — 版本链保留
-  11. Skill Auto-Creation — autoself L5 进化的输出落地
-  12. User Modeling — soul-force USER.md 的结构化
+  13. Stale Memory Warning — 过时记忆警告
+  14. LLM Self-Verification Hook — 写入前二次验证
+  15. Upsert with Version — 版本链保留
+  16. Skill Auto-Creation — autoself L5 进化的输出落地
 
 Phase 4（长期）:
-  13. Memory Quarantine — 污染隔离区
-  14. Consistency Check Cron — 每日一致性巡检
-  15. Skills Hub 兼容层
-  16. Auto-Compression
-  17. Multi-tenant
+  17. Factuality Classification — 事实性分类
+  18. Memory Quarantine — 污染隔离区
+  19. Consistency Check Cron — 每日一致性巡检
+  20. Skills Hub 兼容层
+  21. Auto-Compression
+  22. Multi-tenant
 ```
 
 ## Done ✅bridge v1.2+ Backlog
@@ -1187,6 +1474,283 @@ async function consistencyCheck(): Promise<ConsistencyReport> {
 **状态**：❌ 未实现
 
 ---
+
+## 🧠 反幻觉体系（Anti-Hallucination）
+
+> **新增：2026-04-15 · 基于 autoself 幻觉解决方案**
+
+LLM 幻觉 = 听起来合理但实际错误的内容。记忆系统如果存储了幻觉内容，会像病毒一样传播到所有后续对话。
+
+**核心原则：记忆系统不产生幻觉，但可以成为幻觉的放大器——必须从源头阻止。**
+
+---
+
+### 幻觉的 4 类根因
+
+| 类型 | 说明 | 在 hawk-bridge 中的表现 |
+|------|------|------------------------|
+| **边界模糊** | 不知道知识边界在哪 | LLM 推理出的"事实"写入记忆 |
+| **推理链错误** | 中间步骤推错了 | 向量相似度高但实际错了 |
+| **上下文冲突** | 上下文没有却当成有 | 跨 session 残留的虚假记忆 |
+| **过时信息** | 信息过期了还在用 | 旧记忆召回当实时信息 |
+
+---
+
+### 🔴 P0 — 必须实现
+
+#### [ ] 1. Hallucination Risk Score（幻觉风险评分）
+
+**问题**：无法区分"高可信记忆"和"低可信推理"
+
+**实现**：记忆条目增加 `risk_score` 字段（0-1），召回时附带
+
+```typescript
+interface MemoryEntry {
+  // ... 现有字段
+  /**
+   * 幻觉风险评分（0-1）
+   * 0.0-0.3: 低风险（直接观察/用户确认的事实）
+   * 0.3-0.6: 中风险（LLM 推理但有依据）
+   * 0.6-1.0: 高风险（纯 LLM 推断，无外部验证）
+   */
+  risk_score: number;
+  risk_factors: string[];  // ['llm_inference', 'single_source', 'outdated', ...]
+}
+
+// 写入时自动评估 risk_score
+async function assessRisk(entry: MemoryEntry): Promise<{
+  risk_score: number;
+  risk_factors: string[];
+}> {
+  let score = 0.0;
+  const factors: string[] = [];
+
+  // LLM 推理 → +0.3
+  if (entry.source === 'agent_inference') { score += 0.3; factors.push('llm_inference'); }
+
+  // 单一来源 → +0.2
+  if (entry.source_count < 2) { score += 0.2; factors.push('single_source'); }
+
+  // 过时（> 30天）→ +0.2
+  if (Date.now() - entry.updated_at > 30 * 24 * 60 * 60 * 1000) {
+    score += 0.2; factors.push('stale');
+  }
+
+  // 无外部引用 → +0.1
+  if (!entry.external_ref) { score += 0.1; factors.push('no_external_ref'); }
+
+  // 注入可疑 → +0.2
+  if (entry.injection_suspected) { score += 0.2; factors.push('injection_suspected'); }
+
+  return { risk_score: Math.min(score, 1.0), risk_factors: factors };
+}
+```
+
+**状态**：❌ 未实现
+
+---
+
+#### [ ] 2. Confidence-Gated Recall（置信度过滤召回）
+
+**问题**：低置信度记忆被召回当成真实信息
+
+**实现**：recall 时默认排除 risk_score > 0.6 的记忆
+
+```typescript
+// hawk-recall 改造
+async function recall(
+  query: string,
+  options: {
+    sessionId: string;
+    minRiskScore?: number;  // 默认 0.6，recall 时过滤高风险
+    includeStale?: boolean; // 默认 false，不返回过时记忆
+  }
+): Promise<RetrievedMemory[]> {
+
+  const results = await hybridSearch(query, {
+    ...options,
+    // 高风险记忆默认不返回
+    preFilter: `
+      session_id = '${options.sessionId}'
+      AND deleted_at IS NULL
+      AND (risk_score IS NULL OR risk_score < ${options.minRiskScore ?? 0.6})
+    `,
+  });
+
+  // 对召回的记忆做风险说明
+  return results.map(r => ({
+    ...r,
+    risk_warnings: r.risk_score > 0.3
+      ? `⚠️ 此记忆风险评分 ${r.risk_score}（${r.risk_factors.join(', ')}），建议验证`
+      : undefined,
+    age_days: Math.floor((Date.now() - r.updated_at) / 86400000),
+  }));
+}
+```
+
+**状态**：❌ 未实现
+
+---
+
+#### [ ] 3. Source Tracing（来源追溯）
+
+**问题**：召回时不知道记忆从哪来、什么时候写入的
+
+**实现**：recall 结果必须附带来源信息
+
+```typescript
+// recall 返回时附带 citation
+interface RetrievedMemory {
+  // ... 现有字段
+  citation: {
+    source: 'user_input' | 'agent_inference' | 'system_detected' | 'import';
+    confidence: number;       // 写入时的置信度
+    risk_score: number;      // 幻觉风险评分
+    created_at: number;      // 写入时间
+    age_days: number;        // _age
+    verified: boolean;        // 是否经过人工验证
+    verification_count: number;
+  };
+}
+
+// 在 hawk-recall 返回时附加强制 citation
+function formatRecallResult(memory: RetrievedMemory): string {
+  const age = Math.floor((Date.now() - memory.updated_at) / 86400000);
+  const riskLabel = memory.risk_score > 0.6 ? '⚠️高风险' :
+                    memory.risk_score > 0.3 ? '🟡中风险' : '✅低风险';
+
+  return `${memory.text}
+
+---
+[${riskLabel}] ${age}天前 · ${memory.citation.source} · 置信度${Math.round(memory.confidence * 100)}%`;
+}
+```
+
+**状态**：❌ 未实现
+
+---
+
+#### [ ] 4. Stale Memory Warning（过时记忆警告）
+
+**问题**：召回的记忆可能是过时的，但 LLM 不知道
+
+**实现**：给记忆加"年龄"标签，LLM 可据此判断是否过时
+
+```typescript
+// 在 config 中配置 stale 阈值
+interface RecallConfig {
+  staleThresholdDays: number;   // 默认 30 天
+  veryStaleThresholdDays: number; // 默认 90 天
+}
+
+// 记忆年龄标签
+function getAgeLabel(updatedAt: number): string {
+  const days = (Date.now() - updatedAt) / 86400000;
+  if (days > 90) return '[❌已过期90天+]';
+  if (days > 30) return '[⚠️可能过期30天+]';
+  if (days > 7) return '[🕐近期7天+]';
+  return '[✅实时]';
+}
+```
+
+**状态**：❌ 未实现
+
+---
+
+### 🟡 P1 — 重要
+
+#### [ ] 5. LLM Self-Verification Hook（LLM 自我验证）
+
+**问题**：没有机制让 LLM 在写入前验证内容
+
+**实现**：高风险记忆写入前，触发 LLM 二次验证
+
+```typescript
+// hawk-capture 中增加验证钩子
+async function verifyBeforeWrite(text: string, options: CaptureOptions): Promise<{
+  verified: boolean;
+  confidence: number;
+  issues?: string[];
+}> {
+  const { risk_score } = await assessRisk({ text, ...options });
+
+  // risk_score > 0.5 → 触发验证
+  if (risk_score > 0.5) {
+    const verification = await llm.verify(`
+      请验证以下记忆是否准确：
+      "${text}"
+
+      请检查：
+      1. 是否有事实性错误？
+      2. 数字、日期、名字是否可验证？
+      3. 是否有"可能是错的"部分？
+
+      返回：
+      - verified: true/false
+      - confidence: 0-1
+      - issues: [具体问题列表]
+    `);
+
+    if (!verification.verified) {
+      logger.warn({ text: text.substring(0, 50), issues: verification.issues },
+        'Memory verification failed, downgrading confidence');
+      return { verified: false, confidence: verification.confidence * 0.5, issues: verification.issues };
+    }
+
+    return verification;
+  }
+
+  return { verified: true, confidence: 1.0 - risk_score };
+}
+```
+
+**状态**：❌ 未实现
+
+---
+
+#### [ ] 6. Factuality Classification（事实性分类）
+
+**问题**：事实性内容（必须准确）和观点性内容（可以主观）混在一起
+
+**实现**：记忆写入时分类，不同类型不同处理
+
+```typescript
+type FactualityLevel = 'factual' | 'inferential' | 'opinion' | 'preference';
+
+interface MemoryEntry {
+  // ...
+  factuality: FactualityLevel;
+}
+
+// 分类逻辑
+async function classifyFactuality(text: string): Promise<FactualityLevel> {
+  // factual: 含具体数字/日期/名字/可验证事实
+  // inferential: LLM 从上下文推理出的结论
+  // opinion: 主观看法、偏好
+  // preference: 用户偏好、设置
+
+  const result = await llm.classify(`
+    判断以下内容的类型：
+    "${text}"
+
+    factual: 包含可验证的具体信息（数字/日期/人名/地点）
+    inferential: 基于上下文推理得出的结论（无法直接验证）
+    opinion: 主观看法或评价
+    preference: 用户偏好或设置
+  `);
+
+  return result.factuality;
+}
+
+// factual 记忆：更高验证标准
+// opinion 记忆：低风险，不做严格校验
+```
+
+**状态**：❌ 未实现
+
+---
+
+### 防御层次总览
 
 ### 防御层次总览
 
