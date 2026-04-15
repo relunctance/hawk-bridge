@@ -3990,7 +3990,8 @@ var LanceDBAdapter = class {
       last_used_at: Number(r.last_used_at ?? 0),
       usefulness_score: r.usefulness_score ?? 0.5,
       recall_count: r.recall_count ?? 0,
-      platform: r.platform ?? "hawk-bridge"
+      platform: r.platform ?? "hawk-bridge",
+      generation_version: Number(r.generation_version ?? 0)
     };
   }
   _rowToRetrieved(r, score, matchReason) {
@@ -4033,7 +4034,8 @@ var LanceDBAdapter = class {
       last_used_at: r.last_used_at !== null ? Number(r.last_used_at) : null,
       usefulness_score: r.usefulness_score ?? null,
       recall_count: r.recall_count ?? 0,
-      platform: r.platform ?? "hawk-bridge"
+      platform: r.platform ?? "hawk-bridge",
+      generation_version: Number(r.generation_version ?? 0)
     };
   }
   // ─── MemoryStore Interface Implementation ───────────────────────────────────
@@ -4206,7 +4208,7 @@ var LanceDBAdapter = class {
     const BATCH = 1e3;
     const offset = cursor ? parseInt(cursor, 10) : 0;
     const rows = await this.table.query().limit(BATCH).offset(offset).toArray();
-    const filtered = rows.filter((r) => r.deleted_at === null).filter((r) => {
+    const filtered = rows.filter((r) => r.deleted_at === null).filter((r) => !r.superseded_by).filter((r) => {
       if (!agentId) return true;
       const owner = r.metadata?.owner_agent ?? r.metadata?.ownerAgent ?? null;
       return owner === null || owner === agentId;

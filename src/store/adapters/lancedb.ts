@@ -403,6 +403,7 @@ export class LanceDBAdapter implements MemoryStore {
       usefulness_score: r.usefulness_score ?? 0.5,
       recall_count: r.recall_count ?? 0,
       platform: r.platform ?? 'hawk-bridge',
+      generation_version: Number(r.generation_version ?? 0),
     };
   }
 
@@ -450,6 +451,7 @@ export class LanceDBAdapter implements MemoryStore {
       usefulness_score: r.usefulness_score ?? null,
       recall_count: r.recall_count ?? 0,
       platform: r.platform ?? 'hawk-bridge',
+      generation_version: Number(r.generation_version ?? 0),
     };
   }
 
@@ -646,6 +648,7 @@ export class LanceDBAdapter implements MemoryStore {
     const rows = await this.table.query().limit(BATCH).offset(offset).toArray();
     const filtered = rows
       .filter((r: any) => r.deleted_at === null)
+      .filter((r: any) => !r.superseded_by)
       .filter((r: any) => {
         if (!agentId) return true;
         const owner = (r.metadata?.owner_agent ?? r.metadata?.ownerAgent) ?? null;

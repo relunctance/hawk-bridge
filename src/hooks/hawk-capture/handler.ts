@@ -651,7 +651,7 @@ const captureHandler = async (event: HookEvent) => {
     const toEmbed: PreppedMemory[] = [];
     for (const p of llmItems) {
       // 5. Deduplication
-      if (await isDuplicate(p.text)) { audit('skip', 'duplicate', p.text); continue; }
+      if (await isDuplicate(p.text, config.capture.dedupSimilarity)) { audit('skip', 'duplicate', p.text); continue; }
       // 5b. Saturation check
       if (await handleSaturation(p.text)) { audit('skip', 'saturated', p.text); continue; }
       toEmbed.push(p);
