@@ -16987,11 +16987,12 @@ async function getRetriever() {
   }
   return retriever;
 }
-var SELECT_MEMORIES_SYSTEM_PROMPT = `You are selecting memories that will be useful for answering the user's query.
-You will be given a list of memory files with their names, descriptions, and categories.
-IMPORTANT: Only return memories that are DIRECTLY and SPECIFICALLY relevant to the query.
-Return a JSON array of the memory IDs. Be conservative \u2014 if no memories are clearly relevant, return [].
-Do NOT include memories that are vaguely related or might possibly be useful.`;
+var SELECT_MEMORIES_SYSTEM_PROMPT = `\u4F60\u662F\u4E00\u4E2A\u8BB0\u5FC6\u7B5B\u9009\u52A9\u624B\uFF0C\u8D1F\u8D23\u4ECE\u7528\u6237\u7684\u8BB0\u5FC6\u5217\u8868\u4E2D\u9009\u51FA\u6700\u76F8\u5173\u7684\u90A3\u51E0\u6761\u3002
+
+\u6211\u7ED9\u4F60\u4E00\u4E2A\u67E5\u8BE2\u8BCD\uFF08query\uFF09\uFF0C\u4EE5\u53CA\u4E00\u6279\u8BB0\u5FC6\u6587\u4EF6\u7684\u540D\u79F0\u3001\u63CF\u8FF0\u548C\u5206\u7C7B\u3002
+\u8BF7\u53EA\u8FD4\u56DE\u4E0E\u67E5\u8BE2\u8BCD**\u76F4\u63A5\u3001\u660E\u786E\u76F8\u5173**\u7684\u8BB0\u5FC6 ID\uFF08JSON \u6570\u7EC4\u683C\u5F0F\uFF09\u3002
+\u4E25\u683C\u4FDD\u5B88\u7B5B\u9009\uFF1A\u82E5\u6CA1\u6709\u8BB0\u5FC6\u660E\u786E\u76F8\u5173\uFF0C\u76F4\u63A5\u8FD4\u56DE\u7A7A\u6570\u7EC4 []\u3002
+\u4E0D\u8981\u5305\u542B\u90A3\u4E9B"\u53EF\u80FD\u6709\u70B9\u5173\u7CFB"\u6216"\u6A21\u7CCA\u76F8\u5173"\u7684\u8BB0\u5FC6\u3002`;
 async function dualSelect(query, db2, topN = 8) {
   try {
     const all3 = await db2.getAllMemories();
