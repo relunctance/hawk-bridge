@@ -5,10 +5,123 @@ var __esm = (fn, res) => function __init() {
 
 // src/logger.ts
 import pino from "pino";
-var logLevel, logger;
+import fs from "fs";
+import { join, dirname } from "path";
+import { existsSync, mkdirSync, unlinkSync, readdirSync, statSync } from "fs";
+import { homedir } from "os";
+function getTimestamp() {
+  const now = /* @__PURE__ */ new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const h = String(now.getHours()).padStart(2, "0");
+  const min = String(now.getMinutes()).padStart(2, "0");
+  const s = String(now.getSeconds()).padStart(2, "0");
+  return `${y}${m}${d}-${h}${min}${s}`;
+}
+function basename(p) {
+  return p.split("/").pop() ?? p;
+}
+function patchConsole() {
+  if (process.env.NODE_ENV !== "production" && process.env.HAWK_STRICT_LOG !== "1") return;
+  const origError = console.error.bind(console);
+  const origWarn = console.warn.bind(console);
+  const origLog = console.log.bind(console);
+  console.error = (...args) => {
+    logger.error({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.warn = (...args) => {
+    logger.warn({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.log = (...args) => {
+    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.info = (...args) => {
+    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.debug = (...args) => {
+    logger.debug({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+}
+var LOG_DIR, LOG_FILE_BASE, MAX_FILE_SIZE, MAX_FILES, RotatingFileStream, rotatingStream, logLevel, logger;
 var init_logger = __esm({
   "src/logger.ts"() {
     "use strict";
+    LOG_DIR = process.env.HAWK_LOG_DIR ?? join(homedir(), ".hawk", "logs");
+    LOG_FILE_BASE = join(LOG_DIR, "hawk-bridge.log");
+    MAX_FILE_SIZE = parseInt(process.env.HAWK_LOG_MAX_SIZE ?? String(50 * 1024 * 1024), 10);
+    MAX_FILES = parseInt(process.env.HAWK_LOG_MAX_FILES ?? "14", 10);
+    RotatingFileStream = class {
+      stream;
+      size = 0;
+      constructor(filePath) {
+        this.ensureDir(dirname(filePath));
+        this.stream = this.openStream(filePath);
+      }
+      ensureDir(dir) {
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      }
+      openStream(filePath) {
+        const fd = existsSync(filePath) ? void 0 : void 0;
+        const s = fs.createWriteStream(filePath, { flags: "a", highWaterMark: 64 * 1024 });
+        if (existsSync(filePath)) {
+          this.size = statSync(filePath).size;
+        }
+        return s;
+      }
+      rotate() {
+        this.stream.end();
+        const rotatedPath = `${LOG_FILE_BASE}.${getTimestamp()}.log`;
+        try {
+          const dir = dirname(LOG_FILE_BASE);
+          if (existsSync(LOG_FILE_BASE)) {
+            fs.renameSync(LOG_FILE_BASE, rotatedPath);
+          }
+        } catch {
+        }
+        this.stream = this.openStream(LOG_FILE_BASE);
+        this.size = 0;
+        this.cleanupOldRotations();
+      }
+      cleanupOldRotations() {
+        try {
+          const dir = dirname(LOG_FILE_BASE);
+          const base = basename(LOG_FILE_BASE);
+          const files = readdirSync(dir).filter((f) => f.startsWith(base + ".") && f.endsWith(".log")).map((f) => ({
+            name: f,
+            path: join(dir, f),
+            mtime: statSync(join(dir, f)).mtime.getTime()
+          })).sort((a, b) => a.mtime - b.mtime);
+          const excess = files.length - MAX_FILES;
+          if (excess > 0) {
+            for (const f of files.slice(0, excess)) {
+              try {
+                unlinkSync(f.path);
+              } catch {
+              }
+            }
+          }
+        } catch {
+        }
+      }
+      write(chunk, cb) {
+        const len = Buffer.byteLength(chunk, "utf8");
+        if (this.size + len > MAX_FILE_SIZE) {
+          this.rotate();
+        }
+        this.size += len;
+        this.stream.write(chunk, cb);
+      }
+      end(cb) {
+        this.stream.end(cb);
+      }
+      // Expose for pino
+      get fd() {
+        return this.stream.fd ?? -1;
+      }
+    };
+    if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
+    rotatingStream = new RotatingFileStream(LOG_FILE_BASE);
     logLevel = process.env.HAWK__LOGGING__LEVEL || process.env.HAWK_LOG_LEVEL || "info";
     logger = pino({
       level: logLevel,
@@ -16,7 +129,8 @@ var init_logger = __esm({
         level: (label) => ({ level: label })
       },
       timestamp: pino.stdTimeFunctions.isoTime
-    });
+    }, rotatingStream);
+    patchConsole();
   }
 });
 
@@ -58,6 +172,73 @@ var init_metrics = __esm({
       labelNames: ["type"],
       registers: [register]
     });
+  }
+});
+
+// src/utils/circuit-breaker.ts
+var CircuitBreaker, CircuitOpenError;
+var init_circuit_breaker = __esm({
+  "src/utils/circuit-breaker.ts"() {
+    "use strict";
+    CircuitBreaker = class {
+      constructor(threshold = 5, resetMs = 3e4, halfOpenMax = 2) {
+        this.threshold = threshold;
+        this.resetMs = resetMs;
+        this.halfOpenMax = halfOpenMax;
+      }
+      failures = 0;
+      lastFailure = 0;
+      state = "closed";
+      halfOpenCount = 0;
+      async run(fn) {
+        if (this.state === "open") {
+          if (Date.now() - this.lastFailure > this.resetMs) {
+            this.state = "half-open";
+            this.halfOpenCount = 0;
+          } else {
+            throw new CircuitOpenError(`Circuit is open, retry after ${this.resetMs}ms`);
+          }
+        }
+        if (this.state === "half-open") {
+          if (this.halfOpenCount >= this.halfOpenMax) {
+            throw new CircuitOpenError("Circuit half-open limit reached");
+          }
+          this.halfOpenCount++;
+        }
+        try {
+          const result = await fn();
+          this.onSuccess();
+          return result;
+        } catch (e) {
+          this.onFailure();
+          throw e;
+        }
+      }
+      onSuccess() {
+        this.failures = 0;
+        this.state = "closed";
+      }
+      onFailure() {
+        this.failures++;
+        this.lastFailure = Date.now();
+        if (this.failures >= this.threshold) {
+          this.state = "open";
+        }
+      }
+      getStatus() {
+        return {
+          state: this.state,
+          failures: this.failures,
+          lastFailure: this.lastFailure
+        };
+      }
+    };
+    CircuitOpenError = class extends Error {
+      constructor(msg) {
+        super(msg);
+        this.name = "CircuitOpenError";
+      }
+    };
   }
 });
 
@@ -152,13 +333,15 @@ async function fetchWithTimeout(url, init, timeoutMs) {
     req.end();
   });
 }
-var FETCH_TIMEOUT_MS, _activeProxyUrl, _proxyAgent, Embedder;
+var FETCH_TIMEOUT_MS, embedBreaker, _activeProxyUrl, _proxyAgent, Embedder;
 var init_embeddings = __esm({
   "src/embeddings.ts"() {
     "use strict";
     init_logger();
     init_metrics();
+    init_circuit_breaker();
     FETCH_TIMEOUT_MS = 15e3;
+    embedBreaker = new CircuitBreaker(5, 3e4);
     _activeProxyUrl = process.env.HAWK_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || "";
     _proxyAgent = null;
     Embedder = class _Embedder {
@@ -430,7 +613,7 @@ var init_embeddings = __esm({
 // src/hooks/hawk-capture/handler.ts
 import { spawn, exec as execSync } from "child_process";
 import { promisify } from "util";
-import * as fs2 from "fs";
+import * as fs4 from "fs";
 import * as path4 from "path";
 import * as os3 from "os";
 import * as http2 from "http";
@@ -442,7 +625,7 @@ import * as path2 from "path";
 import * as os2 from "os";
 
 // src/config.ts
-import * as fs from "fs";
+import * as fs2 from "fs";
 import * as path from "path";
 import * as os from "os";
 
@@ -3071,7 +3254,7 @@ var DECAY_RATE_HIGH_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_HIGH ||
 var DECAY_RATE_MEDIUM_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_MEDIUM || "0.8");
 var DECAY_RATE_LOW_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_LOW || "1.5");
 var COLD_START_GRACE_DAYS = parseInt(process.env.HAWK_COLD_START_GRACE_DAYS || "7", 10);
-var COLD_START_DECAY_MULTIPLIER = parseFloat(process.env.HAWK_COLD_START_DECAY_MULTIPLIER || "0.1");
+var COLD_START_DECAY_MULTIPLIER = parseFloat(process.env.HAWK_COLD_START_DECAY_MULTIPLIER || "0.5");
 var CONFLICT_SIMILARITY_THRESHOLD = parseFloat(process.env.HAWK_CONFLICT_THRESHOLD || "0.6");
 var ENTITY_DEDUP_THRESHOLD = parseFloat(process.env.HAWK_ENTITY_DEDUP_THRESHOLD || "0.75");
 var ENTITY_DEDUP_SESSION_WINDOW = parseInt(process.env.HAWK_ENTITY_DEDUP_SESSION_WINDOW || "10", 10);
@@ -3254,7 +3437,7 @@ var cachedAgentModels = null;
 function loadOpenClawConfig() {
   if (cachedOpenClawConfig) return cachedOpenClawConfig;
   try {
-    const raw = fs.readFileSync(OPENCLAW_CONFIG_PATH, "utf-8");
+    const raw = fs2.readFileSync(OPENCLAW_CONFIG_PATH, "utf-8");
     cachedOpenClawConfig = JSON.parse(raw);
     return cachedOpenClawConfig;
   } catch {
@@ -3264,7 +3447,7 @@ function loadOpenClawConfig() {
 function loadAgentModels() {
   if (cachedAgentModels !== null) return cachedAgentModels;
   try {
-    cachedAgentModels = JSON.parse(fs.readFileSync(OPENCLAW_AGENT_MODELS, "utf-8"));
+    cachedAgentModels = JSON.parse(fs2.readFileSync(OPENCLAW_AGENT_MODELS, "utf-8"));
     return cachedAgentModels;
   } catch {
     cachedAgentModels = null;
@@ -3343,9 +3526,9 @@ function resolveEnvVars(raw) {
 }
 function loadYamlConfig() {
   const yamlPath = path.join(HAWK_CONFIG_DIR, "config.yaml");
-  if (fs.existsSync(yamlPath)) {
+  if (fs2.existsSync(yamlPath)) {
     try {
-      const raw = fs.readFileSync(yamlPath, "utf-8");
+      const raw = fs2.readFileSync(yamlPath, "utf-8");
       const resolved = resolveEnvVars(raw);
       return load(resolved);
     } catch (e) {
@@ -3457,8 +3640,8 @@ async function recordConfigHistory(config) {
       hash: crypto.createHash("md5").update(JSON.stringify(envSnapshot)).digest("hex")
     };
     let entries = [];
-    if (fs.existsSync(historyPath)) {
-      const raw = fs.readFileSync(historyPath, "utf-8");
+    if (fs2.existsSync(historyPath)) {
+      const raw = fs2.readFileSync(historyPath, "utf-8");
       entries = raw.trim().split("\n").filter(Boolean).map((line) => {
         try {
           return JSON.parse(line);
@@ -3470,8 +3653,8 @@ async function recordConfigHistory(config) {
     entries.push(entry);
     if (entries.length > 100) entries = entries.slice(-100);
     const dir = path.dirname(historyPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(historyPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+    if (!fs2.existsSync(dir)) fs2.mkdirSync(dir, { recursive: true });
+    fs2.writeFileSync(historyPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
   } catch {
   }
 }
@@ -3529,7 +3712,8 @@ var LanceDBAdapter = class {
           usefulness_score: 0.5,
           recall_count: 0,
           name: "__init__",
-          description: "__init__"
+          description: "__init__",
+          platform: "hawk-bridge"
         });
         const table = makeArrowTable([sampleRow]);
         this.table = await this.db.createTable(TABLE_NAME, table);
@@ -3542,6 +3726,13 @@ var LanceDBAdapter = class {
         }
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
+        try {
+          const { Index } = await import("@lancedb/lancedb");
+          await this.table.createIndex("text", Index.fts());
+          logger.info("FTS index ensured on text column");
+        } catch (err) {
+          logger.warn({ err: err?.message }, "FTS index creation failed (non-fatal, index may already exist)");
+        }
         try {
           await this.table.alterAddColumns([
             { name: "expires_at", type: { type: "int64" } },
@@ -3565,7 +3756,8 @@ var LanceDBAdapter = class {
             { name: "source", type: { type: "utf8" } },
             { name: "last_used_at", type: { type: "int64" } },
             { name: "usefulness_score", type: { type: "float" } },
-            { name: "recall_count", type: { type: "int32" } }
+            { name: "recall_count", type: { type: "int32" } },
+            { name: "platform", type: { type: "utf8" } }
           ]);
         } catch (_) {
         }
@@ -3634,7 +3826,9 @@ var LanceDBAdapter = class {
       last_used_at: BigInt(data.last_used_at ?? 0),
       // Use 0.0 for null usefulness_score
       usefulness_score: data.usefulness_score ?? 0,
-      recall_count: data.recall_count ?? 0
+      recall_count: data.recall_count ?? 0,
+      // Use 'hawk-bridge' as default platform
+      platform: data.platform ?? "hawk-bridge"
     };
   }
   computeEffectiveReliability(base, verificationCount, lastVerifiedAt, correctionCount) {
@@ -4722,7 +4916,8 @@ init_embeddings();
 
 // src/hooks/hawk-recall/handler.ts
 import * as path3 from "path";
-import { homedir as homedir3 } from "os";
+import * as fs3 from "fs";
+import { homedir as homedir4 } from "os";
 init_embeddings();
 init_logger();
 init_metrics();
@@ -4731,12 +4926,35 @@ var bm25DirtyGlobal = false;
 function markBm25Dirty() {
   bm25DirtyGlobal = true;
 }
-var DRIFT_VERIFY_QUEUE = path3.join(homedir3(), ".hawk", "drift-verify-queue.jsonl");
+var DRIFT_VERIFY_QUEUE = path3.join(homedir4(), ".hawk", "drift-verify-queue.jsonl");
 
 // src/hooks/hawk-capture/handler.ts
 init_logger();
 init_metrics();
 var exec = promisify(execSync);
+var MAX_CONCURRENT_SUBPROCESSES = parseInt(
+  process.env.HAWK_MAX_CONCURRENT_SUBPROCESSES ?? "5",
+  10
+);
+var activeSubprocesses = 0;
+var subprocessWaitQueue = [];
+function acquireSubprocessSlot() {
+  if (activeSubprocesses < MAX_CONCURRENT_SUBPROCESSES) {
+    activeSubprocesses++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    subprocessWaitQueue.push(resolve);
+  });
+}
+function releaseSubprocessSlot() {
+  const next = subprocessWaitQueue.shift();
+  if (next) {
+    next();
+  } else {
+    activeSubprocesses--;
+  }
+}
 var db = null;
 var embedder = null;
 async function getDB() {
@@ -4780,10 +4998,10 @@ function audit(action, reason, text) {
   }) + "\n";
   try {
     const dir = path4.dirname(AUDIT_LOG_PATH);
-    if (!fs2.existsSync(dir)) {
-      fs2.mkdirSync(dir, { recursive: true });
+    if (!fs4.existsSync(dir)) {
+      fs4.mkdirSync(dir, { recursive: true });
     }
-    fs2.appendFileSync(AUDIT_LOG_PATH, entry);
+    fs4.appendFileSync(AUDIT_LOG_PATH, entry);
   } catch (err) {
     logger.error({ err: err?.message }, "Failed to write audit log");
   }
@@ -5209,52 +5427,61 @@ function callExtractor(conversationText, config) {
   });
 }
 function callExtractorSubprocess(conversationText, config) {
-  return new Promise((resolve) => {
-    const apiKey = config.llm?.apiKey || config.embedding.apiKey || "";
-    const model = config.llm?.model || "MiniMax-M2.7";
-    const provider = config.llm?.provider || "openclaw";
-    const baseURL = config.llm?.baseURL || "";
-    const proc = spawn(
-      config.python.pythonPath,
-      ["-c", buildExtractorScript(conversationText, apiKey, model, provider, baseURL)]
-    );
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => {
-      logger.warn("Subprocess timeout, killing");
-      proc.kill("SIGTERM");
-    }, 3e4);
-    proc.stdout.on("data", (d) => {
-      stdout += d.toString();
-    });
-    proc.stderr.on("data", (d) => {
-      stderr += d.toString();
-    });
-    proc.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        logger.error({ code, stderr }, "Extractor subprocess error");
-        resolve([]);
-        return;
-      }
-      try {
-        const result = JSON.parse(stdout.trim());
-        if (Array.isArray(result)) {
-          resolve(result);
-        } else {
-          logger.warn({ output: stdout.slice(0, 200) }, "Unexpected extractor output, discarding");
+  return new Promise(async (resolve) => {
+    await acquireSubprocessSlot();
+    try {
+      const apiKey = config.llm?.apiKey || config.embedding.apiKey || "";
+      const model = config.llm?.model || "MiniMax-M2.7";
+      const provider = config.llm?.provider || "openclaw";
+      const baseURL = config.llm?.baseURL || "";
+      const proc = spawn(
+        config.python.pythonPath,
+        ["-c", buildExtractorScript(conversationText, apiKey, model, provider, baseURL)]
+      );
+      let stdout = "";
+      let stderr = "";
+      const timer = setTimeout(() => {
+        logger.warn("Subprocess timeout, killing");
+        proc.kill("SIGTERM");
+      }, 3e4);
+      proc.stdout.on("data", (d) => {
+        stdout += d.toString();
+      });
+      proc.stderr.on("data", (d) => {
+        stderr += d.toString();
+      });
+      proc.on("close", (code) => {
+        clearTimeout(timer);
+        releaseSubprocessSlot();
+        if (code !== 0) {
+          logger.error({ code, stderr }, "Extractor subprocess error");
+          resolve([]);
+          return;
+        }
+        try {
+          const result = JSON.parse(stdout.trim());
+          if (Array.isArray(result)) {
+            resolve(result);
+          } else {
+            logger.warn({ output: stdout.slice(0, 200) }, "Unexpected extractor output, discarding");
+            resolve([]);
+          }
+        } catch {
+          logger.warn("Extractor JSON parse failed, discarding output");
           resolve([]);
         }
-      } catch {
-        logger.warn("Extractor JSON parse failed, discarding output");
+      });
+      proc.on("error", (err) => {
+        clearTimeout(timer);
+        releaseSubprocessSlot();
+        logger.error({ err: err.message }, "Subprocess error");
         resolve([]);
-      }
-    });
-    proc.on("error", (err) => {
-      clearTimeout(timer);
-      logger.error({ err: err.message }, "Subprocess error");
+      });
+    } catch (err) {
+      releaseSubprocessSlot();
+      logger.error({ err }, "callExtractorSubprocess unexpected error");
       resolve([]);
-    });
+    }
   });
 }
 function buildExtractorScript(conversation, apiKey, model, provider, baseURL) {

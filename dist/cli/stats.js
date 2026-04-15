@@ -4587,31 +4587,163 @@ var LanceDBAdapter = class {
   }
 };
 
-// src/cli/decay.ts
+// src/cli/stats.ts
+import * as path3 from "path";
+import * as fs3 from "fs";
+function getDBPath() {
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  return path3.join(home, ".hawk", "lancedb");
+}
+async function getDirSize(dirPath) {
+  let total = 0;
+  try {
+    const entries = await fs3.promises.readdir(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path3.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        total += await getDirSize(full);
+      } else {
+        const stat = await fs3.promises.stat(full);
+        total += stat.size;
+      }
+    }
+  } catch {
+  }
+  return total;
+}
 async function main() {
+  const args = process.argv.slice(2);
+  const jsonMode = args.includes("--json");
+  const tiersMode = args.includes("--tiers");
+  const agentsMode = args.includes("--agents");
   const db = new LanceDBAdapter();
   await db.init();
-  console.log("[decay] Starting memory maintenance...");
+  const memories = await db.getAllMemories();
+  const total = memories.length;
+  const stats = await db.getDBStats();
+  const dbPath = getDBPath();
+  let dirSizeBytes = 0;
   try {
-    const result = await db.decay();
-    console.log(
-      `[decay] Done \u2014 updated=${result.updated}, deleted=${result.deleted}`
-    );
-  } catch (err) {
-    console.log("[decay] No memories to process or error:", err.message);
+    dirSizeBytes = await getDirSize(dbPath);
+  } catch {
   }
+  const formatBytes = (bytes) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  };
+  if (jsonMode) {
+    const tiers2 = { permanent: 0, stable: 0, decay: 0, archived: 0 };
+    const categories2 = {};
+    const agents2 = {};
+    const now2 = Date.now();
+    let recent7d2 = 0;
+    let recent30d2 = 0;
+    for (const m of memories) {
+      const scope = m.scope || "unknown";
+      if (scope === "permanent") tiers2.permanent++;
+      else if (scope === "stable") tiers2.stable++;
+      else if (scope === "decay") tiers2.decay++;
+      else if (scope === "archived" || scope === "archive") tiers2.archived++;
+      else tiers2.stable++;
+      const cat = m.category || "other";
+      categories2[cat] = (categories2[cat] || 0) + 1;
+      const owner = m.metadata?.owner_agent ?? m.metadata?.ownerAgent ?? "unknown";
+      agents2[owner] = (agents2[owner] || 0) + 1;
+      const daysIdle = (now2 - m.lastAccessedAt) / 864e5;
+      if (daysIdle <= 7) recent7d2++;
+      if (daysIdle <= 30) recent30d2++;
+    }
+    const output = {
+      total,
+      tiers: tiers2,
+      categories: categories2,
+      agents: agents2,
+      dbSizeBytes: dirSizeBytes,
+      dbSizeFormatted: formatBytes(dirSizeBytes),
+      recent7d: recent7d2,
+      recent30d: recent30d2,
+      lockedCount: memories.filter((m) => m.locked).length
+    };
+    console.log(JSON.stringify(output, null, 2));
+    return;
+  }
+  console.log("\n\u{1F985} hawk-bridge \u7EDF\u8BA1\u4FE1\u606F\n" + "\u2550".repeat(50));
+  console.log(`
+\u{1F4CA} \u603B\u8BB0\u5FC6\u6570: ${total}`);
+  console.log(`\u{1F4BE} \u6570\u636E\u5E93\u5927\u5C0F: ${formatBytes(dirSizeBytes)}`);
+  console.log(`\u{1F4C1} \u6570\u636E\u5E93\u8DEF\u5F84: ${dbPath}`);
+  const tiers = { permanent: 0, stable: 0, decay: 0, archived: 0 };
+  const categories = {};
+  const agents = {};
+  const now = Date.now();
+  let recent7d = 0;
+  let recent30d = 0;
+  let lockedCount = 0;
+  for (const m of memories) {
+    const scope = m.scope || "unknown";
+    if (scope === "permanent") tiers.permanent++;
+    else if (scope === "stable") tiers.stable++;
+    else if (scope === "decay") tiers.decay++;
+    else if (scope === "archived" || scope === "archive") tiers.archived++;
+    else tiers.stable++;
+    const cat = m.category || "other";
+    categories[cat] = (categories[cat] || 0) + 1;
+    const owner = m.metadata?.owner_agent ?? m.metadata?.ownerAgent ?? "unknown";
+    agents[owner] = (agents[owner] || 0) + 1;
+    const daysIdle = (now - m.lastAccessedAt) / 864e5;
+    if (daysIdle <= 7) recent7d++;
+    if (daysIdle <= 30) recent30d++;
+    if (m.locked) lockedCount++;
+  }
+  if (tiersMode || agentsMode) {
+    if (tiersMode) {
+      console.log("\n\u{1F3F7}\uFE0F Tier \u5206\u5E03:");
+      console.log(`   \u{1F7E2} permanent (\u6C38\u4E45): ${tiers.permanent}`);
+      console.log(`   \u{1F535} stable (\u7A33\u5B9A):    ${tiers.stable}`);
+      console.log(`   \u{1F7E1} decay (\u8870\u51CF):     ${tiers.decay}`);
+      console.log(`   \u26AA archived (\u5F52\u6863):  ${tiers.archived}`);
+    }
+    if (agentsMode) {
+      console.log("\n\u{1F465} Agent \u5206\u5E03:");
+      const sorted = Object.entries(agents).sort((a, b) => b[1] - a[1]);
+      for (const [agent, count] of sorted) {
+        console.log(`   ${agent}: ${count}`);
+      }
+    }
+    console.log("");
+    return;
+  }
+  console.log("\n\u{1F3F7}\uFE0F Tier \u5206\u5E03:");
+  console.log(`   \u{1F7E2} permanent (\u6C38\u4E45): ${tiers.permanent}  (>=${0.75.toFixed(2)} importance, >=3\u6B21recall)`);
+  console.log(`   \u{1F535} stable (\u7A33\u5B9A):    ${tiers.stable}  (>=${0.5.toFixed(2)} importance)`);
+  console.log(`   \u{1F7E1} decay (\u8870\u51CF):     ${tiers.decay}  (>${0.3.toFixed(2)} importance)`);
+  console.log(`   \u26AA archived (\u5F52\u6863):  ${tiers.archived}  (<=${0.3.toFixed(2)} importance)`);
+  console.log("\n\u{1F4C1} Category \u5206\u5E03:");
+  const catSorted = Object.entries(categories).sort((a, b) => b[1] - a[1]);
+  for (const [cat, count] of catSorted) {
+    const bar = "\u2588".repeat(Math.round(count / total * 20));
+    console.log(`   ${cat.padEnd(12)} ${String(count).padStart(4)} ${bar}`);
+  }
+  console.log("\n\u{1F4C5} \u6D3B\u8DC3\u5EA6:");
+  console.log(`   7 \u5929\u5185\u8BBF\u95EE:  ${recent7d}`);
+  console.log(`   30 \u5929\u5185\u8BBF\u95EE: ${recent30d}`);
+  console.log(`   \u{1F512} \u9501\u5B9A:     ${lockedCount}`);
+  if (memories.length > 0) {
+    const recent = await db.listRecent(5);
+    console.log("\n\u{1F550} \u6700\u8FD1 5 \u6761\u8BB0\u5FC6:");
+    for (const m of recent) {
+      const age = Math.round((now - m.lastAccessedAt) / 6e4);
+      const ageStr = age < 60 ? `${age}m ago` : age < 1440 ? `${Math.round(age / 60)}h ago` : `${Math.round(age / 1440)}d ago`;
+      const text = m.text.length > 60 ? m.text.slice(0, 60) + "..." : m.text;
+      console.log(`   [${m.category}] ${text} (${ageStr})`);
+    }
+  }
+  console.log("\n" + "\u2550".repeat(50) + "\n");
 }
-var watch = process.argv.includes("--watch");
-var intervalMs = 6 * 60 * 60 * 1e3;
-main().then(() => {
-  if (watch) {
-    console.log("[decay] Watch mode: next run in 6h");
-    setInterval(main, intervalMs);
-  } else {
-    process.exit(0);
-  }
-}).catch((err) => {
-  console.error("[decay] Failed:", err);
+main().catch((err) => {
+  console.error("\u274C Stats failed:", err.message);
   process.exit(1);
 });
 /*! Bundled license information:

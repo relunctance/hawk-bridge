@@ -2639,7 +2639,7 @@ var init_constants = __esm({
     DECAY_RATE_MEDIUM_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_MEDIUM || "0.8");
     DECAY_RATE_LOW_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_LOW || "1.5");
     COLD_START_GRACE_DAYS = parseInt(process.env.HAWK_COLD_START_GRACE_DAYS || "7", 10);
-    COLD_START_DECAY_MULTIPLIER = parseFloat(process.env.HAWK_COLD_START_DECAY_MULTIPLIER || "0.1");
+    COLD_START_DECAY_MULTIPLIER = parseFloat(process.env.HAWK_COLD_START_DECAY_MULTIPLIER || "0.5");
     CONFLICT_SIMILARITY_THRESHOLD = parseFloat(process.env.HAWK_CONFLICT_THRESHOLD || "0.6");
     ENTITY_DEDUP_THRESHOLD = parseFloat(process.env.HAWK_ENTITY_DEDUP_THRESHOLD || "0.75");
     ENTITY_DEDUP_SESSION_WINDOW = parseInt(process.env.HAWK_ENTITY_DEDUP_SESSION_WINDOW || "10", 10);
@@ -3112,7 +3112,7 @@ var init_config = __esm({
 
 // src/cli/doctor.ts
 init_config();
-import * as fs2 from "fs";
+import * as fs3 from "fs";
 import * as path2 from "path";
 import * as os2 from "os";
 import { execSync } from "child_process";
@@ -3125,6 +3125,98 @@ import { HttpsProxyAgent } from "https-proxy-agent";
 
 // src/logger.ts
 import pino from "pino";
+import fs2 from "fs";
+import { join as join2, dirname as dirname2 } from "path";
+import { existsSync as existsSync2, mkdirSync as mkdirSync2, unlinkSync, readdirSync, statSync } from "fs";
+import { homedir as homedir2 } from "os";
+var LOG_DIR = process.env.HAWK_LOG_DIR ?? join2(homedir2(), ".hawk", "logs");
+var LOG_FILE_BASE = join2(LOG_DIR, "hawk-bridge.log");
+var MAX_FILE_SIZE = parseInt(process.env.HAWK_LOG_MAX_SIZE ?? String(50 * 1024 * 1024), 10);
+var MAX_FILES = parseInt(process.env.HAWK_LOG_MAX_FILES ?? "14", 10);
+function getTimestamp() {
+  const now = /* @__PURE__ */ new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const h = String(now.getHours()).padStart(2, "0");
+  const min = String(now.getMinutes()).padStart(2, "0");
+  const s = String(now.getSeconds()).padStart(2, "0");
+  return `${y}${m}${d}-${h}${min}${s}`;
+}
+var RotatingFileStream = class {
+  stream;
+  size = 0;
+  constructor(filePath) {
+    this.ensureDir(dirname2(filePath));
+    this.stream = this.openStream(filePath);
+  }
+  ensureDir(dir) {
+    if (!existsSync2(dir)) mkdirSync2(dir, { recursive: true });
+  }
+  openStream(filePath) {
+    const fd = existsSync2(filePath) ? void 0 : void 0;
+    const s = fs2.createWriteStream(filePath, { flags: "a", highWaterMark: 64 * 1024 });
+    if (existsSync2(filePath)) {
+      this.size = statSync(filePath).size;
+    }
+    return s;
+  }
+  rotate() {
+    this.stream.end();
+    const rotatedPath = `${LOG_FILE_BASE}.${getTimestamp()}.log`;
+    try {
+      const dir = dirname2(LOG_FILE_BASE);
+      if (existsSync2(LOG_FILE_BASE)) {
+        fs2.renameSync(LOG_FILE_BASE, rotatedPath);
+      }
+    } catch {
+    }
+    this.stream = this.openStream(LOG_FILE_BASE);
+    this.size = 0;
+    this.cleanupOldRotations();
+  }
+  cleanupOldRotations() {
+    try {
+      const dir = dirname2(LOG_FILE_BASE);
+      const base = basename(LOG_FILE_BASE);
+      const files = readdirSync(dir).filter((f) => f.startsWith(base + ".") && f.endsWith(".log")).map((f) => ({
+        name: f,
+        path: join2(dir, f),
+        mtime: statSync(join2(dir, f)).mtime.getTime()
+      })).sort((a, b) => a.mtime - b.mtime);
+      const excess = files.length - MAX_FILES;
+      if (excess > 0) {
+        for (const f of files.slice(0, excess)) {
+          try {
+            unlinkSync(f.path);
+          } catch {
+          }
+        }
+      }
+    } catch {
+    }
+  }
+  write(chunk, cb) {
+    const len = Buffer.byteLength(chunk, "utf8");
+    if (this.size + len > MAX_FILE_SIZE) {
+      this.rotate();
+    }
+    this.size += len;
+    this.stream.write(chunk, cb);
+  }
+  end(cb) {
+    this.stream.end(cb);
+  }
+  // Expose for pino
+  get fd() {
+    return this.stream.fd ?? -1;
+  }
+};
+function basename(p) {
+  return p.split("/").pop() ?? p;
+}
+if (!existsSync2(LOG_DIR)) mkdirSync2(LOG_DIR, { recursive: true });
+var rotatingStream = new RotatingFileStream(LOG_FILE_BASE);
 var logLevel = process.env.HAWK__LOGGING__LEVEL || process.env.HAWK_LOG_LEVEL || "info";
 var logger = pino({
   level: logLevel,
@@ -3132,7 +3224,29 @@ var logger = pino({
     level: (label) => ({ level: label })
   },
   timestamp: pino.stdTimeFunctions.isoTime
-});
+}, rotatingStream);
+function patchConsole() {
+  if (process.env.NODE_ENV !== "production" && process.env.HAWK_STRICT_LOG !== "1") return;
+  const origError = console.error.bind(console);
+  const origWarn = console.warn.bind(console);
+  const origLog = console.log.bind(console);
+  console.error = (...args) => {
+    logger.error({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.warn = (...args) => {
+    logger.warn({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.log = (...args) => {
+    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.info = (...args) => {
+    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.debug = (...args) => {
+    logger.debug({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+}
+patchConsole();
 
 // src/metrics.ts
 import { Registry, Counter, Histogram, Gauge } from "prom-client";
@@ -3169,8 +3283,70 @@ var memoryErrors = new Counter({
   registers: [register]
 });
 
+// src/utils/circuit-breaker.ts
+var CircuitBreaker = class {
+  constructor(threshold = 5, resetMs = 3e4, halfOpenMax = 2) {
+    this.threshold = threshold;
+    this.resetMs = resetMs;
+    this.halfOpenMax = halfOpenMax;
+  }
+  failures = 0;
+  lastFailure = 0;
+  state = "closed";
+  halfOpenCount = 0;
+  async run(fn) {
+    if (this.state === "open") {
+      if (Date.now() - this.lastFailure > this.resetMs) {
+        this.state = "half-open";
+        this.halfOpenCount = 0;
+      } else {
+        throw new CircuitOpenError(`Circuit is open, retry after ${this.resetMs}ms`);
+      }
+    }
+    if (this.state === "half-open") {
+      if (this.halfOpenCount >= this.halfOpenMax) {
+        throw new CircuitOpenError("Circuit half-open limit reached");
+      }
+      this.halfOpenCount++;
+    }
+    try {
+      const result = await fn();
+      this.onSuccess();
+      return result;
+    } catch (e) {
+      this.onFailure();
+      throw e;
+    }
+  }
+  onSuccess() {
+    this.failures = 0;
+    this.state = "closed";
+  }
+  onFailure() {
+    this.failures++;
+    this.lastFailure = Date.now();
+    if (this.failures >= this.threshold) {
+      this.state = "open";
+    }
+  }
+  getStatus() {
+    return {
+      state: this.state,
+      failures: this.failures,
+      lastFailure: this.lastFailure
+    };
+  }
+};
+var CircuitOpenError = class extends Error {
+  constructor(msg) {
+    super(msg);
+    this.name = "CircuitOpenError";
+  }
+};
+
 // src/embeddings.ts
 var FETCH_TIMEOUT_MS = 15e3;
+var embedBreaker = new CircuitBreaker(5, 3e4);
 async function fetchWithRetry(url, options = {}, retries = 3) {
   let lastError = null;
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -3556,11 +3732,11 @@ async function runDoctor() {
   check("LanceDB", () => {
     try {
       const lancedbPath = path2.join(process.cwd(), "node_modules", "@lancedb", "lancedb", "dist", "index.js");
-      if (fs2.existsSync(lancedbPath)) {
+      if (fs3.existsSync(lancedbPath)) {
         return { status: "pass", message: "@lancedb/lancedb installed" };
       }
       const pkgJson = path2.join(process.cwd(), "node_modules", "@lancedb", "lancedb", "package.json");
-      if (fs2.existsSync(pkgJson)) {
+      if (fs3.existsSync(pkgJson)) {
         return { status: "pass", message: "@lancedb/lancedb installed (package.json found)" };
       }
       return { status: "fail", message: "@lancedb/lancedb \u672A\u5B89\u88C5\uFF0C\u8BF7\u8FD0\u884C npm install" };
@@ -3571,9 +3747,9 @@ async function runDoctor() {
   check("\u914D\u7F6E\u6587\u4EF6", () => {
     const yamlPath = path2.join(os2.homedir(), ".hawk", "config.yaml");
     const jsonPath = path2.join(os2.homedir(), ".hawk", "config.json");
-    if (fs2.existsSync(yamlPath)) {
+    if (fs3.existsSync(yamlPath)) {
       return { status: "pass", message: `~/.hawk/config.yaml \u5B58\u5728` };
-    } else if (fs2.existsSync(jsonPath)) {
+    } else if (fs3.existsSync(jsonPath)) {
       return { status: "fail", message: `~/.hawk/config.json \u4E0D\u518D\u652F\u6301\uFF0C\u8BF7\u8FC1\u79FB\u5230 ~/.hawk/config.yaml` };
     } else {
       return { status: "warn", message: `\u65E0\u914D\u7F6E\u6587\u4EF6\uFF0C\u4F7F\u7528\u9ED8\u8BA4\u914D\u7F6E` };
@@ -3582,7 +3758,7 @@ async function runDoctor() {
   check("\u914D\u7F6E\u89E3\u6790", () => {
     try {
       const yamlPath = path2.join(os2.homedir(), ".hawk", "config.yaml");
-      if (fs2.existsSync(yamlPath)) {
+      if (fs3.existsSync(yamlPath)) {
         return { status: "pass", message: "\u914D\u7F6E\u6587\u4EF6\u53EF\u8BFB\u53D6" };
       }
       return { status: "warn", message: "\u65E0\u914D\u7F6E\u6587\u4EF6\uFF0C\u4F7F\u7528\u9ED8\u8BA4\u914D\u7F6E" };
@@ -3612,14 +3788,14 @@ async function runDoctor() {
   });
   check("hawk CLI", () => {
     const hawkCli = path2.join(os2.homedir(), ".hawk", "bin", "hawk");
-    if (fs2.existsSync(hawkCli)) {
+    if (fs3.existsSync(hawkCli)) {
       return { status: "pass", message: "~/.hawk/bin/hawk \u5B58\u5728" };
     }
     return { status: "warn", message: "~/.hawk/bin/hawk \u4E0D\u5B58\u5728\uFF08\u53EF\u9009\uFF09" };
   });
   check("\u78C1\u76D8\u7A7A\u95F4", () => {
     try {
-      const stat = fs2.statfsSync(os2.homedir());
+      const stat = fs3.statfsSync(os2.homedir());
       const freeGB = stat.bsize * stat.bavail / 1e9;
       if (freeGB < 1) return { status: "fail", message: `\u53EF\u7528\u7A7A\u95F4\u4E0D\u8DB3 ${freeGB.toFixed(1)} GB` };
       if (freeGB < 5) return { status: "warn", message: `\u53EF\u7528\u7A7A\u95F4 ${freeGB.toFixed(1)} GB\uFF08\u504F\u5C11\uFF09` };
@@ -3630,9 +3806,9 @@ async function runDoctor() {
   });
   check("OpenClaw Hooks", () => {
     const pluginJson = path2.join(process.cwd(), "openclaw.plugin.json");
-    if (fs2.existsSync(pluginJson)) {
+    if (fs3.existsSync(pluginJson)) {
       try {
-        const plugin = JSON.parse(fs2.readFileSync(pluginJson, "utf-8"));
+        const plugin = JSON.parse(fs3.readFileSync(pluginJson, "utf-8"));
         const hookNames = (plugin.hooks || []).map((h) => h.name);
         return { status: "pass", message: `\u5DF2\u6CE8\u518C hooks: ${hookNames.join(", ")}` };
       } catch {

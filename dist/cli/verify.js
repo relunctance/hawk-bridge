@@ -10,6 +10,98 @@ import { HttpsProxyAgent } from "https-proxy-agent";
 
 // src/logger.ts
 import pino from "pino";
+import fs from "fs";
+import { join, dirname } from "path";
+import { existsSync, mkdirSync, unlinkSync, readdirSync, statSync } from "fs";
+import { homedir } from "os";
+var LOG_DIR = process.env.HAWK_LOG_DIR ?? join(homedir(), ".hawk", "logs");
+var LOG_FILE_BASE = join(LOG_DIR, "hawk-bridge.log");
+var MAX_FILE_SIZE = parseInt(process.env.HAWK_LOG_MAX_SIZE ?? String(50 * 1024 * 1024), 10);
+var MAX_FILES = parseInt(process.env.HAWK_LOG_MAX_FILES ?? "14", 10);
+function getTimestamp() {
+  const now = /* @__PURE__ */ new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const h = String(now.getHours()).padStart(2, "0");
+  const min = String(now.getMinutes()).padStart(2, "0");
+  const s = String(now.getSeconds()).padStart(2, "0");
+  return `${y}${m}${d}-${h}${min}${s}`;
+}
+var RotatingFileStream = class {
+  stream;
+  size = 0;
+  constructor(filePath) {
+    this.ensureDir(dirname(filePath));
+    this.stream = this.openStream(filePath);
+  }
+  ensureDir(dir) {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  }
+  openStream(filePath) {
+    const fd = existsSync(filePath) ? void 0 : void 0;
+    const s = fs.createWriteStream(filePath, { flags: "a", highWaterMark: 64 * 1024 });
+    if (existsSync(filePath)) {
+      this.size = statSync(filePath).size;
+    }
+    return s;
+  }
+  rotate() {
+    this.stream.end();
+    const rotatedPath = `${LOG_FILE_BASE}.${getTimestamp()}.log`;
+    try {
+      const dir = dirname(LOG_FILE_BASE);
+      if (existsSync(LOG_FILE_BASE)) {
+        fs.renameSync(LOG_FILE_BASE, rotatedPath);
+      }
+    } catch {
+    }
+    this.stream = this.openStream(LOG_FILE_BASE);
+    this.size = 0;
+    this.cleanupOldRotations();
+  }
+  cleanupOldRotations() {
+    try {
+      const dir = dirname(LOG_FILE_BASE);
+      const base = basename(LOG_FILE_BASE);
+      const files = readdirSync(dir).filter((f) => f.startsWith(base + ".") && f.endsWith(".log")).map((f) => ({
+        name: f,
+        path: join(dir, f),
+        mtime: statSync(join(dir, f)).mtime.getTime()
+      })).sort((a, b) => a.mtime - b.mtime);
+      const excess = files.length - MAX_FILES;
+      if (excess > 0) {
+        for (const f of files.slice(0, excess)) {
+          try {
+            unlinkSync(f.path);
+          } catch {
+          }
+        }
+      }
+    } catch {
+    }
+  }
+  write(chunk, cb) {
+    const len = Buffer.byteLength(chunk, "utf8");
+    if (this.size + len > MAX_FILE_SIZE) {
+      this.rotate();
+    }
+    this.size += len;
+    this.stream.write(chunk, cb);
+  }
+  end(cb) {
+    this.stream.end(cb);
+  }
+  // Expose for pino
+  get fd() {
+    return this.stream.fd ?? -1;
+  }
+};
+function basename(p) {
+  return p.split("/").pop() ?? p;
+}
+if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
+var rotatingStream = new RotatingFileStream(LOG_FILE_BASE);
 var logLevel = process.env.HAWK__LOGGING__LEVEL || process.env.HAWK_LOG_LEVEL || "info";
 var logger = pino({
   level: logLevel,
@@ -17,7 +109,29 @@ var logger = pino({
     level: (label) => ({ level: label })
   },
   timestamp: pino.stdTimeFunctions.isoTime
-});
+}, rotatingStream);
+function patchConsole() {
+  if (process.env.NODE_ENV !== "production" && process.env.HAWK_STRICT_LOG !== "1") return;
+  const origError = console.error.bind(console);
+  const origWarn = console.warn.bind(console);
+  const origLog = console.log.bind(console);
+  console.error = (...args) => {
+    logger.error({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.warn = (...args) => {
+    logger.warn({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.log = (...args) => {
+    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.info = (...args) => {
+    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.debug = (...args) => {
+    logger.debug({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+}
+patchConsole();
 
 // src/metrics.ts
 import { Registry, Counter, Histogram, Gauge } from "prom-client";
@@ -54,8 +168,70 @@ var memoryErrors = new Counter({
   registers: [register]
 });
 
+// src/utils/circuit-breaker.ts
+var CircuitBreaker = class {
+  constructor(threshold = 5, resetMs = 3e4, halfOpenMax = 2) {
+    this.threshold = threshold;
+    this.resetMs = resetMs;
+    this.halfOpenMax = halfOpenMax;
+  }
+  failures = 0;
+  lastFailure = 0;
+  state = "closed";
+  halfOpenCount = 0;
+  async run(fn) {
+    if (this.state === "open") {
+      if (Date.now() - this.lastFailure > this.resetMs) {
+        this.state = "half-open";
+        this.halfOpenCount = 0;
+      } else {
+        throw new CircuitOpenError(`Circuit is open, retry after ${this.resetMs}ms`);
+      }
+    }
+    if (this.state === "half-open") {
+      if (this.halfOpenCount >= this.halfOpenMax) {
+        throw new CircuitOpenError("Circuit half-open limit reached");
+      }
+      this.halfOpenCount++;
+    }
+    try {
+      const result = await fn();
+      this.onSuccess();
+      return result;
+    } catch (e) {
+      this.onFailure();
+      throw e;
+    }
+  }
+  onSuccess() {
+    this.failures = 0;
+    this.state = "closed";
+  }
+  onFailure() {
+    this.failures++;
+    this.lastFailure = Date.now();
+    if (this.failures >= this.threshold) {
+      this.state = "open";
+    }
+  }
+  getStatus() {
+    return {
+      state: this.state,
+      failures: this.failures,
+      lastFailure: this.lastFailure
+    };
+  }
+};
+var CircuitOpenError = class extends Error {
+  constructor(msg) {
+    super(msg);
+    this.name = "CircuitOpenError";
+  }
+};
+
 // src/embeddings.ts
 var FETCH_TIMEOUT_MS = 15e3;
+var embedBreaker = new CircuitBreaker(5, 3e4);
 async function fetchWithRetry(url, options = {}, retries = 3) {
   let lastError = null;
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -409,7 +585,7 @@ var Embedder = class _Embedder {
 };
 
 // src/config.ts
-import * as fs from "fs";
+import * as fs2 from "fs";
 import * as path from "path";
 import * as os from "os";
 
@@ -3038,7 +3214,7 @@ var DECAY_RATE_HIGH_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_HIGH ||
 var DECAY_RATE_MEDIUM_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_MEDIUM || "0.8");
 var DECAY_RATE_LOW_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_LOW || "1.5");
 var COLD_START_GRACE_DAYS = parseInt(process.env.HAWK_COLD_START_GRACE_DAYS || "7", 10);
-var COLD_START_DECAY_MULTIPLIER = parseFloat(process.env.HAWK_COLD_START_DECAY_MULTIPLIER || "0.1");
+var COLD_START_DECAY_MULTIPLIER = parseFloat(process.env.HAWK_COLD_START_DECAY_MULTIPLIER || "0.5");
 var CONFLICT_SIMILARITY_THRESHOLD = parseFloat(process.env.HAWK_CONFLICT_THRESHOLD || "0.6");
 var ENTITY_DEDUP_THRESHOLD = parseFloat(process.env.HAWK_ENTITY_DEDUP_THRESHOLD || "0.75");
 var ENTITY_DEDUP_SESSION_WINDOW = parseInt(process.env.HAWK_ENTITY_DEDUP_SESSION_WINDOW || "10", 10);
@@ -3221,7 +3397,7 @@ var cachedAgentModels = null;
 function loadOpenClawConfig() {
   if (cachedOpenClawConfig) return cachedOpenClawConfig;
   try {
-    const raw = fs.readFileSync(OPENCLAW_CONFIG_PATH, "utf-8");
+    const raw = fs2.readFileSync(OPENCLAW_CONFIG_PATH, "utf-8");
     cachedOpenClawConfig = JSON.parse(raw);
     return cachedOpenClawConfig;
   } catch {
@@ -3231,7 +3407,7 @@ function loadOpenClawConfig() {
 function loadAgentModels() {
   if (cachedAgentModels !== null) return cachedAgentModels;
   try {
-    cachedAgentModels = JSON.parse(fs.readFileSync(OPENCLAW_AGENT_MODELS, "utf-8"));
+    cachedAgentModels = JSON.parse(fs2.readFileSync(OPENCLAW_AGENT_MODELS, "utf-8"));
     return cachedAgentModels;
   } catch {
     cachedAgentModels = null;
@@ -3310,9 +3486,9 @@ function resolveEnvVars(raw) {
 }
 function loadYamlConfig() {
   const yamlPath = path.join(HAWK_CONFIG_DIR, "config.yaml");
-  if (fs.existsSync(yamlPath)) {
+  if (fs2.existsSync(yamlPath)) {
     try {
-      const raw = fs.readFileSync(yamlPath, "utf-8");
+      const raw = fs2.readFileSync(yamlPath, "utf-8");
       const resolved = resolveEnvVars(raw);
       return load(resolved);
     } catch (e) {
@@ -3424,8 +3600,8 @@ async function recordConfigHistory(config) {
       hash: crypto.createHash("md5").update(JSON.stringify(envSnapshot)).digest("hex")
     };
     let entries = [];
-    if (fs.existsSync(historyPath)) {
-      const raw = fs.readFileSync(historyPath, "utf-8");
+    if (fs2.existsSync(historyPath)) {
+      const raw = fs2.readFileSync(historyPath, "utf-8");
       entries = raw.trim().split("\n").filter(Boolean).map((line) => {
         try {
           return JSON.parse(line);
@@ -3437,8 +3613,8 @@ async function recordConfigHistory(config) {
     entries.push(entry);
     if (entries.length > 100) entries = entries.slice(-100);
     const dir = path.dirname(historyPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(historyPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+    if (!fs2.existsSync(dir)) fs2.mkdirSync(dir, { recursive: true });
+    fs2.writeFileSync(historyPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
   } catch {
   }
 }
@@ -3494,7 +3670,8 @@ var LanceDBAdapter = class {
           usefulness_score: 0.5,
           recall_count: 0,
           name: "__init__",
-          description: "__init__"
+          description: "__init__",
+          platform: "hawk-bridge"
         });
         const table = makeArrowTable([sampleRow]);
         this.table = await this.db.createTable(TABLE_NAME, table);
@@ -3507,6 +3684,13 @@ var LanceDBAdapter = class {
         }
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
+        try {
+          const { Index } = await import("@lancedb/lancedb");
+          await this.table.createIndex("text", Index.fts());
+          logger.info("FTS index ensured on text column");
+        } catch (err) {
+          logger.warn({ err: err?.message }, "FTS index creation failed (non-fatal, index may already exist)");
+        }
         try {
           await this.table.alterAddColumns([
             { name: "expires_at", type: { type: "int64" } },
@@ -3530,7 +3714,8 @@ var LanceDBAdapter = class {
             { name: "source", type: { type: "utf8" } },
             { name: "last_used_at", type: { type: "int64" } },
             { name: "usefulness_score", type: { type: "float" } },
-            { name: "recall_count", type: { type: "int32" } }
+            { name: "recall_count", type: { type: "int32" } },
+            { name: "platform", type: { type: "utf8" } }
           ]);
         } catch (_) {
         }
@@ -3599,7 +3784,9 @@ var LanceDBAdapter = class {
       last_used_at: BigInt(data.last_used_at ?? 0),
       // Use 0.0 for null usefulness_score
       usefulness_score: data.usefulness_score ?? 0,
-      recall_count: data.recall_count ?? 0
+      recall_count: data.recall_count ?? 0,
+      // Use 'hawk-bridge' as default platform
+      platform: data.platform ?? "hawk-bridge"
     };
   }
   computeEffectiveReliability(base, verificationCount, lastVerifiedAt, correctionCount) {
@@ -4401,9 +4588,9 @@ var LanceDBAdapter = class {
 };
 
 // src/cli/verify.ts
-import * as fs2 from "fs";
+import * as fs3 from "fs";
 import * as path3 from "path";
-import { homedir as homedir3 } from "os";
+import { homedir as homedir4 } from "os";
 function safeParseJSON(raw, context) {
   try {
     return JSON.parse(raw);
@@ -4414,7 +4601,7 @@ function safeParseJSON(raw, context) {
 }
 function safeReadJSON(filePath, context) {
   try {
-    const raw = fs2.readFileSync(filePath, "utf-8");
+    const raw = fs3.readFileSync(filePath, "utf-8");
     return safeParseJSON(raw, context);
   } catch (e) {
     console.warn(`[hawk-verify] Failed to read ${context} at '${filePath}': ${e.message}`);
@@ -4440,16 +4627,16 @@ function safeResolve(given, base) {
 }
 var DRY_RUN = hasFlag("--dry-run");
 var MIN_CONF = parseFloat(getArg("--min-confidence", "0")) || 0;
-var SOUL_DIR_DEFAULT = path3.join(homedir3(), ".soulforge-main");
+var SOUL_DIR_DEFAULT = path3.join(homedir4(), ".soulforge-main");
 var SOUL_DIR = safeResolve(getArg("--soul-dir", SOUL_DIR_DEFAULT), SOUL_DIR_DEFAULT);
 var BOOST = parseFloat(getArg("--boost", "0.15"));
 var SOUL_CONFIG = safeResolve(path3.join(SOUL_DIR, ".soulforgerc.json"), SOUL_DIR);
 function findSoulReviewFiles() {
   const reviewDir = path3.join(SOUL_DIR, "review");
-  if (!fs2.existsSync(reviewDir)) return [];
-  const interactiveFiles = fs2.readdirSync(reviewDir).filter((f) => f.startsWith("interactive_") && f.endsWith(".json")).sort().reverse().map((f) => path3.join(reviewDir, f));
+  if (!fs3.existsSync(reviewDir)) return [];
+  const interactiveFiles = fs3.readdirSync(reviewDir).filter((f) => f.startsWith("interactive_") && f.endsWith(".json")).sort().reverse().map((f) => path3.join(reviewDir, f));
   const latest = path3.join(reviewDir, "latest.json");
-  const files = fs2.existsSync(latest) ? [latest] : [];
+  const files = fs3.existsSync(latest) ? [latest] : [];
   return [...files, ...interactiveFiles.slice(0, 3)];
 }
 function parseSoulReview(filePath) {
@@ -4503,7 +4690,7 @@ async function main() {
   console.log("[hawk-verify] Starting SoulForge \xD7 hawk-bridge verification sync");
   if (DRY_RUN) console.log("[hawk-verify] DRY RUN \u2014 no changes will be written");
   let soulDir = SOUL_DIR;
-  if (fs2.existsSync(SOUL_CONFIG)) {
+  if (fs3.existsSync(SOUL_CONFIG)) {
     const cfg = safeReadJSON(SOUL_CONFIG, "SOUL_CONFIG");
     if (cfg?.learnings_dir) {
       soulDir = path3.dirname(cfg.learnings_dir);
@@ -4576,10 +4763,10 @@ async function main() {
   if (DRY_RUN) console.log("  (DRY RUN \u2014 no changes written)");
   if (!DRY_RUN && verified > 0) {
     try {
-      const recordDir = path3.join(homedir3(), ".hawk");
-      if (!fs2.existsSync(recordDir)) fs2.mkdirSync(recordDir, { recursive: true });
+      const recordDir = path3.join(homedir4(), ".hawk");
+      if (!fs3.existsSync(recordDir)) fs3.mkdirSync(recordDir, { recursive: true });
       const recordFile = path3.join(recordDir, `verify-${Date.now()}.json`);
-      fs2.writeFileSync(recordFile, JSON.stringify({
+      fs3.writeFileSync(recordFile, JSON.stringify({
         verified_at: (/* @__PURE__ */ new Date()).toISOString(),
         patterns_processed: allPatterns.length,
         memories_verified: verified,
