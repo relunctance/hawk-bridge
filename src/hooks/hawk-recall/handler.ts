@@ -102,11 +102,12 @@ async function getRetriever(): Promise<HybridRetriever> {
 // 2. LLM select: lightweight model picks top N from candidates (accurate)
 // This is more accurate than pure vector search because it uses structured description.
 
-const SELECT_MEMORIES_SYSTEM_PROMPT = `You are selecting memories that will be useful for answering the user's query.
-You will be given a list of memory files with their names, descriptions, and categories.
-IMPORTANT: Only return memories that are DIRECTLY and SPECIFICALLY relevant to the query.
-Return a JSON array of the memory IDs. Be conservative — if no memories are clearly relevant, return [].
-Do NOT include memories that are vaguely related or might possibly be useful.`;
+const SELECT_MEMORIES_SYSTEM_PROMPT = `你是一个记忆筛选助手，负责从用户的记忆列表中选出最相关的那几条。
+
+我给你一个查询词（query），以及一批记忆文件的名称、描述和分类。
+请只返回与查询词**直接、明确相关**的记忆 ID（JSON 数组格式）。
+严格保守筛选：若没有记忆明确相关，直接返回空数组 []。
+不要包含那些"可能有点关系"或"模糊相关"的记忆。`;
 
 async function dualSelect(
   query: string,
