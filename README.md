@@ -908,6 +908,109 @@ See [TODO.md](TODO.md) for detailed implementation roadmap.
 
 ---
 
+## 🛡️ Memory Contamination & Anti-Hallucination
+
+> **Defense-in-depth: stop contamination at the gate, limit damage in the store, filter at query time**
+
+### Why It Matters
+
+LLM hallucinations + memory systems = **amplifier effect**. A single false memory stored in the system gets recalled as "truth" in every subsequent conversation. Memory contamination is harder to fix than preventing it.
+
+### Defense Layers
+
+```
+Input Layer
+  └── Injection Detector — scans text before write, flags suspicious patterns
+         │
+         ▼
+Storage Layer
+  ├── Write Confidence Threshold — entries with confidence < 0.7 are rejected
+  ├── Hallucination Risk Score — 0–1 score per entry (llm_inference +0.3, stale +0.2…)
+  ├── Audit Log — every write/update/delete logged to SQLite, tamper-evident
+  └── Upsert with Version — old versions preserved, never silently overwritten
+         │
+         ▼
+Query Layer
+  ├── Session/Agent Fencing — recall requires sessionId, no null-scope queries
+  ├── Confidence-Gated Recall — entries with risk_score ≥ 0.6 excluded by default
+  ├── Stale Memory Warning — [❌90d+] / [⚠️30d+] / [🕐7d+] / [✅fresh] age labels
+  └── Memory Quarantine — contaminated entries isolated, excluded from recall
+```
+
+### Key Mechanisms
+
+| Feature | What It Does | Status |
+|---------|-------------|--------|
+| **Injection Detector** | Scans for 9 injection patterns (ignore previous / XXE / XSS…) | ✅ Defined |
+| **Hallucination Risk Score** | 0–1 score: llm_inference, single_source, stale, no_external_ref… | ✅ Defined |
+| **Confidence Threshold** | confidence < 0.7 → write rejected | ✅ Defined |
+| **Audit Log** | SQLite audit trail, every operation traced | ✅ Defined |
+| **Session Fencing** | sessionId required on every recall call | ✅ Defined |
+| **Gated Recall** | risk_score ≥ 0.6 → excluded from recall by default | ✅ Defined |
+| **Source Tracing** | recall results include citation (source, confidence, age) | ✅ Defined |
+| **Stale Warning** | age labels on every recall result | ✅ Defined |
+| **Drift Detector** | same event_id updated 5+ times in 30d → alert | 📋 Planned |
+| **LLM Self-Verification** | high-risk writes trigger LLM二次验证 before commit | 📋 Planned |
+| **Factuality Classification** | factual / inferential / opinion / preference per entry | 📋 Planned |
+
+### Hallucination Risk Score Formula
+
+```typescript
+risk_score = min(1.0, sum of applicable factors)
+
+// Factors:
+llm_inference      → +0.3   // LLM generated, not user-provided
+single_source       → +0.2   // only one recall source, no corroboration
+stale (>30d)       → +0.2   // information may be outdated
+injection_suspected → +0.2   // potential prompt injection detected
+no_external_ref     → +0.1   // no verifiable external citation
+
+// Examples:
+user: "My name is Zhang San"              → risk = 0.0 ✅
+agent infers "user probably likes Python"  → risk = 0.3 🟡
+3-month-old inference, single source       → risk = 0.5 🟡
+LLM inference, stale, no citation        → risk = 0.8 🔴
+```
+
+### Recall Result with Risk Context
+
+```
+正常 recall 返回（携带风险上下文）:
+
+[✅低风险] 2天前 · user_input · 置信度95%
+记忆内容: "使用 miniMax 模型作为默认模型"
+---
+[⚠️中风险] 35天前 · agent_inference · 置信度72% · 🟡可能过期30天+
+记忆内容: "xinference 大概在 9997 端口"
+---
+[⚠️高风险] 90天前 · agent_inference · 置信度45% · ❌已过期90天+
+记忆内容: "这个 API 每天限额 1000 次"  ← 建议验证
+```
+
+### Architecture Position
+
+```
+┌─────────────────────────────────────────────┐
+│          Memory Contamination Defense        │
+├─────────────────────────────────────────────┤
+│  Input:  Injection Detector                  │
+│  Store:  Risk Score + Audit + Versioning    │
+│  Query:  Session Fence + Gated Recall        │
+│  Verify: Drift Detector + Self-Verification  │
+└─────────────────────────────────────────────┘
+         ↑
+         ↓
+┌─────────────────────────────────────────────┐
+│          hawk-bridge (L0 Memory Layer)       │
+│  capture → assess risk → store with audit   │
+│  recall → filter by risk → return with age  │
+└─────────────────────────────────────────────┘
+```
+
+Full implementation details: see [TODO.md](TODO.md) → `## 🛡️ Memory Contamination Defense` and `## 🧠 Anti-Hallucination`.
+
+
+
 ## 📖 Related
 
 - [🦅 context-hawk](https://github.com/relunctance/context-hawk) — Python memory library
