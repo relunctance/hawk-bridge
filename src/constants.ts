@@ -276,9 +276,10 @@ export const COLD_START_GRACE_DAYS = parseInt(process.env.HAWK_COLD_START_GRACE_
 
 /**
  * Cold start protection decay multiplier (applied during grace period).
- * Lower = more protection. Default 0.1 = barely decays.
+ * Lower = more protection. Default 0.5 = moderate decay for new memories.
+ * Note: applied as importance * multiplier^(0.5), so 0.5 → importance * 0.71 on first decay.
  */
-export const COLD_START_DECAY_MULTIPLIER = parseFloat(process.env.HAWK_COLD_START_DECAY_MULTIPLIER || '0.1');
+export const COLD_START_DECAY_MULTIPLIER = parseFloat(process.env.HAWK_COLD_START_DECAY_MULTIPLIER || '0.5');
 
 // ─── Conflict Detection ───────────────────────────────────────────────────────
 
