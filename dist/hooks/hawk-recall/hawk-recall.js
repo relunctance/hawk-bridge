@@ -4257,6 +4257,40 @@ var LanceDBAdapter = class {
   async verify(id, confirmed, correctedText) {
     await this.verifyMemory(id, confirmed, correctedText);
   }
+  /**
+   * verifySoulPattern — learnings 验收后升级记忆
+   * 由 hawk-verify CLI 调用（L4 验收层），将 learnings:unverified → learnings:verified
+   * 同时按 boostAmount 提升 reliability
+   */
+  async verifySoulPattern(memoryId, patternId, patternText, boostAmount) {
+    if (!this.table) await this.init();
+    try {
+      const memory = await this.getById(memoryId);
+      if (!memory) return;
+      const now = Date.now();
+      const newReliability = memory.locked ? memory.reliability : Math.min(1, memory.reliability + boostAmount);
+      const newSource = memory.source === "learnings:unverified" ? "learnings:verified" : memory.source;
+      await this.table.update(
+        {
+          reliability: String(newReliability),
+          source: newSource,
+          verification_count: String((memory.verificationCount ?? 0) + 1),
+          last_verified_at: String(now),
+          correction_history: JSON.stringify([
+            ...memory.correctionHistory || [],
+            {
+              ts: now,
+              oldText: memory.text,
+              newText: `[learnings:verified by pattern ${patternId}] ${patternText}`,
+              patternId
+            }
+          ])
+        },
+        { where: `id = '${memoryId.replace(/'/g, "''")}'` }
+      );
+    } catch {
+    }
+  }
   async lock(id) {
     if (!this.table) await this.init();
     try {
@@ -6577,7 +6611,8 @@ ${tips}
       } else if (src === "evolution-failure") {
         score = score * 0.5;
       } else if (src === "agent_inference") {
-        score = score * INFERENCE_RECALL_PENALTY;
+        const penalty = config.capture.inferenceRecallPenalty ?? 0.7;
+        score = score * penalty;
       }
       return { ...m2, _evolutionScore: score };
     });

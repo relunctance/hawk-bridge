@@ -382,8 +382,9 @@ function textSimilarity(a: string, b: string): number {
 async function isDuplicate(text: string, threshold: number = DEDUP_SIMILARITY): Promise<boolean> {
   try {
     const db = await getDB();
-    // 使用 search 做相似度检查，覆盖所有记忆，不受 lastAccessedAt 限制
-    const results = await db.search(text, 5);
+    // 使用 search 做相似度检查，覆盖所有记忆，去重阈值 0.85
+    // minScore=0.85 保证只跳过真正高度相似的记忆，不误伤
+    const results = await db.search(text, 5, 0.85);
     for (const m of results) {
       // search 返回的 score 来自向量相似度（HTTP 走 /recall，LanceDB 走 FTS）
       // score 范围 0-1，threshold 0.85

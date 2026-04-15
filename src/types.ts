@@ -84,6 +84,8 @@ export interface HawkConfig {
     inferenceConfidence?: number;
     /** agent_inference 记忆的初始 reliability（0.0–1.0） */
     inferenceReliability?: number;
+    /** agent_inference 记忆在召回时的降权系数（0.0–1.0，越低越严格） */
+    inferenceRecallPenalty?: number;
   };
   /** 主动回顾提醒配置 */
   review?: {

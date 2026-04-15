@@ -28,7 +28,7 @@ const RECALL_MODE: RecallMode = (process.env.HAWK_RECALL_MODE as RecallMode) || 
 const FEDERATED_PLATFORMS = process.env.HAWK_FEDERATED_PLATFORMS?.split(',').map(p => p.trim()) || [];
 
 import { getEmbedder } from '../../embeddings.js';
-import { RELIABILITY_THRESHOLD_HIGH, DRIFT_THRESHOLD_DAYS, EVOLUTION_SUCCESS, EVOLUTION_FAILURE, INFERENCE_RECALL_PENALTY } from '../../constants.js';
+import { RELIABILITY_THRESHOLD_HIGH, DRIFT_THRESHOLD_DAYS, EVOLUTION_SUCCESS, EVOLUTION_FAILURE } from '../../constants.js';
 import { logger } from '../../logger.js';
 import { register, httpRequestsTotal, httpRequestDuration, memoryErrors } from '../../metrics.js';
 
@@ -1171,7 +1171,8 @@ const recallHandler = async (event: HookEvent) => {
         score = score * 0.5; // demote, requires explicit trigger
       } else if (src === 'agent_inference') {
         // LLM 生成的推理内容在召回时降权，降低幻觉污染风险
-        score = score * INFERENCE_RECALL_PENALTY;
+        const penalty = config.capture.inferenceRecallPenalty ?? 0.7;
+        score = score * penalty;
       }
       return { ...m, _evolutionScore: score };
     });

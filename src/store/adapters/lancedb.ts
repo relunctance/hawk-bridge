@@ -713,6 +713,48 @@ export class LanceDBAdapter implements MemoryStore {
     await this.verifyMemory(id, confirmed, correctedText);
   }
 
+  /**
+   * verifySoulPattern — learnings 验收后升级记忆
+   * 由 hawk-verify CLI 调用（L4 验收层），将 learnings:unverified → learnings:verified
+   * 同时按 boostAmount 提升 reliability
+   */
+  async verifySoulPattern(
+    memoryId: string,
+    patternId: string,
+    patternText: string,
+    boostAmount: number,
+  ): Promise<void> {
+    if (!this.table) await this.init();
+    try {
+      const memory = await this.getById(memoryId);
+      if (!memory) return;
+      const now = Date.now();
+      // 验收通过：learnings:unverified → learnings:verified，reliability 上调
+      const newReliability = memory.locked
+        ? memory.reliability
+        : Math.min(1.0, memory.reliability + boostAmount);
+      const newSource = memory.source === 'learnings:unverified' ? 'learnings:verified' : memory.source;
+      await this.table.update(
+        {
+          reliability: String(newReliability),
+          source: newSource,
+          verification_count: String((memory.verificationCount ?? 0) + 1),
+          last_verified_at: String(now),
+          correction_history: JSON.stringify([
+            ...(memory.correctionHistory || []),
+            {
+              ts: now,
+              oldText: memory.text,
+              newText: `[learnings:verified by pattern ${patternId}] ${patternText}`,
+              patternId,
+            },
+          ]),
+        },
+        { where: `id = '${memoryId.replace(/'/g, "''")}'` },
+      );
+    } catch { /* ignore */ }
+  }
+
   async lock(id: string): Promise<void> {
     if (!this.table) await this.init();
     try {
