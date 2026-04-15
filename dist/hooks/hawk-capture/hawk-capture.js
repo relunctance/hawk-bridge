@@ -3952,7 +3952,8 @@ var LanceDBAdapter = class {
       source: r.source ?? "",
       last_used_at: Number(r.last_used_at ?? 0),
       usefulness_score: r.usefulness_score ?? 0.5,
-      recall_count: r.recall_count ?? 0
+      recall_count: r.recall_count ?? 0,
+      platform: r.platform ?? "hawk-bridge"
     };
   }
   _rowToRetrieved(r, score, matchReason) {
@@ -3991,7 +3992,8 @@ var LanceDBAdapter = class {
       source: r.source ?? "",
       last_used_at: r.last_used_at !== null ? Number(r.last_used_at) : null,
       usefulness_score: r.usefulness_score ?? null,
-      recall_count: r.recall_count ?? 0
+      recall_count: r.recall_count ?? 0,
+      platform: r.platform ?? "hawk-bridge"
     };
   }
   // ─── MemoryStore Interface Implementation ───────────────────────────────────
@@ -4033,7 +4035,8 @@ var LanceDBAdapter = class {
       drift_detected_at: entry.driftDetectedAt || null,
       last_used_at: entry.last_used_at ?? null,
       usefulness_score: entry.usefulness_score ?? null,
-      recall_count: entry.recall_count ?? 0
+      recall_count: entry.recall_count ?? 0,
+      platform: entry.platform ?? entry.metadata?.platform ?? "hawk-bridge"
     });
     await this.table.add([row]);
   }
