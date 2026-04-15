@@ -77,6 +77,8 @@ export class LanceDBAdapter implements MemoryStore {
           name: '__init__',
           description: '__init__',
           platform: 'hawk-bridge',
+          soul_pattern_id: '',
+          soul_verified: 0,
         });
         const table = makeArrowTable([sampleRow]);
         this.table = await this.db.createTable(TABLE_NAME, table);
@@ -130,6 +132,8 @@ export class LanceDBAdapter implements MemoryStore {
             { name: 'supersedes', type: { type: 'utf8' } },
             { name: 'supersededBy', type: { type: 'utf8' } },
             { name: 'generation_version', type: { type: 'int32' } },
+            { name: 'soul_pattern_id', type: { type: 'utf8' } },
+            { name: 'soul_verified', type: { type: 'int8' } },
           ]);
         } catch (_) {
           // Columns may already exist — ignore
@@ -202,6 +206,8 @@ export class LanceDBAdapter implements MemoryStore {
     name?: string;
     description?: string;
     platform?: string;
+    soul_pattern_id?: string | null;
+    soul_verified?: boolean;
   }): any {
     const vec = data.vector.length > 0 ? Array.from(data.vector) : new Array(DEFAULT_EMBEDDING_DIM).fill(0);
     return {
@@ -242,6 +248,8 @@ export class LanceDBAdapter implements MemoryStore {
       recall_count: data.recall_count ?? 0,
       platform: data.platform ?? 'hawk-bridge',
       generation_version: data.generation_version ?? 0,
+      soul_pattern_id: data.soul_pattern_id ?? null,
+      soul_verified: Boolean(data.soul_verified),
     };
   }
 
@@ -404,6 +412,8 @@ export class LanceDBAdapter implements MemoryStore {
       recall_count: r.recall_count ?? 0,
       platform: r.platform ?? 'hawk-bridge',
       generation_version: Number(r.generation_version ?? 0),
+      soul_pattern_id: r.soul_pattern_id ?? null,
+      soul_verified: r.soul_verified === 1,
     };
   }
 
@@ -452,6 +462,8 @@ export class LanceDBAdapter implements MemoryStore {
       recall_count: r.recall_count ?? 0,
       platform: r.platform ?? 'hawk-bridge',
       generation_version: Number(r.generation_version ?? 0),
+      soul_pattern_id: r.soul_pattern_id ?? null,
+      soul_verified: r.soul_verified === 1,
     };
   }
 
@@ -740,6 +752,8 @@ export class LanceDBAdapter implements MemoryStore {
           source: newSource,
           verification_count: String((memory.verificationCount ?? 0) + 1),
           last_verified_at: String(now),
+          soul_pattern_id: patternId,
+          soul_verified: '1',
           correction_history: JSON.stringify([
             ...(memory.correctionHistory || []),
             {
@@ -1127,6 +1141,8 @@ export class LanceDBAdapter implements MemoryStore {
           supersedes: r.supersedes ? String(r.supersedes) : null,
           generation_version: Number(r.generation_version ?? 0),
           confidence: r.confidence ?? 0.0,
+          soul_pattern_id: r.soul_pattern_id ?? null,
+          soul_verified: r.soul_verified === 1,
         });
       }
     } catch { /* ignore */ }

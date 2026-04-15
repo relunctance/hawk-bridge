@@ -15324,7 +15324,9 @@ var LanceDBAdapter = class {
           recall_count: 0,
           name: "__init__",
           description: "__init__",
-          platform: "hawk-bridge"
+          platform: "hawk-bridge",
+          soul_pattern_id: "",
+          soul_verified: 0
         });
         const table = makeArrowTable([sampleRow]);
         this.table = await this.db.createTable(TABLE_NAME, table);
@@ -15372,7 +15374,9 @@ var LanceDBAdapter = class {
             { name: "confidence", type: { type: "float" } },
             { name: "supersedes", type: { type: "utf8" } },
             { name: "supersededBy", type: { type: "utf8" } },
-            { name: "generation_version", type: { type: "int32" } }
+            { name: "generation_version", type: { type: "int32" } },
+            { name: "soul_pattern_id", type: { type: "utf8" } },
+            { name: "soul_verified", type: { type: "int8" } }
           ]);
         } catch (_) {
         }
@@ -15441,7 +15445,9 @@ var LanceDBAdapter = class {
       usefulness_score: data.usefulness_score ?? 0,
       recall_count: data.recall_count ?? 0,
       platform: data.platform ?? "hawk-bridge",
-      generation_version: data.generation_version ?? 0
+      generation_version: data.generation_version ?? 0,
+      soul_pattern_id: data.soul_pattern_id ?? null,
+      soul_verified: Boolean(data.soul_verified)
     };
   }
   computeEffectiveReliability(base, verificationCount, lastVerifiedAt, correctionCount) {
@@ -15570,7 +15576,9 @@ var LanceDBAdapter = class {
       usefulness_score: r.usefulness_score ?? 0.5,
       recall_count: r.recall_count ?? 0,
       platform: r.platform ?? "hawk-bridge",
-      generation_version: Number(r.generation_version ?? 0)
+      generation_version: Number(r.generation_version ?? 0),
+      soul_pattern_id: r.soul_pattern_id ?? null,
+      soul_verified: r.soul_verified === 1
     };
   }
   _rowToRetrieved(r, score, matchReason) {
@@ -15614,7 +15622,9 @@ var LanceDBAdapter = class {
       usefulness_score: r.usefulness_score ?? null,
       recall_count: r.recall_count ?? 0,
       platform: r.platform ?? "hawk-bridge",
-      generation_version: Number(r.generation_version ?? 0)
+      generation_version: Number(r.generation_version ?? 0),
+      soul_pattern_id: r.soul_pattern_id ?? null,
+      soul_verified: r.soul_verified === 1
     };
   }
   // ─── MemoryStore Interface Implementation ───────────────────────────────────
@@ -15855,6 +15865,8 @@ var LanceDBAdapter = class {
           source: newSource,
           verification_count: String((memory.verificationCount ?? 0) + 1),
           last_verified_at: String(now),
+          soul_pattern_id: patternId,
+          soul_verified: "1",
           correction_history: JSON.stringify([
             ...memory.correctionHistory || [],
             {
@@ -16169,7 +16181,9 @@ var LanceDBAdapter = class {
           supersededBy: r.superseded_by ? String(r.superseded_by) : null,
           supersedes: r.supersedes ? String(r.supersedes) : null,
           generation_version: Number(r.generation_version ?? 0),
-          confidence: r.confidence ?? 0
+          confidence: r.confidence ?? 0,
+          soul_pattern_id: r.soul_pattern_id ?? null,
+          soul_verified: r.soul_verified === 1
         });
       }
     } catch {
