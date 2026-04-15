@@ -26,6 +26,34 @@ import { memoryErrors } from '../../metrics.js';
 
 const exec = promisify(execSync);
 
+// ─── Concurrency limiter ───────────────────────────────────────────────────────
+// Prevents spawning too many Python subprocesses simultaneously under high load.
+// Uses a simple semaphore: acquire before spawn, release on completion.
+const MAX_CONCURRENT_SUBPROCESSES = parseInt(
+  process.env.HAWK_MAX_CONCURRENT_SUBPROCESSES ?? '5', 10
+);
+let activeSubprocesses = 0;
+const subprocessWaitQueue: Array<() => void> = [];
+
+function acquireSubprocessSlot(): Promise<void> {
+  if (activeSubprocesses < MAX_CONCURRENT_SUBPROCESSES) {
+    activeSubprocesses++;
+    return Promise.resolve();
+  }
+  return new Promise<void>(resolve => {
+    subprocessWaitQueue.push(resolve);
+  });
+}
+
+function releaseSubprocessSlot(): void {
+  const next = subprocessWaitQueue.shift();
+  if (next) {
+    next();
+  } else {
+    activeSubprocesses--;
+  }
+}
+
 let db: MemoryStore | null = null;
 let embedder: Embedder | null = null;
 
@@ -694,54 +722,64 @@ function callExtractor(conversationText: string, config: any): Promise<any[]> {
 }
 
 function callExtractorSubprocess(conversationText: string, config: any): Promise<any[]> {
-  return new Promise((resolve) => {
-    const apiKey = config.llm?.apiKey || config.embedding.apiKey || '';
-    const model = config.llm?.model || 'MiniMax-M2.7';
-    const provider = config.llm?.provider || 'openclaw';
-    const baseURL = config.llm?.baseURL || '';
+  return new Promise(async (resolve) => {
+    await acquireSubprocessSlot(); // block if too many concurrent
 
-    const proc = spawn(
-      config.python.pythonPath,
-      ['-c', buildExtractorScript(conversationText, apiKey, model, provider, baseURL)],
-    );
+    try {
+      const apiKey = config.llm?.apiKey || config.embedding.apiKey || '';
+      const model = config.llm?.model || 'MiniMax-M2.7';
+      const provider = config.llm?.provider || 'openclaw';
+      const baseURL = config.llm?.baseURL || '';
 
-    let stdout = '';
-    let stderr = '';
+      const proc = spawn(
+        config.python.pythonPath,
+        ['-c', buildExtractorScript(conversationText, apiKey, model, provider, baseURL)],
+      );
 
-    const timer = setTimeout(() => {
-      logger.warn('Subprocess timeout, killing');
-      proc.kill('SIGTERM');
-    }, 30000);
+      let stdout = '';
+      let stderr = '';
 
-    proc.stdout.on('data', (d) => { stdout += d.toString(); });
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+      const timer = setTimeout(() => {
+        logger.warn('Subprocess timeout, killing');
+        proc.kill('SIGTERM');
+      }, 30000);
 
-    proc.on('close', (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        logger.error({ code, stderr }, 'Extractor subprocess error');
-        resolve([]);
-        return;
-      }
-      try {
-        const result = JSON.parse(stdout.trim());
-        if (Array.isArray(result)) {
-          resolve(result);
-        } else {
-          logger.warn({ output: stdout.slice(0, 200) }, 'Unexpected extractor output, discarding');
+      proc.stdout.on('data', (d) => { stdout += d.toString(); });
+      proc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+      proc.on('close', (code) => {
+        clearTimeout(timer);
+        releaseSubprocessSlot();
+        if (code !== 0) {
+          logger.error({ code, stderr }, 'Extractor subprocess error');
+          resolve([]);
+          return;
+        }
+        try {
+          const result = JSON.parse(stdout.trim());
+          if (Array.isArray(result)) {
+            resolve(result);
+          } else {
+            logger.warn({ output: stdout.slice(0, 200) }, 'Unexpected extractor output, discarding');
+            resolve([]);
+          }
+        } catch {
+          logger.warn('Extractor JSON parse failed, discarding output');
           resolve([]);
         }
-      } catch {
-        logger.warn('Extractor JSON parse failed, discarding output');
-        resolve([]);
-      }
-    });
+      });
 
-    proc.on('error', (err) => {
-      clearTimeout(timer);
-      logger.error({ err: err.message }, 'Subprocess error');
+      proc.on('error', (err) => {
+        clearTimeout(timer);
+        releaseSubprocessSlot();
+        logger.error({ err: err.message }, 'Subprocess error');
+        resolve([]);
+      });
+    } catch (err) {
+      releaseSubprocessSlot();
+      logger.error({ err }, 'callExtractorSubprocess unexpected error');
       resolve([]);
-    });
+    }
   });
 }
 
