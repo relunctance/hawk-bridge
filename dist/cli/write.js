@@ -4393,7 +4393,7 @@ var LanceDBAdapter = class {
     return deleted;
   }
   // ─── Additional HawkDB-compatible methods ────────────────────────────────────
-  async ftsSearch(query, topK, scope, sourceTypes, platform) {
+  async ftsSearch(query, topK, minScore = 0, scope, sourceTypes, platform) {
     if (!this.table) await this.init();
     let results = await this.table.search(query, "fts").limit(topK * 4).toArray();
     results = results.filter((r) => r.deleted_at === null);
@@ -4416,6 +4416,7 @@ var LanceDBAdapter = class {
     const retrieved = [];
     for (const row of results) {
       const score = row._relevance ?? 0;
+      if (score < minScore) continue;
       retrieved.push(this._rowToRetrieved(row, score));
       if (retrieved.length >= topK) break;
     }

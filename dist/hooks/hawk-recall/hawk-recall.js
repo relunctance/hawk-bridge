@@ -4403,7 +4403,7 @@ var LanceDBAdapter = class {
     return deleted;
   }
   // ─── Additional HawkDB-compatible methods ────────────────────────────────────
-  async ftsSearch(query, topK, scope, sourceTypes, platform) {
+  async ftsSearch(query, topK, minScore = 0, scope, sourceTypes, platform) {
     if (!this.table) await this.init();
     let results = await this.table.search(query, "fts").limit(topK * 4).toArray();
     results = results.filter((r) => r.deleted_at === null);
@@ -4426,6 +4426,7 @@ var LanceDBAdapter = class {
     const retrieved = [];
     for (const row of results) {
       const score = row._relevance ?? 0;
+      if (score < minScore) continue;
       retrieved.push(this._rowToRetrieved(row, score));
       if (retrieved.length >= topK) break;
     }
@@ -5266,10 +5267,12 @@ var HybridRetriever = class {
       try {
         const queryVector = await this.embedder.embedQuery(query);
         const [vectorResults, ftsResults] = await Promise.all([
-          this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, 0, scope, sourceTypes, query, platform),
-          this.db.ftsSearch(query, topK * VECTOR_SEARCH_MULTIPLIER, scope, sourceTypes, platform)
+          // 向量搜索：minScore 从 0.0 改为 MIN_RECALL_SCORE，低于阈值的直接过滤
+          this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, MIN_RECALL_SCORE, scope, sourceTypes, query, platform),
+          // FTS 搜索：同样应用 minScore 阈值过滤
+          this.db.ftsSearch(query, topK * VECTOR_SEARCH_MULTIPLIER, MIN_RECALL_SCORE, scope, sourceTypes, platform)
         ]);
-        const vectorRanked = vectorResults.map((r, i) => ({ id: r.id, score: 1 - i * 0.01, text: r.text })).sort((a, b) => b.score - a.score);
+        const vectorRanked = vectorResults.map((r, i) => ({ id: r.id, score: r.score, text: r.text })).sort((a, b) => b.score - a.score);
         const ftsRanked = ftsResults.map((r, i) => ({ id: r.id, score: r.score, text: r.text })).sort((a, b) => b.score - a.score).slice(0, topK * VECTOR_SEARCH_MULTIPLIER);
         const fused = this.rrfFusion(vectorRanked, ftsRanked);
         const fusedIds = fused.map((f) => f.id);
@@ -5800,11 +5803,50 @@ ${injectEmoji} \u65E0\u6548\u7F16\u8F91\u8BF7\u6C42\u3002
 `);
         return;
       }
-      const ok = await db.update(targetId, { text: newText });
-      delete ctx._hawkEditTarget;
-      event.messages.push(`
-${injectEmoji} ${ok ? "\u2705 \u5DF2\u66F4\u65B0" : "\u274C \u5931\u8D25"} \u2192 ${newText.slice(0, 60)}
+      const oldMemory = await db.getById(targetId);
+      if (!oldMemory) {
+        event.messages.push(`
+${injectEmoji} \u8BB0\u5FC6\u4E0D\u5B58\u5728\u3002
 `);
+        return;
+      }
+      const embedderInstance = await getEmbedder();
+      const [newVector] = await embedderInstance.embed([newText]);
+      const newId = "hawk_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
+      await db.store({
+        id: newId,
+        text: newText,
+        vector: newVector,
+        category: oldMemory.category,
+        scope: oldMemory.scope,
+        importance: oldMemory.importance,
+        timestamp: Date.now(),
+        expiresAt: oldMemory.expiresAt,
+        metadata: {
+          ...oldMemory.metadata,
+          correction_trigger: true,
+          corrected_from: targetId,
+          source_type: "correction"
+        },
+        source_type: "text",
+        source: "correction",
+        supersededBy: null,
+        supersedes: targetId,
+        generation_version: (oldMemory.generation_version ?? 0) + 1,
+        platform: HAWK_PLATFORM
+      });
+      await db.update(targetId, {
+        supersededBy: newId,
+        correctionCount: (oldMemory.correctionCount ?? 0) + 1
+      });
+      delete ctx._hawkEditTarget;
+      event.messages.push(
+        `
+${injectEmoji} \u2705 \u7248\u672C\u5DF2\u66F4\u65B0\uFF08v${(oldMemory.generation_version ?? 0) + 1}\uFF09
+\u65E7\u7248: ${oldMemory.text.slice(0, 40)}... \u2192 \u5DF2\u6807\u8BB0\u4E3A\u5386\u53F2\u7248\u672C
+\u65B0\u7248: ${newText.slice(0, 40)}...
+`
+      );
       return;
     }
     if (trimmed.startsWith("hawk\u6539\u5206\u7C7B ")) {

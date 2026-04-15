@@ -492,13 +492,55 @@ const recallHandler = async (event: HookEvent) => {
     }
 
     // ─── hawk新内容 <文本> ───────────────────────────────────────────────
+    // 版本链：旧版 supersededBy → 新版 supersedes → 同一事实多版本可追溯
     if (trimmed.startsWith('hawk新内容 ')) {
       const newText = trimmed.slice('hawk新内容 '.length).trim();
       const targetId = ctx._hawkEditTarget;
       if (!targetId || !newText) { event.messages.push(`\n${injectEmoji} 无效编辑请求。\n`); return; }
-      const ok = await db.update(targetId, { text: newText });
+
+      // 获取旧版本信息，建立版本链
+      const oldMemory = await db.getById(targetId);
+      if (!oldMemory) { event.messages.push(`\n${injectEmoji} 记忆不存在。\n`); return; }
+
+      // 1. 创建新版本记忆（supersedes 指向旧版）
+      const embedderInstance = await getEmbedder();
+      const [newVector] = await embedderInstance.embed([newText]);
+      const newId = 'hawk_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+      await db.store({
+        id: newId,
+        text: newText,
+        vector: newVector,
+        category: oldMemory.category,
+        scope: oldMemory.scope,
+        importance: oldMemory.importance,
+        timestamp: Date.now(),
+        expiresAt: oldMemory.expiresAt,
+        metadata: {
+          ...oldMemory.metadata,
+          correction_trigger: true,
+          corrected_from: targetId,
+          source_type: 'correction',
+        },
+        source_type: 'text',
+        source: 'correction',
+        supersededBy: null,
+        supersedes: targetId,
+        generation_version: (oldMemory.generation_version ?? 0) + 1,
+        platform: HAWK_PLATFORM,
+      });
+
+      // 2. 旧版标记 supersededBy → 指向新版本（召回时自动排除）
+      await db.update(targetId, {
+        supersededBy: newId,
+        correctionCount: (oldMemory.correctionCount ?? 0) + 1,
+      });
+
       delete ctx._hawkEditTarget;
-      event.messages.push(`\n${injectEmoji} ${ok ? '✅ 已更新' : '❌ 失败'} → ${newText.slice(0,60)}\n`);
+      event.messages.push(
+        `\n${injectEmoji} ✅ 版本已更新（v${(oldMemory.generation_version ?? 0) + 1}）` +
+        `\n旧版: ${oldMemory.text.slice(0, 40)}... → 已标记为历史版本` +
+        `\n新版: ${newText.slice(0, 40)}...\n`
+      );
       return;
     }
 

@@ -4398,7 +4398,7 @@ var LanceDBAdapter = class {
     return deleted;
   }
   // ─── Additional HawkDB-compatible methods ────────────────────────────────────
-  async ftsSearch(query, topK, scope, sourceTypes, platform) {
+  async ftsSearch(query, topK, minScore = 0, scope, sourceTypes, platform) {
     if (!this.table) await this.init();
     let results = await this.table.search(query, "fts").limit(topK * 4).toArray();
     results = results.filter((r) => r.deleted_at === null);
@@ -4421,6 +4421,7 @@ var LanceDBAdapter = class {
     const retrieved = [];
     for (const row of results) {
       const score = row._relevance ?? 0;
+      if (score < minScore) continue;
       retrieved.push(this._rowToRetrieved(row, score));
       if (retrieved.length >= topK) break;
     }
@@ -5404,18 +5405,26 @@ var captureHandler = async (event) => {
     if (/^[\d\s.,]+$/.test(trimmedContent)) return;
     if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]{1,3}$/u.test(trimmedContent)) return;
     const isLlmmaybe = (() => {
-      if (/\[[Mm]odel:\s*[\w\-\.]+\]/.test(content)) return true;
-      if (/\[[Pp]rovider:\s*\w+\]/.test(content)) return true;
-      if ((content.match(/\*\*[^*]+\*\*/g) || []).length >= 3) return true;
-      if ((content.match(/^\d+\.\s+\S+/gm) || []).length >= 4) return true;
-      if (/\b(Therefore|In conclusion|Summary:|综上所述|总而言之|简单来说)\b/i.test(content)) return true;
-      if (/\bAs (discussed|mentioned|noted) (above|earlier|in this)\b/i.test(content)) return true;
-      if (/\b(Based on|As a result of) (the |above |foregoing )/i.test(content)) return true;
-      if (/\b(it is worth noting|it is important to note|please note|note that)\b/gi.test(content)) return true;
-      if (/\b(interesting (point|observation|fact))\b/gi.test(content)) return true;
-      if (/\bdoes this (help|answer|make sense|sound right)\b/i.test(content)) return true;
-      if (/\b(feel free to|please let me know if you)\b/i.test(content)) return true;
-      return false;
+      const boldCount = (content.match(/\*\*[^*]+\*\*/g) || []).length;
+      const orderedListCount = (content.match(/^\d+\.\s+\S+/gm) || []).length;
+      const hasModelRef = /\[[Mm]odel:\s*[\w\-\.]+\]/.test(content);
+      const hasProviderRef = /\[[Pp]rovide r:\s*\w+\]/.test(content);
+      const hasSummaryPhrase = /\b(Therefore|In conclusion|Summary:|综上所述|总而言之|简单来说)\b/i.test(content);
+      const hasContextualRef = /\bAs (discussed|mentioned|noted) (above|earlier|in this)\b/i.test(content);
+      const hasGenericReasoning = /\b(it is worth noting|it is important to note|please note|note that)\b/gi.test(content);
+      const hasSelfConfirm = /\b(does this (help|answer|make sense|sound right))\b/i.test(content);
+      const hasOfferHelp = /\b(feel free to|please let me know if you)\b/i.test(content);
+      const featureCount = [
+        hasModelRef,
+        hasProviderRef,
+        hasSummaryPhrase,
+        hasContextualRef,
+        hasSelfConfirm,
+        hasOfferHelp
+      ].filter(Boolean).length;
+      const hasHeavyMarkdown = boldCount >= 3 || orderedListCount >= 4;
+      const hasGeneric = hasGenericReasoning && featureCount >= 1;
+      return featureCount >= 2 || hasHeavyMarkdown || hasModelRef || hasProviderRef;
     })();
     const CODE_BLOCK_RE = /```(?:\w+)?\n([\s\S]{20,500}?)```/g;
     const codeBlockMemories = [];

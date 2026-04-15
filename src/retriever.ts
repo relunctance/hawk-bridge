@@ -14,6 +14,7 @@ import {
   NOISE_SIMILARITY_THRESHOLD,
   VECTOR_SEARCH_MULTIPLIER,
   RERANK_CANDIDATE_MULTIPLIER,
+  MIN_RECALL_SCORE,
 } from './constants.js';
 import type { RetrievedMemory, SourceType } from './types.js';
 
@@ -197,12 +198,15 @@ export class HybridRetriever {
         const queryVector = await this.embedder.embedQuery(query);
 
         const [vectorResults, ftsResults] = await Promise.all([
-          this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, 0.0, scope, sourceTypes, query, platform),
-          this.db.ftsSearch(query, topK * VECTOR_SEARCH_MULTIPLIER, scope, sourceTypes, platform),
+          // 向量搜索：minScore 从 0.0 改为 MIN_RECALL_SCORE，低于阈值的直接过滤
+          this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, MIN_RECALL_SCORE, scope, sourceTypes, query, platform),
+          // FTS 搜索：同样应用 minScore 阈值过滤
+          this.db.ftsSearch(query, topK * VECTOR_SEARCH_MULTIPLIER, MIN_RECALL_SCORE, scope, sourceTypes, platform),
         ]);
 
+        // 使用实际的 relevance score（而非 rank 位置估算），保证 FTS 和向量搜索的分数量纲一致
         const vectorRanked = vectorResults
-          .map((r, i) => ({ id: r.id, score: 1 - i * 0.01, text: r.text }))
+          .map((r, i) => ({ id: r.id, score: r.score, text: r.text }))
           .sort((a, b) => b.score - a.score);
 
         const ftsRanked = ftsResults

@@ -449,24 +449,37 @@ const captureHandler = async (event: HookEvent) => {
 
     // ─── LLM 生成内容检测（用于 hawk-capture:sent，即 agent 回复）───────────────
     // 通过启发式规则识别 LLM 生成的推理内容，降低其初始可信度
+    // 注意：避免误伤用户正常内容，规则需要同时满足多个特征才判定为 LLM 生成
     const isLlmmaybe = (() => {
-      // 自我引用标记
-      if (/\[[Mm]odel:\s*[\w\-\.]+\]/.test(content)) return true;
-      if (/\[[Pp]rovider:\s*\w+\]/.test(content)) return true;
-      // markdown 过度格式化（LLM 倾向用 **bold**、有序列表组织答案）
-      if ((content.match(/\*\*[^*]+\*\*/g) || []).length >= 3) return true;
-      if ((content.match(/^\d+\.\s+\S+/gm) || []).length >= 4) return true;
-      // LLM 常有的总结/引导语（无具体上下文时）
-      if (/\b(Therefore|In conclusion|Summary:|综上所述|总而言之|简单来说)\b/i.test(content)) return true;
-      if (/\bAs (discussed|mentioned|noted) (above|earlier|in this)\b/i.test(content)) return true;
-      if (/\b(Based on|As a result of) (the |above |foregoing )/i.test(content)) return true;
-      // 过于通用、缺乏具体细节的推理内容
-      if (/\b(it is worth noting|it is important to note|please note|note that)\b/gi.test(content)) return true;
-      if (/\b(interesting (point|observation|fact))\b/gi.test(content)) return true;
-      // 请求用户确认类（LLM 自我判断的口吻）
-      if (/\bdoes this (help|answer|make sense|sound right)\b/i.test(content)) return true;
-      if (/\b(feel free to|please let me know if you)\b/i.test(content)) return true;
-      return false;
+      // 统计特征
+      const boldCount = (content.match(/\*\*[^*]+\*\*/g) || []).length;
+      const orderedListCount = (content.match(/^\d+\.\s+\S+/gm) || []).length;
+      const hasModelRef = /\[[Mm]odel:\s*[\w\-\.]+\]/.test(content);
+      const hasProviderRef = /\[[Pp]rovide r:\s*\w+\]/.test(content);
+      const hasSummaryPhrase = /\b(Therefore|In conclusion|Summary:|综上所述|总而言之|简单来说)\b/i.test(content);
+      const hasContextualRef = /\bAs (discussed|mentioned|noted) (above|earlier|in this)\b/i.test(content);
+      const hasGenericReasoning = /\b(it is worth noting|it is important to note|please note|note that)\b/gi.test(content);
+      const hasSelfConfirm = /\b(does this (help|answer|make sense|sound right))\b/i.test(content);
+      const hasOfferHelp = /\b(feel free to|please let me know if you)\b/i.test(content);
+
+      // 必要条件：必须有明确的 LLM 文风标记（排除用户正常写作）
+      // 单一特征不足触发，必须满足 ≥2 个特征
+      const featureCount = [
+        hasModelRef,
+        hasProviderRef,
+        hasSummaryPhrase,
+        hasContextualRef,
+        hasSelfConfirm,
+        hasOfferHelp,
+      ].filter(Boolean).length;
+
+      // markdown 格式化需同时满足：≥3个bold 或 ≥4个有序列表（且 featureCount ≥ 1）
+      const hasHeavyMarkdown = boldCount >= 3 || orderedListCount >= 4;
+
+      // 通用推理口吻需要 featureCount ≥ 1 才计入
+      const hasGeneric = hasGenericReasoning && featureCount >= 1;
+
+      return featureCount >= 2 || hasHeavyMarkdown || hasModelRef || hasProviderRef;
     })();
 
     // ─── Pre-extraction: Code blocks ─────────────────────────────────────

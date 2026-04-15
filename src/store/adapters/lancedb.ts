@@ -872,6 +872,7 @@ export class LanceDBAdapter implements MemoryStore {
   async ftsSearch(
     query: string,
     topK: number,
+    minScore: number = 0,
     scope?: string,
     sourceTypes?: SourceType[],
     platform?: string,
@@ -884,7 +885,7 @@ export class LanceDBAdapter implements MemoryStore {
       .toArray();
 
     results = results.filter((r: any) => r.deleted_at === null);
-    // Filter out superseded memories — only return the latest version
+    // 过滤已被替代的记忆，只返回最新版本
     results = results.filter((r: any) => !r.superseded_by);
 
     if (scope) results = results.filter((r: any) => r.scope === scope);
@@ -904,10 +905,12 @@ export class LanceDBAdapter implements MemoryStore {
       return expiresAt === 0 || expiresAt > now;
     });
 
-    // LanceDB FTS returns _relevance score (higher = more relevant)
+    // LanceDB FTS 返回 _relevance score（越高越相关，类似 BM25）
+    // minScore 对 FTS relevance 同样生效：低于阈值的直接过滤
     const retrieved: RetrievedMemory[] = [];
     for (const row of results) {
       const score = row._relevance ?? 0;
+      if (score < minScore) continue;
       retrieved.push(this._rowToRetrieved(row, score));
       if (retrieved.length >= topK) break;
     }
