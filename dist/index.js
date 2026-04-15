@@ -62,22 +62,22 @@ function patchConsole() {
   const origWarn = console.warn.bind(console);
   const origLog = console.log.bind(console);
   console.error = (...args) => {
-    logger.error({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+    logger2.error({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
   };
   console.warn = (...args) => {
-    logger.warn({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+    logger2.warn({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
   };
   console.log = (...args) => {
-    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+    logger2.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
   };
   console.info = (...args) => {
-    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+    logger2.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
   };
   console.debug = (...args) => {
-    logger.debug({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+    logger2.debug({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
   };
 }
-var LOG_DIR, LOG_FILE_BASE, MAX_FILE_SIZE, MAX_FILES, RotatingFileStream, rotatingStream, logLevel, logger;
+var LOG_DIR, LOG_FILE_BASE, MAX_FILE_SIZE, MAX_FILES, RotatingFileStream, rotatingStream, logLevel, logger2;
 var init_logger = __esm({
   "src/logger.ts"() {
     "use strict";
@@ -157,7 +157,7 @@ var init_logger = __esm({
     if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
     rotatingStream = new RotatingFileStream(LOG_FILE_BASE);
     logLevel = process.env.HAWK__LOGGING__LEVEL || process.env.HAWK_LOG_LEVEL || "info";
-    logger = pino({
+    logger2 = pino({
       level: logLevel,
       formatters: {
         level: (label) => ({ level: label })
@@ -300,11 +300,11 @@ async function fetchWithRetry(url2, options = {}, retries = 3) {
       const isNetworkError = err?.message?.includes("timeout") || err?.message?.includes("ECONNREFUSED") || err?.message?.includes("ENOTFOUND") || err?.message?.includes("socket hang up") || err?.code === "ECONNREFUSED" || err?.code === "ENOTFOUND" || err?.code === "ETIMEDOUT";
       if (isNetworkError && attempt < retries) {
         const delay = 500 * Math.pow(2, attempt - 1);
-        logger.warn({ attempt, retries, delayMs: delay, url: url2, error: err.message }, "fetchWithRetry: retrying after network error");
+        logger2.warn({ attempt, retries, delayMs: delay, url: url2, error: err.message }, "fetchWithRetry: retrying after network error");
         await new Promise((res) => setTimeout(res, delay));
       } else if (attempt < retries && err?.message?.includes("status code 5")) {
         const delay = 500 * Math.pow(2, attempt - 1);
-        logger.warn({ attempt, retries, delayMs: delay, url: url2, error: err.message }, "fetchWithRetry: retrying after 5xx error");
+        logger2.warn({ attempt, retries, delayMs: delay, url: url2, error: err.message }, "fetchWithRetry: retrying after 5xx error");
         await new Promise((res) => setTimeout(res, delay));
       } else {
         throw err;
@@ -15327,16 +15327,16 @@ var LanceDBAdapter = class {
           const { Index } = await import("@lancedb/lancedb");
           await this.table.createIndex("text", Index.fts());
         } catch (err) {
-          logger.warn({ err: err?.message }, "FTS index creation failed (non-fatal)");
+          logger2.warn({ err: err?.message }, "FTS index creation failed (non-fatal)");
         }
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
         try {
           const { Index } = await import("@lancedb/lancedb");
           await this.table.createIndex("text", Index.fts());
-          logger.info("FTS index ensured on text column");
+          logger2.info("FTS index ensured on text column");
         } catch (err) {
-          logger.warn({ err: err?.message }, "FTS index creation failed (non-fatal, index may already exist)");
+          logger2.warn({ err: err?.message }, "FTS index creation failed (non-fatal, index may already exist)");
         }
         try {
           await this.table.alterAddColumns([
@@ -15368,7 +15368,7 @@ var LanceDBAdapter = class {
         }
       }
     } catch (err) {
-      logger.error({ err }, "LanceDB init failed");
+      logger2.error({ err }, "LanceDB init failed");
       throw err;
     }
   }
@@ -15388,7 +15388,7 @@ var LanceDBAdapter = class {
     const tableNames = await this.db.tableNames();
     if (tableNames.includes(TABLE_NAME)) {
       await this.db.dropTable(TABLE_NAME);
-      logger.info({ table: TABLE_NAME }, "Dropped table");
+      logger2.info({ table: TABLE_NAME }, "Dropped table");
     }
     this.table = null;
   }
@@ -15648,26 +15648,34 @@ var LanceDBAdapter = class {
   async update(id, fields) {
     if (!this.table) await this.init();
     try {
-      const existing = await this.getById(id);
-      if (!existing) return false;
-      await this.table.delete(`id = '${id.replace(/'/g, "''")}'`);
-      const updated = {
-        ...existing,
-        text: fields.text ?? existing.text,
-        name: fields.name ?? existing.name,
-        description: fields.description ?? existing.description,
-        category: fields.category ?? existing.category,
-        scope: fields.scope ?? existing.scope,
-        importance: fields.importance ?? existing.importance,
-        importanceOverride: fields.importanceOverride ?? existing.importanceOverride,
-        updatedAt: Date.now(),
-        vector: existing.vector,
-        driftNote: fields.driftNote ?? existing.driftNote,
-        driftDetectedAt: fields.driftDetectedAt ?? existing.driftDetectedAt
-      };
-      await this.store(updated, existing.sessionId ?? void 0);
+      const where = `id = '${id.replace(/'/g, "''")}'`;
+      const args = {};
+      if (fields.text !== void 0) args["text"] = String(fields.text);
+      if (fields.name !== void 0) args["name"] = String(fields.name);
+      if (fields.description !== void 0) args["description"] = String(fields.description);
+      if (fields.category !== void 0) args["category"] = String(fields.category);
+      if (fields.scope !== void 0) {
+        args["scope"] = String(fields.scope);
+        args["scope_mem"] = String(fields.scope);
+      }
+      if (fields.importance !== void 0) args["importance"] = String(fields.importance);
+      if (fields.importanceOverride !== void 0) {
+        args["importance_override"] = String(fields.importanceOverride);
+      }
+      if (fields.driftNote !== void 0) {
+        args["drift_note"] = fields.driftNote ? String(fields.driftNote) : "";
+      }
+      if (fields.driftDetectedAt !== void 0) {
+        args["drift_detected_at"] = fields.driftDetectedAt ? String(fields.driftDetectedAt) : "";
+      }
+      args["updated_at"] = String(Date.now());
+      if (Object.keys(args).length === 1 && "updated_at" in args) {
+        return true;
+      }
+      await this.table.update(args, { where });
       return true;
-    } catch {
+    } catch (err) {
+      logger2.warn({ err, id }, "LanceDBAdapter.update failed");
       return false;
     }
   }
@@ -15896,7 +15904,8 @@ var LanceDBAdapter = class {
       if (daysIdle > 0) {
         const decayMultiplier = getDecayMultiplier(m.reliability);
         const effectiveDays = Math.ceil(daysIdle * decayMultiplier);
-        const newImportance = m.importance * Math.pow(0.95, effectiveDays);
+        const baseDecay = Math.pow(0.95, effectiveDays);
+        const newImportance = m.importance * baseDecay * m.importanceOverride;
         const prospectiveMem = { ...m, importance: newImportance };
         const newTier = this.recomputeTier(prospectiveMem);
         if (newTier !== m.scope) {
@@ -16026,12 +16035,12 @@ var LanceDBAdapter = class {
         body: JSON.stringify({ query, texts, model: rerankModel })
       });
       if (!resp.ok) {
-        logger.warn({ status: resp.status }, "Rerank endpoint returned error, skipping rerank");
+        logger2.warn({ status: resp.status }, "Rerank endpoint returned error, skipping rerank");
         return results;
       }
       const data = await resp.json();
       if (!Array.isArray(data.results)) {
-        logger.warn({ data }, "Unexpected rerank response format, skipping");
+        logger2.warn({ data }, "Unexpected rerank response format, skipping");
         return results;
       }
       const scoreMap = /* @__PURE__ */ new Map();
@@ -16039,10 +16048,10 @@ var LanceDBAdapter = class {
         scoreMap.set(item.index, item.relevance_score ?? 0);
       }
       const reranked = results.map((r, idx) => ({ r, score: scoreMap.get(idx) ?? 0 })).sort((a, b) => b.score - a.score).map(({ r }) => r);
-      logger.debug({ reranked: reranked.length }, "Reranking applied");
+      logger2.debug({ reranked: reranked.length }, "Reranking applied");
       return reranked;
     } catch (err) {
-      logger.warn({ err }, "Reranking failed, returning original results");
+      logger2.warn({ err }, "Reranking failed, returning original results");
       return results;
     }
   }
@@ -16104,7 +16113,7 @@ var LanceDBAdapter = class {
       const memory = await this.getById(id);
       if (!memory) return false;
       if (memory.locked) {
-        logger.warn({ memoryId: id }, "Cannot forget locked memory");
+        logger2.warn({ memoryId: id }, "Cannot forget locked memory");
         return false;
       }
       await this.table.update(
@@ -16207,7 +16216,7 @@ var LanceDBAdapter = class {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch (e) {
-      logger.warn({ err: e }, "rateMemory update failed");
+      logger2.warn({ err: e }, "rateMemory update failed");
       return;
     }
     if (rating === "harmful") {
@@ -16224,7 +16233,7 @@ var LanceDBAdapter = class {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch (e) {
-      logger.warn({ err: e, memoryId: id }, "demoteMemory failed");
+      logger2.warn({ err: e, memoryId: id }, "demoteMemory failed");
     }
   }
   async incrementImportance(id, delta) {
@@ -16238,7 +16247,7 @@ var LanceDBAdapter = class {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch (e) {
-      logger.warn({ err: e, memoryId: id }, "incrementImportance failed");
+      logger2.warn({ err: e, memoryId: id }, "incrementImportance failed");
     }
   }
   async batchCapture(items) {
@@ -16300,7 +16309,7 @@ var LanceDBAdapter = class {
         totalStored++;
       }
     }
-    logger.info({ items: items.length, extracted: totalExtracted, stored: totalStored }, "batchCapture complete");
+    logger2.info({ items: items.length, extracted: totalExtracted, stored: totalStored }, "batchCapture complete");
     return { stored: totalStored, extracted: totalExtracted };
   }
   /**
@@ -16350,7 +16359,7 @@ ${conversation}
         return { memories: Array.isArray(parsed.memories) ? parsed.memories : [] };
       }
     } catch (err) {
-      logger.warn({ err }, "batchCapture _extractMemories failed");
+      logger2.warn({ err }, "batchCapture _extractMemories failed");
     }
     return { memories: [] };
   }
@@ -16408,12 +16417,7 @@ var HTTPAdapter = class {
     });
   }
   async update(id, fields) {
-    try {
-      await this.delete(id);
-      return true;
-    } catch {
-      return false;
-    }
+    return false;
   }
   async delete(id) {
     await this.request("POST", `/forget?memory_id=${encodeURIComponent(id)}`);
@@ -16490,6 +16494,11 @@ var HTTPAdapter = class {
   async incrementAccess(id) {
   }
   async reset() {
+    try {
+      await this.request("POST", "/restart");
+    } catch (err) {
+      logger.warn({ err }, "HTTPAdapter: reset(/restart) failed");
+    }
   }
   async decay() {
     return { updated: 0, deleted: 0 };
@@ -16508,7 +16517,7 @@ var HTTPAdapter = class {
   async incrementImportance(id, _delta) {
   }
   async decrementImportance(id) {
-    await this.delete(id);
+    logger.warn({ id }, "HTTPAdapter: decrementImportance not supported, doing nothing");
   }
   async batchCapture(items) {
     const result = await this.request("POST", "/capture/batch", {
@@ -16637,8 +16646,9 @@ async function createMemoryStore(provider = "lancedb") {
       return new LanceDBAdapter();
     case "http":
       return new HTTPAdapter();
-    case "qdrant":
-      throw new Error("Qdrant adapter not implemented yet");
+    // Qdrant 适配器开发中，临时禁用
+    // case 'qdrant':
+    //   throw new Error('Qdrant adapter not implemented yet');
     default:
       throw new Error(`Unknown memory store provider: ${provider}`);
   }
@@ -16830,21 +16840,22 @@ var HybridRetriever = class {
           score: item.rrfScore
         }));
         const reranked = await this.rerank(query, candidates, topK);
-        const idToRerank = new Map(reranked.map((r) => [r.id, r.rerankScore]));
+        const rerankedIds = new Set(reranked.map((r) => r.id));
+        const idToRerankScore = new Map(reranked.map((r) => [r.id, r.rerankScore]));
         const results = [];
-        for (const item of noiseFiltered) {
-          const rerankScore = idToRerank.get(item.id);
-          if (rerankScore === void 0) continue;
-          const memory = fetched.get(item.id);
+        for (const { id } of reranked) {
+          if (results.length >= topK) break;
+          const rerankScore = idToRerankScore.get(id);
+          const memory = fetched.get(id);
           if (!memory) continue;
+          if (this.isNoise(memory.vector)) continue;
           results.push({
-            id: item.id,
+            id,
             text: memory.text,
             score: rerankScore,
             category: memory.category,
             metadata: memory.metadata
           });
-          if (results.length >= topK) break;
         }
         return results;
       } catch (err) {
@@ -16994,7 +17005,7 @@ ${body}` }
     const ids = JSON.parse(match[0]);
     return ids.slice(0, topN);
   } catch (e) {
-    logger.warn({ err: e }, "dualSelect failed");
+    logger2.warn({ err: e }, "dualSelect failed");
     return [];
   }
 }
@@ -18102,7 +18113,7 @@ ${formatRecallResults(withReasons, injectEmoji)}
       }
     }
   } catch (err) {
-    logger.error({ err }, "hawk-recall handler error");
+    logger2.error({ err }, "hawk-recall handler error");
     memoryErrors.inc({ type: "recall_handler" });
   }
 };
@@ -18178,10 +18189,10 @@ async function withRetry(fn, maxAttempts = 3, delayMs = 1e3) {
     } catch (err) {
       lastErr = err;
       if (attempt < maxAttempts) {
-        logger.warn({ attempt, maxAttempts, delayMs: delayMs * attempt, err: err.message }, "Capture attempt failed, retrying");
+        logger2.warn({ attempt, maxAttempts, delayMs: delayMs * attempt, err: err.message }, "Capture attempt failed, retrying");
         await new Promise((res) => setTimeout(res, delayMs * attempt));
       } else {
-        logger.error({ err: err.message }, "All capture attempts failed");
+        logger2.error({ err: err.message }, "All capture attempts failed");
       }
     }
   }
@@ -18202,7 +18213,7 @@ function audit(action, reason, text) {
     }
     fs4.appendFileSync(AUDIT_LOG_PATH, entry);
   } catch (err) {
-    logger.error({ err: err?.message }, "Failed to write audit log");
+    logger2.error({ err: err?.message }, "Failed to write audit log");
   }
 }
 function normalizeText(text) {
@@ -18367,10 +18378,10 @@ function textSimilarity2(a, b) {
 }
 async function isDuplicate(text, threshold = DEDUP_SIMILARITY) {
   try {
-    const dbInstance = await getDB();
-    const recent = await dbInstance.listRecent(20);
-    for (const m of recent) {
-      if (textSimilarity2(text, m.text) >= threshold) return true;
+    const db2 = await getDB();
+    const results = await db2.search(text, 5);
+    for (const m of results) {
+      if (m.score >= threshold) return true;
     }
   } catch {
   }
@@ -18392,7 +18403,7 @@ async function handleSaturation(text, threshold = 0.7) {
   return false;
 }
 var captureHandler = async (event) => {
-  logger.debug({ type: event.type, action: event.action, sessionKey: event.sessionKey }, "hawk-capture: event received");
+  logger2.debug({ type: event.type, action: event.action, sessionKey: event.sessionKey }, "hawk-capture: event received");
   if (event.type !== "message") return;
   if (!["sent", "received"].includes(event.action)) return;
   if (event.action === "sent" && !event.context?.success) return;
@@ -18476,11 +18487,9 @@ var captureHandler = async (event) => {
       getDB(),
       getEmbedder2()
     ]);
-    const { batchStore } = dbInstance;
-    let storedCount = 0;
+    const prepped = [];
     for (const m of significant) {
-      let text = m.text.trim();
-      text = normalizeText(text);
+      let text = normalizeText(m.text.trim());
       const { skip, reason } = shouldSkipChunk(text);
       if (skip) {
         audit("skip", reason, text);
@@ -18496,49 +18505,37 @@ var captureHandler = async (event) => {
       }
       text = sanitize2(text);
       text = truncate(text);
-      if (await isDuplicate(text)) {
-        audit("skip", "duplicate", text);
-        continue;
-      }
-      if (await handleSaturation(text)) {
-        audit("skip", "saturated", text);
-        continue;
-      }
-      const effectiveTtl = ttlMs || MEMORY_TTL_MS;
-      const expiresAt = effectiveTtl > 0 ? Date.now() + effectiveTtl : 0;
-      const sessionId = event.context?.sessionEntry?.sessionId ?? void 0;
-      if (m.category === "entity") {
-        const existing = await dbInstance.findSimilarEntity(text);
-        if (existing) {
-          await dbInstance.update(existing.id, {
-            text,
-            importance: Math.max(existing.importance, m.importance)
-          });
-          storedCount++;
-          audit("capture", `entity_merge:${existing.id}`, text);
-          continue;
-        }
-      }
+      const isPreExtracted = codeBlockMemories.includes(m) || urlMemories.includes(m);
+      prepped.push({
+        m,
+        text,
+        isEntity: m.category === "entity",
+        isPreExtracted
+      });
+    }
+    const preExtracted = prepped.filter((p) => p.isPreExtracted);
+    const llmItems = prepped.filter((p) => !p.isPreExtracted);
+    const effectiveTtl = ttlMs || MEMORY_TTL_MS;
+    const expiresAt = effectiveTtl > 0 ? Date.now() + effectiveTtl : 0;
+    const sessionId = event.context?.sessionEntry?.sessionId ?? void 0;
+    for (const p of preExtracted) {
       const id = generateId();
-      const capture_trigger = m.category === "entity" ? "new_entity" : m.category === "decision" ? "decision_made" : m.category === "preference" ? "preference_signal" : "general_content";
       try {
-        const [vector] = await withRetry(() => embedderInstance.embed([text]), 3, 1e3);
+        const [vector] = await withRetry(() => embedderInstance.embed([p.text]), 3, 1e3);
         await dbInstance.store({
           id,
-          text,
+          text: p.text,
           vector,
-          category: m.category,
+          category: p.m.category,
           scope: "global",
-          importance: m.importance,
+          importance: p.m.importance,
           timestamp: Date.now(),
           expiresAt,
           metadata: {
-            capture_trigger,
-            capture_confidence: m.importance,
-            l0_abstract: m.abstract,
-            l1_overview: m.overview,
-            name: m.name || "",
-            description: m.description || "",
+            capture_trigger: "pre_extracted",
+            capture_confidence: p.m.importance,
+            l0_abstract: p.m.abstract,
+            l1_overview: p.m.overview,
             source_type: sourceType,
             sender_id: senderId,
             platform: HAWK_PLATFORM2
@@ -18546,19 +18543,95 @@ var captureHandler = async (event) => {
           source_type: "text",
           platform: HAWK_PLATFORM2
         }, sessionId);
-        storedCount++;
-        audit("capture", "success", text);
+        audit("capture", "success", p.text);
       } catch (storeErr) {
-        audit("reject", "store_error:" + String(storeErr), text);
+        audit("reject", "store_error:" + String(storeErr), p.text);
+      }
+    }
+    const toEmbed = [];
+    for (const p of llmItems) {
+      if (await isDuplicate(p.text)) {
+        audit("skip", "duplicate", p.text);
+        continue;
+      }
+      if (await handleSaturation(p.text)) {
+        audit("skip", "saturated", p.text);
+        continue;
+      }
+      toEmbed.push(p);
+    }
+    let storedCount = preExtracted.length;
+    if (toEmbed.length > 0) {
+      const textsToEmbed = toEmbed.map((p) => p.text);
+      let vectors;
+      try {
+        vectors = await withRetry(() => embedderInstance.embed(textsToEmbed), 3, 1e3);
+      } catch (embedErr) {
+        logger2.warn({ err: embedErr }, "Batch embedding failed, falling back to per-item");
+        vectors = [];
+        for (const p of toEmbed) {
+          try {
+            const [v] = await withRetry(() => embedderInstance.embed([p.text]), 3, 1e3);
+            vectors.push(v);
+          } catch {
+            vectors.push([]);
+          }
+        }
+      }
+      for (let i = 0; i < toEmbed.length; i++) {
+        const p = toEmbed[i];
+        const vector = vectors[i] ?? [];
+        const id = generateId();
+        const capture_trigger = p.isEntity ? "new_entity" : p.m.category === "decision" ? "decision_made" : p.m.category === "preference" ? "preference_signal" : "general_content";
+        if (p.isEntity) {
+          const existing = await dbInstance.findSimilarEntity(p.text);
+          if (existing) {
+            await dbInstance.update(existing.id, {
+              text: p.text,
+              importance: Math.max(existing.importance, p.m.importance)
+            });
+            audit("capture", `entity_merge:${existing.id}`, p.text);
+            continue;
+          }
+        }
+        try {
+          await dbInstance.store({
+            id,
+            text: p.text,
+            vector,
+            category: p.m.category,
+            scope: "global",
+            importance: p.m.importance,
+            timestamp: Date.now(),
+            expiresAt,
+            metadata: {
+              capture_trigger,
+              capture_confidence: p.m.importance,
+              l0_abstract: p.m.abstract,
+              l1_overview: p.m.overview,
+              name: p.m.name || "",
+              description: p.m.description || "",
+              source_type: sourceType,
+              sender_id: senderId,
+              platform: HAWK_PLATFORM2
+            },
+            source_type: "text",
+            platform: HAWK_PLATFORM2
+          }, sessionId);
+          storedCount++;
+          audit("capture", "success", p.text);
+        } catch (storeErr) {
+          audit("reject", "store_error:" + String(storeErr), p.text);
+        }
       }
     }
     if (storedCount > 0) {
-      logger.info({ storedCount }, "Stored memories");
+      logger2.info({ storedCount }, "Stored memories");
       audit("capture", "stored", `Stored ${storedCount} memories`);
       markBm25Dirty();
     }
   } catch (err) {
-    logger.error({ err }, "hawk-capture handler error");
+    logger2.error({ err }, "hawk-capture handler error");
     memoryErrors.inc({ type: "capture_handler" });
   }
 };
@@ -18598,7 +18671,7 @@ function callExtractor(conversationText, config) {
           });
           res.on("end", () => {
             if (res.statusCode !== 200) {
-              logger.warn({ status: res.statusCode }, "HTTP extractor error, falling back to subprocess");
+              logger2.warn({ status: res.statusCode }, "HTTP extractor error, falling back to subprocess");
               resolve(callExtractorSubprocess(conversationText, config));
               return;
             }
@@ -18606,19 +18679,19 @@ function callExtractor(conversationText, config) {
               const data = JSON.parse(body);
               resolve(Array.isArray(data.memories) ? data.memories : []);
             } catch {
-              logger.warn("HTTP extractor JSON parse failed, falling back to subprocess");
+              logger2.warn("HTTP extractor JSON parse failed, falling back to subprocess");
               resolve(callExtractorSubprocess(conversationText, config));
             }
           });
         }
       );
       req.on("error", (err) => {
-        logger.warn({ err: err.message }, "HTTP extractor connection error, falling back to subprocess");
+        logger2.warn({ err: err.message }, "HTTP extractor connection error, falling back to subprocess");
         resolve(callExtractorSubprocess(conversationText, config));
       });
       req.on("timeout", () => {
         req.destroy();
-        logger.warn("HTTP extractor timeout, falling back to subprocess");
+        logger2.warn("HTTP extractor timeout, falling back to subprocess");
         resolve(callExtractorSubprocess(conversationText, config));
       });
       req.write(postData);
@@ -18643,7 +18716,7 @@ function callExtractorSubprocess(conversationText, config) {
       let stdout = "";
       let stderr = "";
       const timer = setTimeout(() => {
-        logger.warn("Subprocess timeout, killing");
+        logger2.warn("Subprocess timeout, killing");
         proc.kill("SIGTERM");
       }, 3e4);
       proc.stdout.on("data", (d) => {
@@ -18656,7 +18729,7 @@ function callExtractorSubprocess(conversationText, config) {
         clearTimeout(timer);
         releaseSubprocessSlot();
         if (code !== 0) {
-          logger.error({ code, stderr }, "Extractor subprocess error");
+          logger2.error({ code, stderr }, "Extractor subprocess error");
           resolve([]);
           return;
         }
@@ -18665,23 +18738,23 @@ function callExtractorSubprocess(conversationText, config) {
           if (Array.isArray(result)) {
             resolve(result);
           } else {
-            logger.warn({ output: stdout.slice(0, 200) }, "Unexpected extractor output, discarding");
+            logger2.warn({ output: stdout.slice(0, 200) }, "Unexpected extractor output, discarding");
             resolve([]);
           }
         } catch {
-          logger.warn("Extractor JSON parse failed, discarding output");
+          logger2.warn("Extractor JSON parse failed, discarding output");
           resolve([]);
         }
       });
       proc.on("error", (err) => {
         clearTimeout(timer);
         releaseSubprocessSlot();
-        logger.error({ err: err.message }, "Subprocess error");
+        logger2.error({ err: err.message }, "Subprocess error");
         resolve([]);
       });
     } catch (err) {
       releaseSubprocessSlot();
-      logger.error({ err }, "callExtractorSubprocess unexpected error");
+      logger2.error({ err }, "callExtractorSubprocess unexpected error");
       resolve([]);
     }
   });
@@ -18738,7 +18811,7 @@ function restoreMetricsCounters() {
     const snap = JSON.parse(raw);
     const age = Date.now() - snap.timestamp;
     if (age > 3e5) {
-      logger.info({ age }, "[metrics] stale dump, skipping restore");
+      logger2.info({ age }, "[metrics] stale dump, skipping restore");
       return;
     }
     const collected = register3.getMetricsAsJSON();
@@ -18746,13 +18819,13 @@ function restoreMetricsCounters() {
       if (metric.type === "counter") {
         const saved = snap.counters[metric.name];
         if (saved !== void 0) {
-          logger.debug({ metric: metric.name, saved }, "[metrics] would restore counter");
+          logger2.debug({ metric: metric.name, saved }, "[metrics] would restore counter");
         }
       }
     }
-    logger.info({ counters: Object.keys(snap.counters).length }, "[metrics] restored from dump");
+    logger2.info({ counters: Object.keys(snap.counters).length }, "[metrics] restored from dump");
   } catch (e) {
-    logger.warn({ err: e }, "[metrics] failed to restore from dump");
+    logger2.warn({ err: e }, "[metrics] failed to restore from dump");
   }
 }
 var dumpTimer = null;
@@ -18777,9 +18850,9 @@ function startMetricsDump() {
         counters
       };
       writeFileSync2(DUMP_FILE, JSON.stringify(snap), "utf8");
-      logger.debug({ counters: Object.keys(counters).length }, "[metrics] dumped");
+      logger2.debug({ counters: Object.keys(counters).length }, "[metrics] dumped");
     } catch (e) {
-      logger.warn({ err: e }, "[metrics] dump failed");
+      logger2.warn({ err: e }, "[metrics] dump failed");
     }
   }, DUMP_INTERVAL_MS);
   dumpTimer.unref();
@@ -22775,7 +22848,7 @@ async function healthCheck() {
     checks.embedder = true;
   } catch (e) {
     error = `embedder: ${e?.message ?? e}`;
-    logger.warn({ err: e }, "[health] embedder check failed");
+    logger2.warn({ err: e }, "[health] embedder check failed");
   }
   try {
     const store = await getMemoryStore();
@@ -22801,7 +22874,7 @@ async function healthCheck() {
     }
   } catch (e) {
     error = `lancedb: ${e?.message ?? String(e)}`;
-    logger.warn({ err: e }, "[health] lancedb check failed");
+    logger2.warn({ err: e }, "[health] lancedb check failed");
   }
   try {
     const hawkHome = join7(homedir7(), ".hawk");
@@ -22810,7 +22883,7 @@ async function healthCheck() {
     checks.disk = true;
   } catch (e) {
     error = `disk: ${e?.message ?? String(e)}`;
-    logger.warn({ err: e }, "[health] disk check failed");
+    logger2.warn({ err: e }, "[health] disk check failed");
   }
   const allOk = checks.embedder && checks.lancedb && checks.disk;
   return {
@@ -22842,7 +22915,7 @@ async function sendAlert(webhookUrl, result) {
       timestamp: (/* @__PURE__ */ new Date()).toISOString()
     }, { timeout: 5e3 });
   } catch (e) {
-    logger.warn({ err: e }, "[health] alert webhook failed");
+    logger2.warn({ err: e }, "[health] alert webhook failed");
   }
 }
 function startMetricsServer() {
@@ -22896,15 +22969,15 @@ function startMetricsServer() {
     }
   });
   server.listen(METRICS_PORT, "127.0.0.1", () => {
-    logger.info({ port: METRICS_PORT }, "[hawk-bridge] Metrics server listening on http://127.0.0.1:{port}");
-    logger.info("[hawk-bridge]   /health  \u2014 health check (embedder + lancedb + disk)");
-    logger.info("[hawk-bridge]   /metrics \u2014 Prometheus scrape endpoint");
-    if (METRICS_TOKEN) logger.info("[hawk-bridge]   /metrics auth enabled (HAWK_METRICS_TOKEN)");
-    if (ALERT_WEBHOOK_URL) logger.info("[hawk-bridge]   degraded alerts enabled (HAWK_ALERT_WEBHOOK_URL)");
+    logger2.info({ port: METRICS_PORT }, "[hawk-bridge] Metrics server listening on http://127.0.0.1:{port}");
+    logger2.info("[hawk-bridge]   /health  \u2014 health check (embedder + lancedb + disk)");
+    logger2.info("[hawk-bridge]   /metrics \u2014 Prometheus scrape endpoint");
+    if (METRICS_TOKEN) logger2.info("[hawk-bridge]   /metrics auth enabled (HAWK_METRICS_TOKEN)");
+    if (ALERT_WEBHOOK_URL) logger2.info("[hawk-bridge]   degraded alerts enabled (HAWK_ALERT_WEBHOOK_URL)");
   });
   server.on("error", (err) => {
     if (err.code !== "EADDRINUSE") {
-      logger.warn({ err: err.message }, "[hawk-bridge] Metrics server error");
+      logger2.warn({ err: err.message }, "[hawk-bridge] Metrics server error");
     }
   });
   startMetricsDump();

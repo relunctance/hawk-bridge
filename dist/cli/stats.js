@@ -4055,26 +4055,34 @@ var LanceDBAdapter = class {
   async update(id, fields) {
     if (!this.table) await this.init();
     try {
-      const existing = await this.getById(id);
-      if (!existing) return false;
-      await this.table.delete(`id = '${id.replace(/'/g, "''")}'`);
-      const updated = {
-        ...existing,
-        text: fields.text ?? existing.text,
-        name: fields.name ?? existing.name,
-        description: fields.description ?? existing.description,
-        category: fields.category ?? existing.category,
-        scope: fields.scope ?? existing.scope,
-        importance: fields.importance ?? existing.importance,
-        importanceOverride: fields.importanceOverride ?? existing.importanceOverride,
-        updatedAt: Date.now(),
-        vector: existing.vector,
-        driftNote: fields.driftNote ?? existing.driftNote,
-        driftDetectedAt: fields.driftDetectedAt ?? existing.driftDetectedAt
-      };
-      await this.store(updated, existing.sessionId ?? void 0);
+      const where = `id = '${id.replace(/'/g, "''")}'`;
+      const args = {};
+      if (fields.text !== void 0) args["text"] = String(fields.text);
+      if (fields.name !== void 0) args["name"] = String(fields.name);
+      if (fields.description !== void 0) args["description"] = String(fields.description);
+      if (fields.category !== void 0) args["category"] = String(fields.category);
+      if (fields.scope !== void 0) {
+        args["scope"] = String(fields.scope);
+        args["scope_mem"] = String(fields.scope);
+      }
+      if (fields.importance !== void 0) args["importance"] = String(fields.importance);
+      if (fields.importanceOverride !== void 0) {
+        args["importance_override"] = String(fields.importanceOverride);
+      }
+      if (fields.driftNote !== void 0) {
+        args["drift_note"] = fields.driftNote ? String(fields.driftNote) : "";
+      }
+      if (fields.driftDetectedAt !== void 0) {
+        args["drift_detected_at"] = fields.driftDetectedAt ? String(fields.driftDetectedAt) : "";
+      }
+      args["updated_at"] = String(Date.now());
+      if (Object.keys(args).length === 1 && "updated_at" in args) {
+        return true;
+      }
+      await this.table.update(args, { where });
       return true;
-    } catch {
+    } catch (err) {
+      logger.warn({ err, id }, "LanceDBAdapter.update failed");
       return false;
     }
   }
@@ -4303,7 +4311,8 @@ var LanceDBAdapter = class {
       if (daysIdle > 0) {
         const decayMultiplier = getDecayMultiplier(m.reliability);
         const effectiveDays = Math.ceil(daysIdle * decayMultiplier);
-        const newImportance = m.importance * Math.pow(0.95, effectiveDays);
+        const baseDecay = Math.pow(0.95, effectiveDays);
+        const newImportance = m.importance * baseDecay * m.importanceOverride;
         const prospectiveMem = { ...m, importance: newImportance };
         const newTier = this.recomputeTier(prospectiveMem);
         if (newTier !== m.scope) {
