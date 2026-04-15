@@ -130,7 +130,7 @@ function normalizeText(text: string): string {
   t = t.replace(/^[\s]*[-*+]\s+/gm, '');
   t = t.replace(/^[\s]*\d+\.\s+/gm, '');
 
-  // 12. Remove console.log / debug comments: console.log(...) → [日志]
+  // 12. Remove console/debug comments: e.g. `[日志]` → [日志]
   t = t.replace(/\bconsole\s*\.\s*(log|debug|info|warn|error)\s*\([^)]*\)/gi, '[日志]');
   t = t.replace(/\bprint\s*\([^)]*\)/g, '[日志]');
   t = t.replace(/\bprint\b(?!\s*=)/g, '[日志]');  // Python print

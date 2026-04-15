@@ -16,10 +16,123 @@ var __export = (target, all) => {
 
 // src/logger.ts
 import pino from "pino";
-var logLevel, logger;
+import { join, dirname } from "path";
+import { existsSync, mkdirSync, unlinkSync, readdirSync, statSync } from "fs";
+import { homedir } from "os";
+function getTimestamp() {
+  const now = /* @__PURE__ */ new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const h = String(now.getHours()).padStart(2, "0");
+  const min = String(now.getMinutes()).padStart(2, "0");
+  const s = String(now.getSeconds()).padStart(2, "0");
+  return `${y}${m}${d}-${h}${min}${s}`;
+}
+function basename(p) {
+  return p.split("/").pop() ?? p;
+}
+function patchConsole() {
+  if (process.env.NODE_ENV !== "production" && process.env.HAWK_STRICT_LOG !== "1") return;
+  const origError = console.error.bind(console);
+  const origWarn = console.warn.bind(console);
+  const origLog = console.log.bind(console);
+  console.error = (...args) => {
+    logger.error({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.warn = (...args) => {
+    logger.warn({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.log = (...args) => {
+    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.info = (...args) => {
+    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.debug = (...args) => {
+    logger.debug({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+}
+var LOG_DIR, LOG_FILE_BASE, MAX_FILE_SIZE, MAX_FILES, RotatingFileStream, rotatingStream, logLevel, logger;
 var init_logger = __esm({
   "src/logger.ts"() {
     "use strict";
+    LOG_DIR = process.env.HAWK_LOG_DIR ?? join(homedir(), ".hawk", "logs");
+    LOG_FILE_BASE = join(LOG_DIR, "hawk-bridge.log");
+    MAX_FILE_SIZE = parseInt(process.env.HAWK_LOG_MAX_SIZE ?? String(50 * 1024 * 1024), 10);
+    MAX_FILES = parseInt(process.env.HAWK_LOG_MAX_FILES ?? "14", 10);
+    RotatingFileStream = class {
+      stream;
+      size = 0;
+      constructor(filePath) {
+        this.ensureDir(dirname(filePath));
+        this.stream = this.openStream(filePath);
+      }
+      ensureDir(dir) {
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      }
+      openStream(filePath) {
+        const fd = existsSync(filePath) ? void 0 : void 0;
+        const s = __require("fs").createWriteStream(filePath, { flags: "a", highWaterMark: 64 * 1024 });
+        if (existsSync(filePath)) {
+          this.size = statSync(filePath).size;
+        }
+        return s;
+      }
+      rotate() {
+        this.stream.end();
+        const rotatedPath = `${LOG_FILE_BASE}.${getTimestamp()}.log`;
+        try {
+          const dir = dirname(LOG_FILE_BASE);
+          if (existsSync(LOG_FILE_BASE)) {
+            const fs3 = __require("fs");
+            fs3.renameSync(LOG_FILE_BASE, rotatedPath);
+          }
+        } catch {
+        }
+        this.stream = this.openStream(LOG_FILE_BASE);
+        this.size = 0;
+        this.cleanupOldRotations();
+      }
+      cleanupOldRotations() {
+        try {
+          const dir = dirname(LOG_FILE_BASE);
+          const base = basename(LOG_FILE_BASE);
+          const files = readdirSync(dir).filter((f) => f.startsWith(base + ".") && f.endsWith(".log")).map((f) => ({
+            name: f,
+            path: join(dir, f),
+            mtime: statSync(join(dir, f)).mtime.getTime()
+          })).sort((a, b) => a.mtime - b.mtime);
+          const excess = files.length - MAX_FILES;
+          if (excess > 0) {
+            for (const f of files.slice(0, excess)) {
+              try {
+                unlinkSync(f.path);
+              } catch {
+              }
+            }
+          }
+        } catch {
+        }
+      }
+      write(chunk, cb) {
+        const len = Buffer.byteLength(chunk, "utf8");
+        if (this.size + len > MAX_FILE_SIZE) {
+          this.rotate();
+        }
+        this.size += len;
+        this.stream.write(chunk, cb);
+      }
+      end(cb) {
+        this.stream.end(cb);
+      }
+      // Expose for pino
+      get fd() {
+        return this.stream.fd ?? -1;
+      }
+    };
+    if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
+    rotatingStream = new RotatingFileStream(LOG_FILE_BASE);
     logLevel = process.env.HAWK__LOGGING__LEVEL || process.env.HAWK_LOG_LEVEL || "info";
     logger = pino({
       level: logLevel,
@@ -27,7 +140,8 @@ var init_logger = __esm({
         level: (label) => ({ level: label })
       },
       timestamp: pino.stdTimeFunctions.isoTime
-    });
+    }, rotatingStream);
+    patchConsole();
   }
 });
 
@@ -69,6 +183,73 @@ var init_metrics = __esm({
       labelNames: ["type"],
       registers: [register]
     });
+  }
+});
+
+// src/utils/circuit-breaker.ts
+var CircuitBreaker, CircuitOpenError;
+var init_circuit_breaker = __esm({
+  "src/utils/circuit-breaker.ts"() {
+    "use strict";
+    CircuitBreaker = class {
+      constructor(threshold = 5, resetMs = 3e4, halfOpenMax = 2) {
+        this.threshold = threshold;
+        this.resetMs = resetMs;
+        this.halfOpenMax = halfOpenMax;
+      }
+      failures = 0;
+      lastFailure = 0;
+      state = "closed";
+      halfOpenCount = 0;
+      async run(fn) {
+        if (this.state === "open") {
+          if (Date.now() - this.lastFailure > this.resetMs) {
+            this.state = "half-open";
+            this.halfOpenCount = 0;
+          } else {
+            throw new CircuitOpenError(`Circuit is open, retry after ${this.resetMs}ms`);
+          }
+        }
+        if (this.state === "half-open") {
+          if (this.halfOpenCount >= this.halfOpenMax) {
+            throw new CircuitOpenError("Circuit half-open limit reached");
+          }
+          this.halfOpenCount++;
+        }
+        try {
+          const result = await fn();
+          this.onSuccess();
+          return result;
+        } catch (e) {
+          this.onFailure();
+          throw e;
+        }
+      }
+      onSuccess() {
+        this.failures = 0;
+        this.state = "closed";
+      }
+      onFailure() {
+        this.failures++;
+        this.lastFailure = Date.now();
+        if (this.failures >= this.threshold) {
+          this.state = "open";
+        }
+      }
+      getStatus() {
+        return {
+          state: this.state,
+          failures: this.failures,
+          lastFailure: this.lastFailure
+        };
+      }
+    };
+    CircuitOpenError = class extends Error {
+      constructor(msg) {
+        super(msg);
+        this.name = "CircuitOpenError";
+      }
+    };
   }
 });
 
@@ -179,13 +360,15 @@ function formatRecallForContext(memories, emoji = "\u{1F985}") {
   }
   return lines.join("\n");
 }
-var FETCH_TIMEOUT_MS, _activeProxyUrl, _proxyAgent, Embedder;
+var FETCH_TIMEOUT_MS, embedBreaker, _activeProxyUrl, _proxyAgent, Embedder;
 var init_embeddings = __esm({
   "src/embeddings.ts"() {
     "use strict";
     init_logger();
     init_metrics();
+    init_circuit_breaker();
     FETCH_TIMEOUT_MS = 15e3;
+    embedBreaker = new CircuitBreaker(5, 3e4);
     _activeProxyUrl = process.env.HAWK_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || "";
     _proxyAgent = null;
     Embedder = class _Embedder {
@@ -457,7 +640,7 @@ var init_embeddings = __esm({
 // src/hooks/hawk-recall/handler.ts
 import * as path3 from "path";
 import * as fs2 from "fs";
-import { homedir as homedir3 } from "os";
+import { homedir as homedir4 } from "os";
 
 // src/store/adapters/lancedb.ts
 init_embeddings();
@@ -3094,7 +3277,7 @@ var DECAY_RATE_HIGH_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_HIGH ||
 var DECAY_RATE_MEDIUM_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_MEDIUM || "0.8");
 var DECAY_RATE_LOW_RELIABILITY = parseFloat(process.env.HAWK_DECAY_RATE_LOW || "1.5");
 var COLD_START_GRACE_DAYS = parseInt(process.env.HAWK_COLD_START_GRACE_DAYS || "7", 10);
-var COLD_START_DECAY_MULTIPLIER = parseFloat(process.env.HAWK_COLD_START_DECAY_MULTIPLIER || "0.1");
+var COLD_START_DECAY_MULTIPLIER = parseFloat(process.env.HAWK_COLD_START_DECAY_MULTIPLIER || "0.5");
 var CONFLICT_SIMILARITY_THRESHOLD = parseFloat(process.env.HAWK_CONFLICT_THRESHOLD || "0.6");
 var ENTITY_DEDUP_THRESHOLD = parseFloat(process.env.HAWK_ENTITY_DEDUP_THRESHOLD || "0.75");
 var ENTITY_DEDUP_SESSION_WINDOW = parseInt(process.env.HAWK_ENTITY_DEDUP_SESSION_WINDOW || "10", 10);
@@ -3269,6 +3452,7 @@ function deepMerge(base, override) {
 }
 
 // src/config.ts
+init_logger();
 var OPENCLAW_CONFIG_PATH = path.join(os.homedir(), ".openclaw", "openclaw.json");
 var OPENCLAW_AGENT_MODELS = path.join(os.homedir(), ".openclaw", "agents", "main", "agent", "models.json");
 var HAWK_CONFIG_DIR = path.join(os.homedir(), ".hawk");
@@ -3372,7 +3556,7 @@ function loadYamlConfig() {
       const resolved = resolveEnvVars(raw);
       return load(resolved);
     } catch (e) {
-      console.warn("[hawk-bridge] Failed to load config.yaml:", e);
+      logger.warn({ err: e }, "[hawk-bridge] Failed to load config.yaml");
     }
   }
   return {};
@@ -4744,6 +4928,7 @@ async function getMemoryStore() {
 }
 
 // src/retriever.ts
+init_logger();
 var HybridRetriever = class {
   db;
   embedder;
@@ -4755,7 +4940,7 @@ var HybridRetriever = class {
   // ---------- Noise Prototype Setup ----------
   async buildNoisePrototypes() {
     if (!hasEmbeddingProvider()) {
-      console.log("[hawk-bridge] No embedding provider, skipping noise prototypes");
+      logger.debug("[hawk-bridge] No embedding provider, skipping noise prototypes");
       return;
     }
     const noiseTexts = [
@@ -4781,7 +4966,7 @@ var HybridRetriever = class {
         this.noisePrototypes = await this.embedder.embed(noiseTexts);
       }
     } catch (e) {
-      console.warn("[hawk-bridge] Noise prototype embedding failed, noise filter disabled:", e.message);
+      logger.warn({ err: e.message }, "[hawk-bridge] Noise prototype embedding failed, noise filter disabled");
     }
   }
   isNoise(embedding) {
@@ -4940,10 +5125,10 @@ var HybridRetriever = class {
         }
         return results;
       } catch (err) {
-        console.warn("[hawk-bridge] Vector search failed, falling back to FTS-only:", err);
+        logger.warn({ err }, "[hawk-bridge] Vector search failed, falling back to FTS-only");
       }
     }
-    console.log("[hawk-bridge] Running in FTS-only mode (LanceDB native full-text search)");
+    logger.info("[hawk-bridge] Running in FTS-only mode (LanceDB native full-text search)");
     try {
       const ftsResults = await this.db.ftsSearch(query, topK * 3, scope, sourceTypes);
       const idToScore = new Map(ftsResults.map((r) => [r.id, r.score]));
@@ -4966,7 +5151,7 @@ var HybridRetriever = class {
       }
       return results;
     } catch (err) {
-      console.error("[hawk-bridge] FTS search failed:", err);
+      logger.error({ err }, "[hawk-bridge] FTS search failed");
       return [];
     }
   }
@@ -5231,7 +5416,7 @@ function sanitize(text) {
   for (const [p, repl] of SANITIZE) r = r.replace(p, repl);
   return r;
 }
-var DRIFT_VERIFY_QUEUE = path3.join(homedir3(), ".hawk", "drift-verify-queue.jsonl");
+var DRIFT_VERIFY_QUEUE = path3.join(homedir4(), ".hawk", "drift-verify-queue.jsonl");
 function checkDriftVerifyQueue() {
   try {
     if (!fs2.existsSync(DRIFT_VERIFY_QUEUE)) return [];
@@ -5551,7 +5736,7 @@ ${lines.join("\n")}
     }
     var m = trimmed.match(EXPORT_PATTERN);
     if (m) {
-      const filepath = m[1]?.trim() || path3.join(homedir3(), ".hawk", `export-${Date.now()}.json`);
+      const filepath = m[1]?.trim() || path3.join(homedir4(), ".hawk", `export-${Date.now()}.json`);
       const all = await db.getAllMemories();
       const exported = all.map((m2) => ({
         id: m2.id,
@@ -5566,9 +5751,9 @@ ${lines.join("\n")}
         correctionHistory: m2.correctionHistory
       }));
       try {
-        const { writeFileSync: writeFileSync2, mkdirSync: mkdirSync2, existsSync: existsSync3 } = __require("fs");
+        const { writeFileSync: writeFileSync2, mkdirSync: mkdirSync3, existsSync: existsSync4 } = __require("fs");
         const dir = path3.dirname(filepath);
-        if (!existsSync3(dir)) mkdirSync2(dir, { recursive: true });
+        if (!existsSync4(dir)) mkdirSync3(dir, { recursive: true });
         writeFileSync2(filepath, JSON.stringify({ exported_at: (/* @__PURE__ */ new Date()).toISOString(), count: exported.length, memories: exported }, null, 2));
         event.messages.push(`
 ${injectEmoji} \u2705 \u5DF2\u5BFC\u51FA ${exported.length} \u6761\u8BB0\u5FC6\u5230
@@ -5616,8 +5801,8 @@ ${injectEmoji} \u8FD8\u6CA1\u6709\u4EFB\u4F55\u8BB0\u5FC6\u3002
     if (m) {
       const filepath = m[1].trim();
       try {
-        const { readFileSync: readFileSync3, existsSync: existsSync3 } = __require("fs");
-        if (!existsSync3(filepath)) {
+        const { readFileSync: readFileSync3, existsSync: existsSync4 } = __require("fs");
+        if (!existsSync4(filepath)) {
           event.messages.push(`
 ${injectEmoji} \u274C \u6587\u4EF6\u4E0D\u5B58\u5728: ${filepath}
 `);
@@ -6175,10 +6360,10 @@ ${formatRecallResults(withReasons, injectEmoji)}
     }
     if (config.audit?.enabled) {
       try {
-        const { appendFileSync, join: join4 } = __require("fs");
-        const { homedir: homedir4 } = __require("os");
+        const { appendFileSync, join: join5 } = __require("fs");
+        const { homedir: homedir5 } = __require("os");
         appendFileSync(
-          join4(homedir4(), ".hawk", "audit.log"),
+          join5(homedir5(), ".hawk", "audit.log"),
           JSON.stringify({ ts: (/* @__PURE__ */ new Date()).toISOString(), action: "recall", count: sanitized.length, query: trimmed.slice(0, 100) }) + "\n"
         );
       } catch {
