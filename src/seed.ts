@@ -9,6 +9,7 @@
 
 import { HawkDB } from './lancedb.js';
 import { createHash } from 'crypto';
+import { logger } from './logger.js';
 
 const SEED_MEMORIES = [
   // Generic AI agent team context
@@ -109,7 +110,7 @@ function seedId(text: string): string {
 }
 
 export async function seed(): Promise<void> {
-  console.log('[seed] Starting seed...');
+  logger.info('[seed] Starting seed...');
   const db = new HawkDB();
   await db.init();
 
@@ -122,7 +123,7 @@ export async function seed(): Promise<void> {
     // Skip if already exists
     const existing = await db.getById(id);
     if (existing) {
-      console.log(`[seed] Skipped (already exists): ${memory.text.slice(0, 60)}...`);
+      logger.debug({ text: memory.text.slice(0, 60) }, '[seed] Skipped (already exists)');
       skipped++;
       continue;
     }
@@ -137,17 +138,17 @@ export async function seed(): Promise<void> {
       timestamp: Date.now(),
       metadata: memory.metadata as Record<string, unknown>,
     });
-    console.log(`[seed] Added: ${memory.text.slice(0, 60)}...`);
+    logger.debug({ text: memory.text.slice(0, 60) }, '[seed] Added');
     added++;
   }
 
-  console.log(`[seed] Done! Added: ${added}, Skipped (already exist): ${skipped}.`);
-  console.log('[seed] IMPORTANT: Customize these memories for your team in ~/.hawk/lancedb/');
+  logger.info({ added, skipped }, '[seed] Done!');
+  logger.info('[seed] IMPORTANT: Customize these memories for your team in ~/.hawk/lancedb/');
   process.exit(0);
 }
 
 // Run if called directly
 seed().catch(err => {
-  console.error('[seed] Seed failed:', err);
+  logger.error({ err }, '[seed] Seed failed');
   process.exit(1);
 });

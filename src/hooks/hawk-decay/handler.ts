@@ -6,6 +6,7 @@ import type { HookEvent } from '../../../../../../.npm-global/lib/node_modules/o
 import { getMemoryStore } from '../../store/factory.js';
 import type { MemoryStore } from '../../store/interface.js';
 import { FORGET_GRACE_DAYS } from '../../constants.js';
+import { logger } from '../../logger.js';
 
 let lastDecayRun = 0;
 let tierMaintenanceDone = false;
@@ -29,7 +30,7 @@ const decayHandler = async (event: HookEvent) => {
       const tierResult = await db.runTierMaintenance();
       tierMaintenanceDone = true;
       if (tierResult.updated > 0) {
-        console.log(`[hawk-decay] tier maintenance: updated=${tierResult.updated} memories`);
+        logger.debug({ updated: tierResult.updated }, '[hawk-decay] tier maintenance: updated={updated} memories');
       }
     }
 
@@ -44,13 +45,10 @@ const decayHandler = async (event: HookEvent) => {
 
     const total = decayResult.updated + decayResult.deleted + purged;
     if (total > 0) {
-      console.log(
-        `[hawk-decay] decay: updated=${decayResult.updated}, deleted=${decayResult.deleted}, ` +
-        `purged=${purged}`
-      );
+      logger.debug({ updated: decayResult.updated, deleted: decayResult.deleted, purged }, '[hawk-decay] decay complete');
     }
   } catch (err) {
-    console.error('[hawk-decay] Error:', err);
+    logger.error({ err }, '[hawk-decay] Error');
   }
 };
 
