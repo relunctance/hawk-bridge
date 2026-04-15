@@ -90,6 +90,16 @@ export class LanceDBAdapter implements MemoryStore {
         }
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
+
+        // Ensure FTS index exists on the text column (idempotent — no-op if already indexed)
+        try {
+          const { Index } = await import('@lancedb/lancedb');
+          await this.table.createIndex('text', Index.fts());
+          logger.info('FTS index ensured on text column');
+        } catch (err: any) {
+          logger.warn({ err: err?.message }, 'FTS index creation failed (non-fatal, index may already exist)');
+        }
+
         try {
           await this.table.alterAddColumns([
             { name: 'expires_at', type: { type: 'int64' } },
