@@ -14832,6 +14832,12 @@ var RERANK_CANDIDATE_MULTIPLIER = parseInt(process.env.HAWK_RERANK_CANDIDATE_MUL
 var BM25_QUERY_LIMIT = parseInt(process.env.HAWK_BM25_QUERY_LIMIT || "1000", 10);
 var DEFAULT_EMBEDDING_DIM = parseInt(process.env.HAWK_EMBEDDING_DIM || "384", 10);
 var DEFAULT_MIN_SCORE = parseFloat(process.env.HAWK_MIN_SCORE || "0.6");
+var MIN_RECALL_SCORE = parseFloat(process.env.HAWK_MIN_RECALL_SCORE || "0.55");
+var INFERENCE_RELIABILITY = parseFloat(process.env.HAWK_INFERENCE_RELIABILITY || "0.3");
+var INFERENCE_RECALL_PENALTY = parseFloat(process.env.HAWK_INFERENCE_RECALL_PENALTY || "0.7");
+var UNVERIFIED_LEARNINGS_RELIABILITY = parseFloat(process.env.HAWK_UNVERIFIED_LEARNINGS_RELIABILITY || "0.3");
+var LEARNINGS_VERIFY_BOOST = parseFloat(process.env.HAWK_LEARNINGS_VERIFY_BOOST || "0.2");
+var CORRECTION_BOOST = parseFloat(process.env.HAWK_CORRECTION_BOOST || "0.1");
 var MAX_CHUNK_SIZE = parseInt(process.env.HAWK_MAX_CHUNK_SIZE || "2000", 10);
 var MIN_CHUNK_SIZE = parseInt(process.env.HAWK_MIN_CHUNK_SIZE || "20", 10);
 var MAX_TEXT_LEN = parseInt(process.env.HAWK_MAX_TEXT_LEN || "5000", 10);
@@ -15362,7 +15368,10 @@ var LanceDBAdapter = class {
             { name: "last_used_at", type: { type: "int64" } },
             { name: "usefulness_score", type: { type: "float" } },
             { name: "recall_count", type: { type: "int32" } },
-            { name: "platform", type: { type: "utf8" } }
+            { name: "platform", type: { type: "utf8" } },
+            { name: "confidence", type: { type: "float" } },
+            { name: "supersedes", type: { type: "utf8" } },
+            { name: "supersededBy", type: { type: "utf8" } }
           ]);
         } catch (_) {
         }
@@ -15406,33 +15415,30 @@ var LanceDBAdapter = class {
       created_at: BigInt(data.created_at),
       access_count: data.access_count,
       last_accessed_at: BigInt(data.last_accessed_at),
-      // Note: BigInt(null) throws, so use BigInt(0) as placeholder for null timestamps
       deleted_at: BigInt(data.deleted_at ?? 0),
       reliability: data.reliability,
       verification_count: data.verification_count,
       last_verified_at: BigInt(data.last_verified_at ?? 0),
       locked: data.locked ? 1 : 0,
       correction_history: data.correction_history,
-      // Use empty string for null session_id to avoid schema inference failure in makeArrowTable
       session_id: data.session_id ?? "",
-      // Use ?? 0 to handle undefined (init sample row doesn't set this field)
       updated_at: BigInt(data.updated_at ?? 0),
-      // Default to 'personal' if not provided (init sample row doesn't set scope_mem)
       scope_mem: data.scope_mem || "personal",
       importance_override: data.importance_override,
-      // Use BigInt(0) for null cold_start_until (LanceDB makeArrowTable can't infer null BigInt)
       cold_start_until: BigInt(data.cold_start_until ?? 0),
       metadata: data.metadata,
       source_type: data.source_type,
       source: data.source,
-      // Use empty string for null drift_note (LanceDB makeArrowTable can't infer null)
+      // confidence: 0.0 for non-inference memories
+      confidence: data.confidence ?? 0,
+      // Use empty string for null supersedes/supersededBy (LanceDB makeArrowTable can't infer null)
+      supersedes: data.supersedes ?? "",
+      supersededBy: data.supersededBy ?? "",
       drift_note: data.drift_note ?? "",
       drift_detected_at: BigInt(data.drift_detected_at ?? 0),
       last_used_at: BigInt(data.last_used_at ?? 0),
-      // Use 0.0 for null usefulness_score
       usefulness_score: data.usefulness_score ?? 0,
       recall_count: data.recall_count ?? 0,
-      // Use 'hawk-bridge' as default platform
       platform: data.platform ?? "hawk-bridge"
     };
   }
@@ -15555,6 +15561,9 @@ var LanceDBAdapter = class {
       driftNote: r.drift_note ?? null,
       driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
       source: r.source ?? "",
+      confidence: r.confidence ?? 0,
+      supersedes: r.supersedes ? String(r.supersedes) : null,
+      supersededBy: r.supersededBy ? String(r.supersededBy) : null,
       last_used_at: Number(r.last_used_at ?? 0),
       usefulness_score: r.usefulness_score ?? 0.5,
       recall_count: r.recall_count ?? 0,
@@ -15595,6 +15604,9 @@ var LanceDBAdapter = class {
       driftNote: r.drift_note ?? null,
       driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
       source: r.source ?? "",
+      confidence: r.confidence ?? 0,
+      supersedes: r.supersedes ? String(r.supersedes) : null,
+      supersededBy: r.supersededBy ? String(r.supersededBy) : null,
       last_used_at: r.last_used_at !== null ? Number(r.last_used_at) : null,
       usefulness_score: r.usefulness_score ?? null,
       recall_count: r.recall_count ?? 0,
@@ -15636,6 +15648,9 @@ var LanceDBAdapter = class {
       metadata: JSON.stringify(entry.metadata || {}),
       source_type: entry.source_type || "text",
       source: entry.source || "",
+      confidence: entry.confidence ?? 0,
+      supersedes: entry.supersedes ?? null,
+      supersededBy: entry.supersededBy ?? null,
       drift_note: entry.driftNote || null,
       drift_detected_at: entry.driftDetectedAt || null,
       last_used_at: entry.last_used_at ?? null,
@@ -15667,6 +15682,15 @@ var LanceDBAdapter = class {
       }
       if (fields.driftDetectedAt !== void 0) {
         args["drift_detected_at"] = fields.driftDetectedAt ? String(fields.driftDetectedAt) : "";
+      }
+      if (fields.supersedes !== void 0) {
+        args["supersedes"] = fields.supersedes ?? "";
+      }
+      if (fields.supersededBy !== void 0) {
+        args["superseded_by"] = fields.supersededBy ?? "";
+      }
+      if (fields.confidence !== void 0) {
+        args["confidence"] = String(fields.confidence);
       }
       args["updated_at"] = String(Date.now());
       if (Object.keys(args).length === 1 && "updated_at" in args) {
@@ -15728,7 +15752,7 @@ var LanceDBAdapter = class {
   async getAllMemories(agentId) {
     if (!this.table) await this.init();
     const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
-    return rows.filter((r) => r.deleted_at === null).filter((r) => {
+    return rows.filter((r) => r.deleted_at === null).filter((r) => !r.superseded_by).filter((r) => {
       if (!agentId) return true;
       const owner = r.metadata?.owner_agent ?? r.metadata?.ownerAgent ?? null;
       return owner === null || owner === agentId;
@@ -15770,7 +15794,7 @@ var LanceDBAdapter = class {
   async listRecent(limit = 10) {
     if (!this.table) await this.init();
     const rows = await this.table.query().limit(limit * 2).toArray();
-    return rows.filter((r) => r.deleted_at === null).slice(0, limit).map((r) => this._rowToMemory(r));
+    return rows.filter((r) => r.deleted_at === null).filter((r) => !r.superseded_by).slice(0, limit).map((r) => this._rowToMemory(r));
   }
   async getReviewCandidates(minReliability = 0.5, batchSize = 5) {
     const all3 = await this.getAllMemories();
@@ -15962,6 +15986,7 @@ var LanceDBAdapter = class {
     if (!this.table) await this.init();
     let results = await this.table.search(query, "fts").limit(topK * 4).toArray();
     results = results.filter((r) => r.deleted_at === null);
+    results = results.filter((r) => !r.superseded_by);
     if (scope) results = results.filter((r) => r.scope === scope);
     if (sourceTypes && sourceTypes.length > 0) {
       results = results.filter((r) => {
@@ -15989,6 +16014,7 @@ var LanceDBAdapter = class {
     if (!this.table) await this.init();
     let results = await this.table.search(queryVector).limit(topK * 4).toArray();
     results = results.filter((r) => r.deleted_at === null);
+    results = results.filter((r) => !r.superseded_by);
     if (scope) results = results.filter((r) => r.scope === scope);
     if (sourceTypes && sourceTypes.length > 0) {
       results = results.filter((r) => {
@@ -16963,8 +16989,9 @@ async function getRetriever() {
 }
 var SELECT_MEMORIES_SYSTEM_PROMPT = `You are selecting memories that will be useful for answering the user's query.
 You will be given a list of memory files with their names, descriptions, and categories.
-Return a JSON array of the memory IDs that will clearly be helpful (up to 8).
-Only include memories you are certain will be relevant. If none, return [].`;
+IMPORTANT: Only return memories that are DIRECTLY and SPECIFICALLY relevant to the query.
+Return a JSON array of the memory IDs. Be conservative \u2014 if no memories are clearly relevant, return [].
+Do NOT include memories that are vaguely related or might possibly be useful.`;
 async function dualSelect(query, db2, topN = 8) {
   try {
     const all3 = await db2.getAllMemories();
@@ -17003,7 +17030,9 @@ ${body}` }
     const match = content.match(/\[[\s\S]*?\]/);
     if (!match) return [];
     const ids = JSON.parse(match[0]);
-    return ids.slice(0, topN);
+    const validIds = new Set(manifest.map((m) => m.id));
+    const verified = ids.filter((id) => validIds.has(id));
+    return verified.slice(0, topN);
   } catch (e) {
     logger2.warn({ err: e }, "dualSelect failed");
     return [];
@@ -18042,7 +18071,12 @@ ${injectEmoji} \u6CA1\u6709\u627E\u5230\u9700\u8981\u7EA0\u6B63\u7684\u8BB0\u5FC
       const retriever = await getRetriever();
       memories = await retriever.search(trimmed, topK, void 0, void 0, platformFilter);
     }
-    const useable = memories.filter((m2) => m2.score >= minScore || m2.reliability >= RELIABILITY_THRESHOLD_HIGH);
+    const supersededIds = /* @__PURE__ */ new Set();
+    for (const m2 of memories) {
+      if (m2.supersededBy) supersededIds.add(m2.id);
+    }
+    const filteredMemories = memories.filter((m2) => !supersededIds.has(m2.id));
+    const useable = filteredMemories.filter((m2) => m2.score >= minScore || m2.reliability >= RELIABILITY_THRESHOLD_HIGH);
     recordSearch(trimmed, useable.length);
     if (!useable.length) {
       const all3 = await db2.getAllMemories(getAgentId(ctx));
@@ -18070,6 +18104,8 @@ ${tips}
         score = Math.min(1, score + EVOLUTION_SUCCESS * 0.3);
       } else if (src === "evolution-failure") {
         score = score * 0.5;
+      } else if (src === "agent_inference") {
+        score = score * INFERENCE_RECALL_PENALTY;
       }
       return { ...m2, _evolutionScore: score };
     });
@@ -18417,6 +18453,20 @@ var captureHandler = async (event) => {
     const trimmedContent = content.trim();
     if (/^[\d\s.,]+$/.test(trimmedContent)) return;
     if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]{1,3}$/u.test(trimmedContent)) return;
+    const isLlmmaybe = (() => {
+      if (/\[[Mm]odel:\s*[\w\-\.]+\]/.test(content)) return true;
+      if (/\[[Pp]rovider:\s*\w+\]/.test(content)) return true;
+      if ((content.match(/\*\*[^*]+\*\*/g) || []).length >= 3) return true;
+      if ((content.match(/^\d+\.\s+\S+/gm) || []).length >= 4) return true;
+      if (/\b(Therefore|In conclusion|Summary:|综上所述|总而言之|简单来说)\b/i.test(content)) return true;
+      if (/\bAs (discussed|mentioned|noted) (above|earlier|in this)\b/i.test(content)) return true;
+      if (/\b(Based on|As a result of) (the |above |foregoing )/i.test(content)) return true;
+      if (/\b(it is worth noting|it is important to note|please note|note that)\b/gi.test(content)) return true;
+      if (/\b(interesting (point|observation|fact))\b/gi.test(content)) return true;
+      if (/\bdoes this (help|answer|make sense|sound right)\b/i.test(content)) return true;
+      if (/\b(feel free to|please let me know if you)\b/i.test(content)) return true;
+      return false;
+    })();
     const CODE_BLOCK_RE = /```(?:\w+)?\n([\s\S]{20,500}?)```/g;
     const codeBlockMemories = [];
     let codeMatch;
@@ -18594,6 +18644,10 @@ var captureHandler = async (event) => {
             continue;
           }
         }
+        const isLlmg = isLlmmaybe && event.action === "sent";
+        const memorySource = isLlmg ? "agent_inference" : sourceType;
+        const memoryReliability = isLlmg ? config.capture.inferenceReliability ?? 0.3 : 0.5;
+        const memoryConfidence = isLlmg ? config.capture.inferenceConfidence ?? 0.5 : 0;
         try {
           await dbInstance.store({
             id,
@@ -18611,11 +18665,14 @@ var captureHandler = async (event) => {
               l1_overview: p.m.overview,
               name: p.m.name || "",
               description: p.m.description || "",
-              source_type: sourceType,
+              source_type: memorySource,
               sender_id: senderId,
               platform: HAWK_PLATFORM2
             },
             source_type: "text",
+            source: memorySource,
+            reliability: memoryReliability,
+            confidence: memoryConfidence,
             platform: HAWK_PLATFORM2
           }, sessionId);
           storedCount++;

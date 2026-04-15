@@ -28,7 +28,7 @@ const RECALL_MODE: RecallMode = (process.env.HAWK_RECALL_MODE as RecallMode) || 
 const FEDERATED_PLATFORMS = process.env.HAWK_FEDERATED_PLATFORMS?.split(',').map(p => p.trim()) || [];
 
 import { getEmbedder } from '../../embeddings.js';
-import { RELIABILITY_THRESHOLD_HIGH, DRIFT_THRESHOLD_DAYS, EVOLUTION_SUCCESS, EVOLUTION_FAILURE } from '../../constants.js';
+import { RELIABILITY_THRESHOLD_HIGH, DRIFT_THRESHOLD_DAYS, EVOLUTION_SUCCESS, EVOLUTION_FAILURE, INFERENCE_RECALL_PENALTY } from '../../constants.js';
 import { logger } from '../../logger.js';
 import { register, httpRequestsTotal, httpRequestDuration, memoryErrors } from '../../metrics.js';
 
@@ -104,8 +104,9 @@ async function getRetriever(): Promise<HybridRetriever> {
 
 const SELECT_MEMORIES_SYSTEM_PROMPT = `You are selecting memories that will be useful for answering the user's query.
 You will be given a list of memory files with their names, descriptions, and categories.
-Return a JSON array of the memory IDs that will clearly be helpful (up to 8).
-Only include memories you are certain will be relevant. If none, return [].`;
+IMPORTANT: Only return memories that are DIRECTLY and SPECIFICALLY relevant to the query.
+Return a JSON array of the memory IDs. Be conservative — if no memories are clearly relevant, return [].
+Do NOT include memories that are vaguely related or might possibly be useful.`;
 
 async function dualSelect(
   query: string,
@@ -159,7 +160,11 @@ async function dualSelect(
     const match = content.match(/\[[\s\S]*?\]/);
     if (!match) return [];
     const ids = JSON.parse(match[0]) as string[];
-    return ids.slice(0, topN);
+
+    // Verify all returned IDs actually exist in manifest (defensive)
+    const validIds = new Set(manifest.map((m: any) => m.id));
+    const verified = ids.filter((id: string) => validIds.has(id));
+    return verified.slice(0, topN);
   } catch (e) {
     logger.warn({ err: e }, 'dualSelect failed');
     return [];
@@ -1082,7 +1087,14 @@ const recallHandler = async (event: HookEvent) => {
       const retriever = await getRetriever();
       memories = await retriever.search(trimmed, topK, undefined, undefined, platformFilter);
     }
-    const useable   = memories.filter(m => m.score >= minScore || m.reliability >= RELIABILITY_THRESHOLD_HIGH);
+    // Filter superseded memories (if B supersedes A, only show B)
+    // Track which IDs are superseded so we can exclude them
+    const supersededIds = new Set<string>();
+    for (const m of memories) {
+      if ((m as any).supersededBy) supersededIds.add(m.id);
+    }
+    const filteredMemories = memories.filter((m: any) => !supersededIds.has(m.id));
+    const useable = filteredMemories.filter(m => m.score >= minScore || m.reliability >= RELIABILITY_THRESHOLD_HIGH);
     recordSearch(trimmed, useable.length);  // track search history
     if (!useable.length) {
       // Did-you-mean: search for similar terms in memory texts
@@ -1114,6 +1126,9 @@ const recallHandler = async (event: HookEvent) => {
         score = Math.min(1.0, score + EVOLUTION_SUCCESS * 0.3);
       } else if (src === 'evolution-failure') {
         score = score * 0.5; // demote, requires explicit trigger
+      } else if (src === 'agent_inference') {
+        // LLM 生成的推理内容在召回时降权，降低幻觉污染风险
+        score = score * INFERENCE_RECALL_PENALTY;
       }
       return { ...m, _evolutionScore: score };
     });

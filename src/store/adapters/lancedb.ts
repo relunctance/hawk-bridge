@@ -126,6 +126,9 @@ export class LanceDBAdapter implements MemoryStore {
             { name: 'usefulness_score', type: { type: 'float' } },
             { name: 'recall_count', type: { type: 'int32' } },
             { name: 'platform', type: { type: 'utf8' } },
+            { name: 'confidence', type: { type: 'float' } },
+            { name: 'supersedes', type: { type: 'utf8' } },
+            { name: 'supersededBy', type: { type: 'utf8' } },
           ]);
         } catch (_) {
           // Columns may already exist — ignore
@@ -187,6 +190,9 @@ export class LanceDBAdapter implements MemoryStore {
     metadata: string;
     source_type: SourceType;
     source: string;
+    confidence?: number;
+    supersedes?: string | null;
+    supersededBy?: string | null;
     drift_note: string | null;
     drift_detected_at: number | null;
     last_used_at?: number | null;
@@ -209,33 +215,30 @@ export class LanceDBAdapter implements MemoryStore {
       created_at: BigInt(data.created_at),
       access_count: data.access_count,
       last_accessed_at: BigInt(data.last_accessed_at),
-      // Note: BigInt(null) throws, so use BigInt(0) as placeholder for null timestamps
       deleted_at: BigInt(data.deleted_at ?? 0),
       reliability: data.reliability,
       verification_count: data.verification_count,
       last_verified_at: BigInt(data.last_verified_at ?? 0),
       locked: data.locked ? 1 : 0,
       correction_history: data.correction_history,
-      // Use empty string for null session_id to avoid schema inference failure in makeArrowTable
       session_id: data.session_id ?? '',
-      // Use ?? 0 to handle undefined (init sample row doesn't set this field)
       updated_at: BigInt(data.updated_at ?? 0),
-      // Default to 'personal' if not provided (init sample row doesn't set scope_mem)
       scope_mem: data.scope_mem || 'personal',
       importance_override: data.importance_override,
-      // Use BigInt(0) for null cold_start_until (LanceDB makeArrowTable can't infer null BigInt)
       cold_start_until: BigInt(data.cold_start_until ?? 0),
       metadata: data.metadata,
       source_type: data.source_type,
       source: data.source,
-      // Use empty string for null drift_note (LanceDB makeArrowTable can't infer null)
+      // confidence: 0.0 for non-inference memories
+      confidence: data.confidence ?? 0.0,
+      // Use empty string for null supersedes/supersededBy (LanceDB makeArrowTable can't infer null)
+      supersedes: data.supersedes ?? '',
+      supersededBy: data.supersededBy ?? '',
       drift_note: data.drift_note ?? '',
       drift_detected_at: BigInt(data.drift_detected_at ?? 0),
       last_used_at: BigInt(data.last_used_at ?? 0),
-      // Use 0.0 for null usefulness_score
       usefulness_score: data.usefulness_score ?? 0.0,
       recall_count: data.recall_count ?? 0,
-      // Use 'hawk-bridge' as default platform
       platform: data.platform ?? 'hawk-bridge',
     };
   }
@@ -391,6 +394,9 @@ export class LanceDBAdapter implements MemoryStore {
       driftNote: r.drift_note ?? null,
       driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
       source: r.source ?? '',
+      confidence: r.confidence ?? 0.0,
+      supersedes: r.supersedes ? String(r.supersedes) : null,
+      supersededBy: r.supersededBy ? String(r.supersededBy) : null,
       last_used_at: Number(r.last_used_at ?? 0),
       usefulness_score: r.usefulness_score ?? 0.5,
       recall_count: r.recall_count ?? 0,
@@ -435,6 +441,9 @@ export class LanceDBAdapter implements MemoryStore {
       driftNote: r.drift_note ?? null,
       driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
       source: r.source ?? '',
+      confidence: r.confidence ?? 0.0,
+      supersedes: r.supersedes ? String(r.supersedes) : null,
+      supersededBy: r.supersededBy ? String(r.supersededBy) : null,
       last_used_at: r.last_used_at !== null ? Number(r.last_used_at) : null,
       usefulness_score: r.usefulness_score ?? null,
       recall_count: r.recall_count ?? 0,
@@ -478,6 +487,9 @@ export class LanceDBAdapter implements MemoryStore {
       metadata: JSON.stringify(entry.metadata || {}),
       source_type: entry.source_type || 'text',
       source: entry.source || '',
+      confidence: (entry as any).confidence ?? 0.0,
+      supersedes: (entry as any).supersedes ?? null,
+      supersededBy: (entry as any).supersededBy ?? null,
       drift_note: entry.driftNote || null,
       drift_detected_at: entry.driftDetectedAt || null,
       last_used_at: entry.last_used_at ?? null,
@@ -513,6 +525,15 @@ export class LanceDBAdapter implements MemoryStore {
       }
       if (fields.driftDetectedAt !== undefined) {
         args['drift_detected_at'] = fields.driftDetectedAt ? String(fields.driftDetectedAt) : '';
+      }
+      if (fields.supersedes !== undefined) {
+        args['supersedes'] = fields.supersedes ?? '';
+      }
+      if (fields.supersededBy !== undefined) {
+        args['superseded_by'] = fields.supersededBy ?? '';
+      }
+      if (fields.confidence !== undefined) {
+        args['confidence'] = String(fields.confidence);
       }
 
       // updated_at 总是更新
@@ -585,6 +606,8 @@ export class LanceDBAdapter implements MemoryStore {
     const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
     return rows
       .filter((r: any) => r.deleted_at === null)
+      // Filter out superseded memories — only return the latest version
+      .filter((r: any) => !r.superseded_by)
       .filter((r: any) => {
         if (!agentId) return true;
         const owner = (r.metadata?.owner_agent ?? r.metadata?.ownerAgent) ?? null;
@@ -636,6 +659,7 @@ export class LanceDBAdapter implements MemoryStore {
     const rows = await this.table.query().limit(limit * 2).toArray();
     return rows
       .filter((r: any) => r.deleted_at === null)
+      .filter((r: any) => !r.superseded_by)
       .slice(0, limit)
       .map((r: any) => this._rowToMemory(r));
   }
@@ -860,6 +884,8 @@ export class LanceDBAdapter implements MemoryStore {
       .toArray();
 
     results = results.filter((r: any) => r.deleted_at === null);
+    // Filter out superseded memories — only return the latest version
+    results = results.filter((r: any) => !r.superseded_by);
 
     if (scope) results = results.filter((r: any) => r.scope === scope);
     if (sourceTypes && sourceTypes.length > 0) {
@@ -906,6 +932,8 @@ export class LanceDBAdapter implements MemoryStore {
       .toArray();
 
     results = results.filter((r: any) => r.deleted_at === null);
+    // Filter out superseded memories — only return the latest version
+    results = results.filter((r: any) => !r.superseded_by);
 
     if (scope) results = results.filter((r: any) => r.scope === scope);
     if (sourceTypes && sourceTypes.length > 0) {

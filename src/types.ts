@@ -80,6 +80,10 @@ export interface HawkConfig {
     maxChunkSize: number;  // max chars per chunk
     minChunkSize: number;  // min chars for valid chunk
     dedupSimilarity: number;  // 0–1, skip similar memories
+    /** LLM 推理内容的初始可信度，低于此阈值才标记为 agent_inference（0.0–1.0） */
+    inferenceConfidence?: number;
+    /** agent_inference 记忆的初始 reliability（0.0–1.0） */
+    inferenceReliability?: number;
   };
   /** 主动回顾提醒配置 */
   review?: {
@@ -157,8 +161,23 @@ export interface MemoryEntry {
   metadata: Record<string, unknown>;
   /** 记忆来源类型: text | audio | video */
   source_type: SourceType;
-  /** 记忆来源：capture | evolution-success | evolution-failure | user-import */
+  /** 记忆来源：
+   *   hawk-capture:sent        — agent 发送的消息
+   *   hawk-capture:received     — 用户输入
+   *   agent_inference           — LLM 推理生成（低可信度）
+   *   evolution-success         — soul-force 进化更新
+   *   evolution-failure         — soul-force 进化失败
+   *   user-import               — 用户手动导入
+   *   learnings:verified        — learnings 验收后存入
+   *   learnings:unverified      — learnings 未验收
+   */
   source: string;
+  /** LLM 推理内容的可信度（0-1），仅 source=agent_inference 时有效 */
+  confidence: number;
+  /** 指向被替代的旧版本记忆 ID（版本链） */
+  supersedes: string | null;
+  /** 指向替代当前记忆的新版本记忆 ID（版本链） */
+  supersededBy: string | null;
   /** Drift note: what might be stale (filled by dream consolidation) */
   driftNote: string | null;
   /** When drift was last detected */
@@ -171,6 +190,8 @@ export interface MemoryEntry {
   recall_count: number;
   /** 记忆来源平台: openclaw | hermes | 其他标识 */
   platform: string;
+  /** 版本链：同一逻辑记忆的迭代版本号。用于追踪同一事实的多次纠正/更新。 */
+  generation_version: number;
 }
 
 export interface RetrievedMemory {
@@ -182,8 +203,14 @@ export interface RetrievedMemory {
   metadata: Record<string, unknown>;
   /** 记忆来源类型 */
   source_type: SourceType;
-  /** 记忆来源：capture | evolution-success | evolution-failure | user-import */
+  /** 记忆来源：capture | evolution-success | evolution-failure | user-import | agent_inference | learnings:verified | learnings:unverified */
   source: string;
+  /** LLM 推理内容的可信度（0-1），仅 source=agent_inference 时有效 */
+  confidence: number;
+  /** 指向被替代的旧版本记忆 ID */
+  supersedes: string | null;
+  /** 指向替代当前记忆的新版本记忆 ID */
+  supersededBy: string | null;
   /** 可信度 0-1（含时间衰减后） */
   reliability: number;
   /** 可信度标签 */
@@ -216,6 +243,8 @@ export interface RetrievedMemory {
   recall_count: number;
   /** 记忆来源平台: openclaw | hermes | 其他标识 */
   platform: string;
+  /** 版本链：同一逻辑记忆的迭代版本号。用于追踪同一事实的多次纠正/更新。 */
+  generation_version: number;
 }
 
 /** 检索结果（不含 vector 字段） */

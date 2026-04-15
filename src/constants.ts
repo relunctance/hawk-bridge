@@ -94,6 +94,48 @@ export const DEFAULT_EMBEDDING_DIM = parseInt(process.env.HAWK_EMBEDDING_DIM || 
  */
 export const DEFAULT_MIN_SCORE = parseFloat(process.env.HAWK_MIN_SCORE || '0.6');
 
+/**
+ * Minimum recall score threshold — memories below this are excluded from recall results.
+ * Applied by hawk-recall after RRF fusion, on both vector and FTS scores.
+ * Range: 0.0–1.0. Default 0.55.
+ * P0: Previously hardcoded to 0.0 — fixed to protect against irrelevant memories in results.
+ */
+export const MIN_RECALL_SCORE = parseFloat(process.env.HAWK_MIN_RECALL_SCORE || '0.55');
+
+/**
+ * Initial reliability for LLM-generated (inference) content.
+ * agent_inference memories start at this level and are demoted in recall.
+ * Range: 0.0–0.5. Default 0.3.
+ */
+export const INFERENCE_RELIABILITY = parseFloat(process.env.HAWK_INFERENCE_RELIABILITY || '0.3');
+
+/**
+ * Recall score multiplier for agent_inference memories.
+ * Reduces contamination risk from LLM hallucinations in recall results.
+ * Range: 0.0–1.0. Default 0.7 (30% demotion).
+ */
+export const INFERENCE_RECALL_PENALTY = parseFloat(process.env.HAWK_INFERENCE_RECALL_PENALTY || '0.7');
+
+/**
+ * Initial reliability for unverified learnings memories.
+ * learnings:unverified start here; promoted after L4 acceptance verification.
+ * Range: 0.0–0.5. Default 0.3.
+ */
+export const UNVERIFIED_LEARNINGS_RELIABILITY = parseFloat(process.env.HAWK_UNVERIFIED_LEARNINGS_RELIABILITY || '0.3');
+
+/**
+ * Reliability boost when learnings are verified by L4 acceptance layer.
+ * Range: 0.0–0.5. Default 0.2.
+ */
+export const LEARNINGS_VERIFY_BOOST = parseFloat(process.env.HAWK_LEARNINGS_VERIFY_BOOST || '0.2');
+
+/**
+ * Reliability boost when a memory is corrected (old version superseded).
+ * New version gets base + this bonus if old reliability >= 0.7.
+ * Range: 0.0–0.3. Default 0.1.
+ */
+export const CORRECTION_BOOST = parseFloat(process.env.HAWK_CORRECTION_BOOST || '0.1');
+
 // ─── Content Validation ────────────────────────────────────────────────────
 
 /**

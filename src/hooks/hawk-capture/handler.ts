@@ -447,6 +447,28 @@ const captureHandler = async (event: HookEvent) => {
     // Single emoji or reaction
     if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]{1,3}$/u.test(trimmedContent)) return;
 
+    // ─── LLM 生成内容检测（用于 hawk-capture:sent，即 agent 回复）───────────────
+    // 通过启发式规则识别 LLM 生成的推理内容，降低其初始可信度
+    const isLlmmaybe = (() => {
+      // 自我引用标记
+      if (/\[[Mm]odel:\s*[\w\-\.]+\]/.test(content)) return true;
+      if (/\[[Pp]rovider:\s*\w+\]/.test(content)) return true;
+      // markdown 过度格式化（LLM 倾向用 **bold**、有序列表组织答案）
+      if ((content.match(/\*\*[^*]+\*\*/g) || []).length >= 3) return true;
+      if ((content.match(/^\d+\.\s+\S+/gm) || []).length >= 4) return true;
+      // LLM 常有的总结/引导语（无具体上下文时）
+      if (/\b(Therefore|In conclusion|Summary:|综上所述|总而言之|简单来说)\b/i.test(content)) return true;
+      if (/\bAs (discussed|mentioned|noted) (above|earlier|in this)\b/i.test(content)) return true;
+      if (/\b(Based on|As a result of) (the |above |foregoing )/i.test(content)) return true;
+      // 过于通用、缺乏具体细节的推理内容
+      if (/\b(it is worth noting|it is important to note|please note|note that)\b/gi.test(content)) return true;
+      if (/\b(interesting (point|observation|fact))\b/gi.test(content)) return true;
+      // 请求用户确认类（LLM 自我判断的口吻）
+      if (/\bdoes this (help|answer|make sense|sound right)\b/i.test(content)) return true;
+      if (/\b(feel free to|please let me know if you)\b/i.test(content)) return true;
+      return false;
+    })();
+
     // ─── Pre-extraction: Code blocks ─────────────────────────────────────
     // Extract fenced code blocks as high-importance fact memories
     const CODE_BLOCK_RE = /```(?:\w+)?\n([\s\S]{20,500}?)```/g;
@@ -665,6 +687,12 @@ const captureHandler = async (event: HookEvent) => {
           }
         }
 
+        // LLM 生成检测：sent 模式下 isLlmmaybe → 标记为 agent_inference
+        const isLlmg = isLlmmaybe && event.action === 'sent';
+        const memorySource = isLlmg ? 'agent_inference' : sourceType;
+        const memoryReliability = isLlmg ? (config.capture.inferenceReliability ?? 0.3) : 0.5;
+        const memoryConfidence = isLlmg ? (config.capture.inferenceConfidence ?? 0.5) : 0.0;
+
         try {
           await dbInstance.store({
             id,
@@ -682,11 +710,14 @@ const captureHandler = async (event: HookEvent) => {
               l1_overview: p.m.overview,
               name: (p.m as any).name || '',
               description: (p.m as any).description || '',
-              source_type: sourceType,
+              source_type: memorySource,
               sender_id: senderId,
               platform: HAWK_PLATFORM,
             },
             source_type: 'text',
+            source: memorySource,
+            reliability: memoryReliability,
+            confidence: memoryConfidence,
             platform: HAWK_PLATFORM,
           }, sessionId);
           storedCount++;
