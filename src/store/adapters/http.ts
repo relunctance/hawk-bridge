@@ -93,14 +93,9 @@ export class HTTPAdapter implements MemoryStore {
   }
 
   async update(id: string, fields: Record<string, unknown>): Promise<boolean> {
-    // hawk-memory-api doesn't have a PATCH /memories/{id} endpoint.
-    // Fall back to soft-delete via forget + re-store.
-    try {
-      await this.delete(id);
-      return true;
-    } catch {
-      return false;
-    }
+    // hawk-memory-api 没有 PATCH /memories/{id} 端点，update 操作无法透传。
+    // 返回 false 让调用方知道操作失败，而不是像之前那样静默 delete 导致数据丢失。
+    return false;
   }
 
   async delete(id: string): Promise<void> {
@@ -219,7 +214,12 @@ export class HTTPAdapter implements MemoryStore {
   }
 
   async reset(): Promise<void> {
-    // Not supported — would require a dedicated reset endpoint
+    // 调用 hawk-memory-api /restart 端点：关闭并重新打开 LanceDB 连接
+    try {
+      await this.request<{ ok: boolean }>('POST', '/restart');
+    } catch (err) {
+      logger.warn({ err }, 'HTTPAdapter: reset(/restart) failed');
+    }
   }
 
   async decay(): Promise<{ updated: number; deleted: number }> {
@@ -247,7 +247,9 @@ export class HTTPAdapter implements MemoryStore {
   }
 
   async decrementImportance(id: string): Promise<void> {
-    await this.delete(id);
+    // hawk-memory-api 不支持按 delta 调整重要性，delete 会丢失数据
+    // 仅记录警告，不执行任何操作
+    logger.warn({ id }, 'HTTPAdapter: decrementImportance not supported, doing nothing');
   }
 
   async batchCapture(items: Array<{

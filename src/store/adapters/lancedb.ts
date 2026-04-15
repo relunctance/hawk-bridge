@@ -488,29 +488,47 @@ export class LanceDBAdapter implements MemoryStore {
     await this.table.add([row]);
   }
 
-  async update(id: string, fields: Record<string, any>): Promise<boolean> {
+  async update(id: string, fields: Record<string, unknown>): Promise<boolean> {
     if (!this.table) await this.init();
     try {
-      const existing = await this.getById(id);
-      if (!existing) return false;
-      await this.table.delete(`id = '${id.replace(/'/g, "''")}'`);
-      const updated: MemoryEntry = {
-        ...existing,
-        text: fields.text ?? existing.text,
-        name: fields.name ?? existing.name,
-        description: fields.description ?? existing.description,
-        category: fields.category ?? existing.category,
-        scope: fields.scope ?? existing.scope,
-        importance: fields.importance ?? existing.importance,
-        importanceOverride: fields.importanceOverride ?? existing.importanceOverride,
-        updatedAt: Date.now(),
-        vector: existing.vector,
-        driftNote: fields.driftNote ?? existing.driftNote,
-        driftDetectedAt: fields.driftDetectedAt ?? existing.driftDetectedAt,
-      };
-      await this.store(updated, existing.sessionId ?? undefined);
+      const where = `id = '${id.replace(/'/g, "''")}'`;
+
+      // 直接 UPDATE，避免 getById → delete → store 导致的 vector 丢失
+      const args: Record<string, string> = {};
+
+      if (fields.text !== undefined) args['text'] = String(fields.text);
+      if (fields.name !== undefined) args['name'] = String(fields.name);
+      if (fields.description !== undefined) args['description'] = String(fields.description);
+      if (fields.category !== undefined) args['category'] = String(fields.category);
+      if (fields.scope !== undefined) {
+        args['scope'] = String(fields.scope);
+        args['scope_mem'] = String(fields.scope); // 保持 scope_mem 与 scope 一致
+      }
+      if (fields.importance !== undefined) args['importance'] = String(fields.importance);
+      if (fields.importanceOverride !== undefined) {
+        args['importance_override'] = String(fields.importanceOverride);
+      }
+      if (fields.driftNote !== undefined) {
+        args['drift_note'] = fields.driftNote ? String(fields.driftNote) : '';
+      }
+      if (fields.driftDetectedAt !== undefined) {
+        args['drift_detected_at'] = fields.driftDetectedAt ? String(fields.driftDetectedAt) : '';
+      }
+
+      // updated_at 总是更新
+      args['updated_at'] = String(Date.now());
+
+      if (Object.keys(args).length === 1 && 'updated_at' in args) {
+        // 只有 updated_at，没有实际字段变更
+        return true;
+      }
+
+      await this.table.update(args, { where });
       return true;
-    } catch { return false; }
+    } catch (err) {
+      logger.warn({ err, id }, 'LanceDBAdapter.update failed');
+      return false;
+    }
   }
 
   async delete(id: string): Promise<void> {
@@ -769,7 +787,9 @@ export class LanceDBAdapter implements MemoryStore {
       if (daysIdle > 0) {
         const decayMultiplier = getDecayMultiplier(m.reliability);
         const effectiveDays = Math.ceil(daysIdle * decayMultiplier);
-        const newImportance = m.importance * Math.pow(0.95, effectiveDays);
+        // importanceOverride 用户手动放大/缩小重要性，decay 时必须参与计算
+        const baseDecay = Math.pow(0.95, effectiveDays);
+        const newImportance = m.importance * baseDecay * m.importanceOverride;
         // Compute prospective tier with the decayed importance
         const prospectiveMem = { ...m, importance: newImportance };
         const newTier = this.recomputeTier(prospectiveMem);

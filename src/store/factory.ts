@@ -10,9 +10,9 @@ export async function createMemoryStore(provider: string = 'lancedb'): Promise<M
       return new LanceDBAdapter();
     case 'http':
       return new HTTPAdapter();
-    case 'qdrant':
-      // TODO: implement qdrant adapter
-      throw new Error('Qdrant adapter not implemented yet');
+    // Qdrant 适配器开发中，临时禁用
+    // case 'qdrant':
+    //   throw new Error('Qdrant adapter not implemented yet');
     default:
       throw new Error(`Unknown memory store provider: ${provider}`);
   }

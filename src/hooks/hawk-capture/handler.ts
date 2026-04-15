@@ -381,10 +381,13 @@ function textSimilarity(a: string, b: string): number {
 
 async function isDuplicate(text: string, threshold: number = DEDUP_SIMILARITY): Promise<boolean> {
   try {
-    const dbInstance = await getDB();
-    const recent = await dbInstance.listRecent(20);
-    for (const m of recent) {
-      if (textSimilarity(text, m.text) >= threshold) return true;
+    const db = await getDB();
+    // 使用 search 做相似度检查，覆盖所有记忆，不受 lastAccessedAt 限制
+    const results = await db.search(text, 5);
+    for (const m of results) {
+      // search 返回的 score 来自向量相似度（HTTP 走 /recall，LanceDB 走 FTS）
+      // score 范围 0-1，threshold 0.85
+      if (m.score >= threshold) return true;
     }
   } catch {
     // Non-critical
@@ -533,98 +536,69 @@ const captureHandler = async (event: HookEvent) => {
       getEmbedder(),
     ]);
 
-    const { batchStore } = dbInstance;
-    let storedCount = 0;
+    // ─── 统一预处理：normalize + validate + sanitize + truncate ─────────────────
+    // 提前处理，避免 LLM 提取后的文本进入逐条处理循环时重复处理
+    type PreppedMemory = {
+      m: any;
+      text: string;
+      isEntity: boolean;
+      isPreExtracted: boolean; // code block / URL（不需要重复 embedding）
+    };
 
+    const prepped: PreppedMemory[] = [];
     for (const m of significant) {
-      let text = m.text.trim();
+      let text = normalizeText(m.text.trim());
 
-      // 0. Full text normalization (structural cleaning)
-      text = normalizeText(text);
-
-      // 0b. What NOT to Save — skip code patterns, git history, debug solutions, etc.
       const { skip, reason } = shouldSkipChunk(text);
-      if (skip) {
-        audit('skip', reason, text);
-        continue;
-      }
+      if (skip) { audit('skip', reason, text); continue; }
 
-      // 1. Validate (after normalization so length is accurate)
-      if (!isValidChunk(text)) {
-        audit('skip', 'invalid_chunk', text);
-        continue;
-      }
+      if (!isValidChunk(text)) { audit('skip', 'invalid_chunk', text); continue; }
 
-      // 2. Harmful content check
-      if (isHarmful(text)) {
-        audit('reject', 'harmful_content', text);
-        continue;
-      }
+      if (isHarmful(text)) { audit('reject', 'harmful_content', text); continue; }
 
-      // 3. Sanitize (sensitive info redaction — after normalize so URL/JSON is cleaned)
       text = sanitize(text);
-
-      // 4. Truncate
       text = truncate(text);
 
-      // 5. Deduplication
-      if (await isDuplicate(text)) {
-        audit('skip', 'duplicate', text);
-        continue;
-      }
+      // pre-extracted code blocks and URLs bypass deduplication (already deduplicated above)
+      const isPreExtracted = codeBlockMemories.includes(m) || urlMemories.includes(m);
 
-      // 5b. Saturation check: if ≥3 similar memories exist, just bump accessTime
-      if (await handleSaturation(text)) {
-        audit('skip', 'saturated', text);
-        continue;
-      }
+      prepped.push({
+        m,
+        text,
+        isEntity: m.category === 'entity',
+        isPreExtracted,
+      });
+    }
 
-      // 6. Compute TTL
-      const effectiveTtl = ttlMs || MEMORY_TTL_MS;
-      const expiresAt = effectiveTtl > 0 ? Date.now() + effectiveTtl : 0;
+    // ─── 预过滤项（code blocks / URLs）直接 embed 并存储 ─────────────────────────
+    const preExtracted = prepped.filter(p => p.isPreExtracted);
+    const llmItems = prepped.filter(p => !p.isPreExtracted);
 
-      // Get session ID for provenance tracking
-      const sessionId = event.context?.sessionEntry?.sessionId ?? undefined;
+    // Compute TTL once for all items
+    const effectiveTtl = ttlMs || MEMORY_TTL_MS;
+    const expiresAt = effectiveTtl > 0 ? Date.now() + effectiveTtl : 0;
 
-      // 7. Entity deduplication: for 'entity' memories, merge with existing similar entity
-      if (m.category === 'entity') {
-        const existing = await dbInstance.findSimilarEntity(text);
-        if (existing) {
-          // Merge: update existing entity memory
-          await dbInstance.update(existing.id, {
-            text,
-            importance: Math.max(existing.importance, m.importance),
-          });
-          storedCount++;
-          audit('capture', `entity_merge:${existing.id}`, text);
-          continue;
-        }
-      }
+    const sessionId = event.context?.sessionEntry?.sessionId ?? undefined;
 
-      // 7. Embed & store
+    // 预过滤项：逐条 embed + store
+    for (const p of preExtracted) {
       const id = generateId();
-      const capture_trigger = m.category === 'entity' ? 'new_entity'
-        : m.category === 'decision' ? 'decision_made'
-        : m.category === 'preference' ? 'preference_signal'
-        : 'general_content';
       try {
-        const [vector] = await withRetry(() => embedderInstance.embed([text]), 3, 1000);
+        const [vector] = await withRetry(() => embedderInstance.embed([p.text]), 3, 1000);
         await dbInstance.store({
           id,
-          text,
+          text: p.text,
           vector,
-          category: m.category,
+          category: p.m.category,
           scope: 'global',
-          importance: m.importance,
+          importance: p.m.importance,
           timestamp: Date.now(),
           expiresAt,
           metadata: {
-            capture_trigger,
-            capture_confidence: m.importance,
-            l0_abstract: m.abstract,
-            l1_overview: m.overview,
-            name: (m as any).name || '',
-            description: (m as any).description || '',
+            capture_trigger: 'pre_extracted',
+            capture_confidence: p.m.importance,
+            l0_abstract: p.m.abstract,
+            l1_overview: p.m.overview,
             source_type: sourceType,
             sender_id: senderId,
             platform: HAWK_PLATFORM,
@@ -632,10 +606,94 @@ const captureHandler = async (event: HookEvent) => {
           source_type: 'text',
           platform: HAWK_PLATFORM,
         }, sessionId);
-        storedCount++;
-        audit('capture', 'success', text);
+        audit('capture', 'success', p.text);
       } catch (storeErr) {
-        audit('reject', 'store_error:' + String(storeErr), text);
+        audit('reject', 'store_error:' + String(storeErr), p.text);
+      }
+    }
+
+    // ─── LLM 提取项：去重 + 饱和检查 + 批量 embedding + 存储 ───────────────────
+    const toEmbed: PreppedMemory[] = [];
+    for (const p of llmItems) {
+      // 5. Deduplication
+      if (await isDuplicate(p.text)) { audit('skip', 'duplicate', p.text); continue; }
+      // 5b. Saturation check
+      if (await handleSaturation(p.text)) { audit('skip', 'saturated', p.text); continue; }
+      toEmbed.push(p);
+    }
+
+    let storedCount = preExtracted.length;
+
+    if (toEmbed.length > 0) {
+      // 批量 embedding：N 条记忆只需 1 次网络往返
+      const textsToEmbed = toEmbed.map(p => p.text);
+      let vectors: number[][];
+      try {
+        vectors = await withRetry(() => embedderInstance.embed(textsToEmbed), 3, 1000);
+      } catch (embedErr) {
+        logger.warn({ err: embedErr }, 'Batch embedding failed, falling back to per-item');
+        vectors = [];
+        for (const p of toEmbed) {
+          try {
+            const [v] = await withRetry(() => embedderInstance.embed([p.text]), 3, 1000);
+            vectors.push(v);
+          } catch {
+            vectors.push([]);
+          }
+        }
+      }
+
+      for (let i = 0; i < toEmbed.length; i++) {
+        const p = toEmbed[i];
+        const vector = vectors[i] ?? [];
+        const id = generateId();
+        const capture_trigger = p.isEntity ? 'new_entity'
+          : p.m.category === 'decision' ? 'decision_made'
+          : p.m.category === 'preference' ? 'preference_signal'
+          : 'general_content';
+
+        // Entity deduplication：merge with existing similar entity
+        if (p.isEntity) {
+          const existing = await dbInstance.findSimilarEntity(p.text);
+          if (existing) {
+            await dbInstance.update(existing.id, {
+              text: p.text,
+              importance: Math.max(existing.importance, p.m.importance),
+            });
+            audit('capture', `entity_merge:${existing.id}`, p.text);
+            continue;
+          }
+        }
+
+        try {
+          await dbInstance.store({
+            id,
+            text: p.text,
+            vector,
+            category: p.m.category,
+            scope: 'global',
+            importance: p.m.importance,
+            timestamp: Date.now(),
+            expiresAt,
+            metadata: {
+              capture_trigger,
+              capture_confidence: p.m.importance,
+              l0_abstract: p.m.abstract,
+              l1_overview: p.m.overview,
+              name: (p.m as any).name || '',
+              description: (p.m as any).description || '',
+              source_type: sourceType,
+              sender_id: senderId,
+              platform: HAWK_PLATFORM,
+            },
+            source_type: 'text',
+            platform: HAWK_PLATFORM,
+          }, sessionId);
+          storedCount++;
+          audit('capture', 'success', p.text);
+        } catch (storeErr) {
+          audit('reject', 'store_error:' + String(storeErr), p.text);
+        }
       }
     }
 

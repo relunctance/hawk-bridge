@@ -230,22 +230,25 @@ export class HybridRetriever {
         }));
 
         const reranked = await this.rerank(query, candidates, topK);
-        const idToRerank = new Map(reranked.map(r => [r.id, r.rerankScore]));
+        const rerankedIds = new Set(reranked.map(r => r.id));
+        const idToRerankScore = new Map(reranked.map(r => [r.id, r.rerankScore]));
         const results: RetrievedMemory[] = [];
 
-        for (const item of noiseFiltered) {
-          const rerankScore = idToRerank.get(item.id);
-          if (rerankScore === undefined) continue;
-          const memory = fetched.get(item.id);
+        // 按 rerank 顺序输出（reranked 已经是 reranker 重排后的结果），
+        // 而不是按 noiseFiltered（RRF 顺序）遍历，保证 topK 是 rerank 最高的项
+        for (const { id } of reranked) {
+          if (results.length >= topK) break;
+          const rerankScore = idToRerankScore.get(id)!;
+          const memory = fetched.get(id);
           if (!memory) continue;
+          if (this.isNoise(memory.vector)) continue;
           results.push({
-            id: item.id,
+            id,
             text: memory.text,
             score: rerankScore,
             category: memory.category,
             metadata: memory.metadata,
           });
-          if (results.length >= topK) break;
         }
 
         return results;
