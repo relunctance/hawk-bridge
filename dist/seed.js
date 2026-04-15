@@ -1,12 +1,12 @@
-// src/store/adapters/lancedb.ts
-import * as path2 from "path";
-import * as os2 from "os";
-
-// src/embeddings.ts
-import http from "http";
-import https from "https";
-import { URL } from "url";
-import { HttpsProxyAgent } from "https-proxy-agent";
+var __defProp = Object.defineProperty;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
 
 // src/logger.ts
 import pino from "pino";
@@ -14,10 +14,6 @@ import fs from "fs";
 import { join, dirname } from "path";
 import { existsSync, mkdirSync, unlinkSync, readdirSync, statSync } from "fs";
 import { homedir } from "os";
-var LOG_DIR = process.env.HAWK_LOG_DIR ?? join(homedir(), ".hawk", "logs");
-var LOG_FILE_BASE = join(LOG_DIR, "hawk-bridge.log");
-var MAX_FILE_SIZE = parseInt(process.env.HAWK_LOG_MAX_SIZE ?? String(50 * 1024 * 1024), 10);
-var MAX_FILES = parseInt(process.env.HAWK_LOG_MAX_FILES ?? "14", 10);
 function getTimestamp() {
   const now = /* @__PURE__ */ new Date();
   const y = now.getFullYear();
@@ -28,88 +24,9 @@ function getTimestamp() {
   const s = String(now.getSeconds()).padStart(2, "0");
   return `${y}${m}${d}-${h}${min}${s}`;
 }
-var RotatingFileStream = class {
-  stream;
-  size = 0;
-  constructor(filePath) {
-    this.ensureDir(dirname(filePath));
-    this.stream = this.openStream(filePath);
-  }
-  ensureDir(dir) {
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  }
-  openStream(filePath) {
-    const fd = existsSync(filePath) ? void 0 : void 0;
-    const s = fs.createWriteStream(filePath, { flags: "a", highWaterMark: 64 * 1024 });
-    if (existsSync(filePath)) {
-      this.size = statSync(filePath).size;
-    }
-    return s;
-  }
-  rotate() {
-    this.stream.end();
-    const rotatedPath = `${LOG_FILE_BASE}.${getTimestamp()}.log`;
-    try {
-      const dir = dirname(LOG_FILE_BASE);
-      if (existsSync(LOG_FILE_BASE)) {
-        fs.renameSync(LOG_FILE_BASE, rotatedPath);
-      }
-    } catch {
-    }
-    this.stream = this.openStream(LOG_FILE_BASE);
-    this.size = 0;
-    this.cleanupOldRotations();
-  }
-  cleanupOldRotations() {
-    try {
-      const dir = dirname(LOG_FILE_BASE);
-      const base = basename(LOG_FILE_BASE);
-      const files = readdirSync(dir).filter((f) => f.startsWith(base + ".") && f.endsWith(".log")).map((f) => ({
-        name: f,
-        path: join(dir, f),
-        mtime: statSync(join(dir, f)).mtime.getTime()
-      })).sort((a, b) => a.mtime - b.mtime);
-      const excess = files.length - MAX_FILES;
-      if (excess > 0) {
-        for (const f of files.slice(0, excess)) {
-          try {
-            unlinkSync(f.path);
-          } catch {
-          }
-        }
-      }
-    } catch {
-    }
-  }
-  write(chunk, cb) {
-    const len = Buffer.byteLength(chunk, "utf8");
-    if (this.size + len > MAX_FILE_SIZE) {
-      this.rotate();
-    }
-    this.size += len;
-    this.stream.write(chunk, cb);
-  }
-  end(cb) {
-    this.stream.end(cb);
-  }
-  // Expose for pino
-  get fd() {
-    return this.stream.fd ?? -1;
-  }
-};
 function basename(p) {
   return p.split("/").pop() ?? p;
 }
-if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
-var rotatingStream = new RotatingFileStream(LOG_FILE_BASE);
-var logLevel = process.env.HAWK__LOGGING__LEVEL || process.env.HAWK_LOG_LEVEL || "info";
-var logger = pino({
-  level: logLevel,
-  formatters: {
-    level: (label) => ({ level: label })
-  },
-  timestamp: pino.stdTimeFunctions.isoTime
-}, rotatingStream);
 function patchConsole() {
   if (process.env.NODE_ENV !== "production" && process.env.HAWK_STRICT_LOG !== "1") return;
   const origError = console.error.bind(console);
@@ -131,107 +48,218 @@ function patchConsole() {
     logger.debug({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
   };
 }
-patchConsole();
+var LOG_DIR, LOG_FILE_BASE, MAX_FILE_SIZE, MAX_FILES, RotatingFileStream, rotatingStream, logLevel, logger;
+var init_logger = __esm({
+  "src/logger.ts"() {
+    "use strict";
+    LOG_DIR = process.env.HAWK_LOG_DIR ?? join(homedir(), ".hawk", "logs");
+    LOG_FILE_BASE = join(LOG_DIR, "hawk-bridge.log");
+    MAX_FILE_SIZE = parseInt(process.env.HAWK_LOG_MAX_SIZE ?? String(50 * 1024 * 1024), 10);
+    MAX_FILES = parseInt(process.env.HAWK_LOG_MAX_FILES ?? "14", 10);
+    RotatingFileStream = class {
+      stream;
+      size = 0;
+      constructor(filePath) {
+        this.ensureDir(dirname(filePath));
+        this.stream = this.openStream(filePath);
+      }
+      ensureDir(dir) {
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      }
+      openStream(filePath) {
+        const fd = existsSync(filePath) ? void 0 : void 0;
+        const s = fs.createWriteStream(filePath, { flags: "a", highWaterMark: 64 * 1024 });
+        if (existsSync(filePath)) {
+          this.size = statSync(filePath).size;
+        }
+        return s;
+      }
+      rotate() {
+        this.stream.end();
+        const rotatedPath = `${LOG_FILE_BASE}.${getTimestamp()}.log`;
+        try {
+          const dir = dirname(LOG_FILE_BASE);
+          if (existsSync(LOG_FILE_BASE)) {
+            fs.renameSync(LOG_FILE_BASE, rotatedPath);
+          }
+        } catch {
+        }
+        this.stream = this.openStream(LOG_FILE_BASE);
+        this.size = 0;
+        this.cleanupOldRotations();
+      }
+      cleanupOldRotations() {
+        try {
+          const dir = dirname(LOG_FILE_BASE);
+          const base = basename(LOG_FILE_BASE);
+          const files = readdirSync(dir).filter((f) => f.startsWith(base + ".") && f.endsWith(".log")).map((f) => ({
+            name: f,
+            path: join(dir, f),
+            mtime: statSync(join(dir, f)).mtime.getTime()
+          })).sort((a, b) => a.mtime - b.mtime);
+          const excess = files.length - MAX_FILES;
+          if (excess > 0) {
+            for (const f of files.slice(0, excess)) {
+              try {
+                unlinkSync(f.path);
+              } catch {
+              }
+            }
+          }
+        } catch {
+        }
+      }
+      write(chunk, cb) {
+        const len = Buffer.byteLength(chunk, "utf8");
+        if (this.size + len > MAX_FILE_SIZE) {
+          this.rotate();
+        }
+        this.size += len;
+        this.stream.write(chunk, cb);
+      }
+      end(cb) {
+        this.stream.end(cb);
+      }
+      // Expose for pino
+      get fd() {
+        return this.stream.fd ?? -1;
+      }
+    };
+    if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
+    rotatingStream = new RotatingFileStream(LOG_FILE_BASE);
+    logLevel = process.env.HAWK__LOGGING__LEVEL || process.env.HAWK_LOG_LEVEL || "info";
+    logger = pino({
+      level: logLevel,
+      formatters: {
+        level: (label) => ({ level: label })
+      },
+      timestamp: pino.stdTimeFunctions.isoTime
+    }, rotatingStream);
+    patchConsole();
+  }
+});
 
 // src/metrics.ts
 import { Registry, Counter, Histogram, Gauge } from "prom-client";
-var register = new Registry();
-var httpRequestsTotal = new Counter({
-  name: "hawk_http_requests_total",
-  help: "Total number of HTTP requests",
-  labelNames: ["method", "path", "status"],
-  registers: [register]
-});
-var httpRequestDuration = new Histogram({
-  name: "hawk_http_request_duration_seconds",
-  help: "HTTP request duration in seconds",
-  labelNames: ["method", "path"],
-  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2],
-  registers: [register]
-});
-var embeddingLatency = new Histogram({
-  name: "hawk_embedding_duration_seconds",
-  help: "Embedding latency in seconds",
-  labelNames: ["provider"],
-  buckets: [0.1, 0.25, 0.5, 1, 2, 5],
-  registers: [register]
-});
-var memoryCount = new Gauge({
-  name: "hawk_memory_count",
-  help: "Number of memories in the store",
-  registers: [register]
-});
-var memoryErrors = new Counter({
-  name: "hawk_errors_total",
-  help: "Total number of memory errors",
-  labelNames: ["type"],
-  registers: [register]
+var register, httpRequestsTotal, httpRequestDuration, embeddingLatency, memoryCount, memoryErrors;
+var init_metrics = __esm({
+  "src/metrics.ts"() {
+    "use strict";
+    register = new Registry();
+    httpRequestsTotal = new Counter({
+      name: "hawk_http_requests_total",
+      help: "Total number of HTTP requests",
+      labelNames: ["method", "path", "status"],
+      registers: [register]
+    });
+    httpRequestDuration = new Histogram({
+      name: "hawk_http_request_duration_seconds",
+      help: "HTTP request duration in seconds",
+      labelNames: ["method", "path"],
+      buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2],
+      registers: [register]
+    });
+    embeddingLatency = new Histogram({
+      name: "hawk_embedding_duration_seconds",
+      help: "Embedding latency in seconds",
+      labelNames: ["provider"],
+      buckets: [0.1, 0.25, 0.5, 1, 2, 5],
+      registers: [register]
+    });
+    memoryCount = new Gauge({
+      name: "hawk_memory_count",
+      help: "Number of memories in the store",
+      registers: [register]
+    });
+    memoryErrors = new Counter({
+      name: "hawk_errors_total",
+      help: "Total number of memory errors",
+      labelNames: ["type"],
+      registers: [register]
+    });
+  }
 });
 
 // src/utils/circuit-breaker.ts
-var CircuitBreaker = class {
-  constructor(threshold = 5, resetMs = 3e4, halfOpenMax = 2) {
-    this.threshold = threshold;
-    this.resetMs = resetMs;
-    this.halfOpenMax = halfOpenMax;
-  }
-  failures = 0;
-  lastFailure = 0;
-  state = "closed";
-  halfOpenCount = 0;
-  async run(fn) {
-    if (this.state === "open") {
-      if (Date.now() - this.lastFailure > this.resetMs) {
-        this.state = "half-open";
-        this.halfOpenCount = 0;
-      } else {
-        throw new CircuitOpenError(`Circuit is open, retry after ${this.resetMs}ms`);
+var CircuitBreaker, CircuitOpenError;
+var init_circuit_breaker = __esm({
+  "src/utils/circuit-breaker.ts"() {
+    "use strict";
+    CircuitBreaker = class {
+      constructor(threshold = 5, resetMs = 3e4, halfOpenMax = 2) {
+        this.threshold = threshold;
+        this.resetMs = resetMs;
+        this.halfOpenMax = halfOpenMax;
       }
-    }
-    if (this.state === "half-open") {
-      if (this.halfOpenCount >= this.halfOpenMax) {
-        throw new CircuitOpenError("Circuit half-open limit reached");
+      failures = 0;
+      lastFailure = 0;
+      state = "closed";
+      halfOpenCount = 0;
+      async run(fn) {
+        if (this.state === "open") {
+          if (Date.now() - this.lastFailure > this.resetMs) {
+            this.state = "half-open";
+            this.halfOpenCount = 0;
+          } else {
+            throw new CircuitOpenError(`Circuit is open, retry after ${this.resetMs}ms`);
+          }
+        }
+        if (this.state === "half-open") {
+          if (this.halfOpenCount >= this.halfOpenMax) {
+            throw new CircuitOpenError("Circuit half-open limit reached");
+          }
+          this.halfOpenCount++;
+        }
+        try {
+          const result = await fn();
+          this.onSuccess();
+          return result;
+        } catch (e) {
+          this.onFailure();
+          throw e;
+        }
       }
-      this.halfOpenCount++;
-    }
-    try {
-      const result = await fn();
-      this.onSuccess();
-      return result;
-    } catch (e) {
-      this.onFailure();
-      throw e;
-    }
-  }
-  onSuccess() {
-    this.failures = 0;
-    this.state = "closed";
-  }
-  onFailure() {
-    this.failures++;
-    this.lastFailure = Date.now();
-    if (this.failures >= this.threshold) {
-      this.state = "open";
-    }
-  }
-  getStatus() {
-    return {
-      state: this.state,
-      failures: this.failures,
-      lastFailure: this.lastFailure
+      onSuccess() {
+        this.failures = 0;
+        this.state = "closed";
+      }
+      onFailure() {
+        this.failures++;
+        this.lastFailure = Date.now();
+        if (this.failures >= this.threshold) {
+          this.state = "open";
+        }
+      }
+      getStatus() {
+        return {
+          state: this.state,
+          failures: this.failures,
+          lastFailure: this.lastFailure
+        };
+      }
+    };
+    CircuitOpenError = class extends Error {
+      constructor(msg) {
+        super(msg);
+        this.name = "CircuitOpenError";
+      }
     };
   }
-};
-var CircuitOpenError = class extends Error {
-  constructor(msg) {
-    super(msg);
-    this.name = "CircuitOpenError";
-  }
-};
+});
 
 // src/embeddings.ts
-var FETCH_TIMEOUT_MS = 15e3;
-var embedBreaker = new CircuitBreaker(5, 3e4);
+var embeddings_exports = {};
+__export(embeddings_exports, {
+  Embedder: () => Embedder,
+  fetchWithRetry: () => fetchWithRetry,
+  formatRecallForContext: () => formatRecallForContext,
+  getProxyUrl: () => getProxyUrl,
+  setProxyUrl: () => setProxyUrl
+});
+import http from "http";
+import https from "https";
+import { URL } from "url";
+import { HttpsProxyAgent } from "https-proxy-agent";
 async function fetchWithRetry(url, options = {}, retries = 3) {
   let lastError = null;
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -256,8 +284,6 @@ async function fetchWithRetry(url, options = {}, retries = 3) {
   }
   throw lastError;
 }
-var _activeProxyUrl = process.env.HAWK_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || "";
-var _proxyAgent = null;
 function setProxyUrl(url) {
   _activeProxyUrl = url;
   _proxyAgent = null;
@@ -320,269 +346,295 @@ async function fetchWithTimeout(url, init, timeoutMs) {
     req.end();
   });
 }
-var Embedder = class _Embedder {
-  config;
-  // TTL cache: normalized_text → { vector, timestamp }
-  cache = /* @__PURE__ */ new Map();
-  static CACHE_TTL_MS = 24 * 60 * 60 * 1e3;
-  // 24h
-  constructor(config) {
-    this.config = config;
-    if (config.proxy) {
-      setProxyUrl(config.proxy);
-    }
+function formatRecallForContext(memories, emoji = "\u{1F985}") {
+  if (!memories.length) return "";
+  const lines = [`${emoji} ** hawk \u8BB0\u5FC6\u68C0\u7D22\u7ED3\u679C **`];
+  for (const m of memories) {
+    lines.push(`[${m.category}] (${(m.score * 100).toFixed(0)}%\u76F8\u5173): ${m.text}`);
   }
-  normalizeForCache(text) {
-    return text.toLowerCase().replace(/\s+/g, " ").trim();
-  }
-  getCached(text) {
-    const key = this.normalizeForCache(text);
-    const entry = this.cache.get(key);
-    if (!entry) return null;
-    if (Date.now() - entry.ts > _Embedder.CACHE_TTL_MS) {
-      this.cache.delete(key);
-      return null;
-    }
-    return entry.vector;
-  }
-  setCached(text, vector) {
-    const key = this.normalizeForCache(text);
-    this.cache.set(key, { vector, ts: Date.now() });
-    if (this.cache.size > 1e4) {
-      const oldest = [...this.cache.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, Math.floor(this.cache.size * 0.3));
-      for (const [k] of oldest) this.cache.delete(k);
-    }
-  }
-  async embed(texts) {
-    const uncached = [];
-    const results = texts.map((t) => this.getCached(t));
-    for (let i = 0; i < texts.length; i++) {
-      if (results[i] === null) uncached.push(texts[i]);
-    }
-    if (uncached.length === 0) return results;
-    const { provider } = this.config;
-    const uncachedIdxMap = /* @__PURE__ */ new Map();
-    texts.forEach((t, i) => {
-      if (results[i] === null) uncachedIdxMap.set(t, i);
-    });
-    let freshVectors;
-    if (provider === "qianwen") {
-      freshVectors = await this.embedQianwen(uncached);
-    } else if (provider === "openai-compat") {
-      freshVectors = await this.embedOpenAICompat(uncached);
-    } else if (provider === "ollama") {
-      freshVectors = await this.embedOllama(uncached);
-    } else if (provider === "jina") {
-      freshVectors = await this.embedJina(uncached);
-    } else if (provider === "cohere") {
-      freshVectors = await this.embedCohere(uncached);
-    } else {
-      freshVectors = await this.embedOpenAI(uncached);
-    }
-    const finalResults = [...results];
-    for (let i = 0; i < uncached.length; i++) {
-      const originalIdx = uncachedIdxMap.get(uncached[i]);
-      finalResults[originalIdx] = freshVectors[i];
-      this.setCached(uncached[i], freshVectors[i]);
-    }
-    return finalResults;
-  }
-  async embedQuery(text) {
-    const vectors = await this.embed([text]);
-    return vectors[0];
-  }
-  // ---- Qianwen (阿里云 DashScope) — OpenAI-compatible, 国内首选 ----
-  async embedQianwen(texts) {
-    const start = Date.now();
-    try {
-      const apiKey = this.config.apiKey || process.env.QWEN_API_KEY || "";
-      const baseURL = this.config.baseURL || "https://dashscope.aliyuncs.com/api/v1";
-      const resp = await fetchWithRetry(
-        `${baseURL}/services/embeddings/text-embedding/text-embedding`,
-        {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${apiKey}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            model: this.config.model || "text-embedding-v1",
-            input: { text: texts }
-          })
+  return lines.join("\n");
+}
+var FETCH_TIMEOUT_MS, embedBreaker, _activeProxyUrl, _proxyAgent, Embedder;
+var init_embeddings = __esm({
+  "src/embeddings.ts"() {
+    "use strict";
+    init_logger();
+    init_metrics();
+    init_circuit_breaker();
+    FETCH_TIMEOUT_MS = 15e3;
+    embedBreaker = new CircuitBreaker(5, 3e4);
+    _activeProxyUrl = process.env.HAWK_PROXY || process.env.HTTPS_PROXY || process.env.https_proxy || "";
+    _proxyAgent = null;
+    Embedder = class _Embedder {
+      config;
+      // TTL cache: normalized_text → { vector, timestamp }
+      cache = /* @__PURE__ */ new Map();
+      static CACHE_TTL_MS = 24 * 60 * 60 * 1e3;
+      // 24h
+      constructor(config) {
+        this.config = config;
+        if (config.proxy) {
+          setProxyUrl(config.proxy);
         }
-      );
-      if (!resp.ok) {
-        const err = await resp.text();
-        throw new Error(`Qianwen embedding error: ${resp.status} ${err}`);
       }
-      const data = await resp.json();
-      if (!data.output?.embeddings?.length) {
-        throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
+      normalizeForCache(text) {
+        return text.toLowerCase().replace(/\s+/g, " ").trim();
       }
-      const result = data.output.embeddings.map((e) => e.embedding);
-      embeddingLatency.observe({ provider: "qianwen" }, (Date.now() - start) / 1e3);
-      return result;
-    } catch (err) {
-      embeddingLatency.observe({ provider: "qianwen" }, (Date.now() - start) / 1e3);
-      throw err;
-    }
+      getCached(text) {
+        const key = this.normalizeForCache(text);
+        const entry = this.cache.get(key);
+        if (!entry) return null;
+        if (Date.now() - entry.ts > _Embedder.CACHE_TTL_MS) {
+          this.cache.delete(key);
+          return null;
+        }
+        return entry.vector;
+      }
+      setCached(text, vector) {
+        const key = this.normalizeForCache(text);
+        this.cache.set(key, { vector, ts: Date.now() });
+        if (this.cache.size > 1e4) {
+          const oldest = [...this.cache.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, Math.floor(this.cache.size * 0.3));
+          for (const [k] of oldest) this.cache.delete(k);
+        }
+      }
+      async embed(texts) {
+        const uncached = [];
+        const results = texts.map((t) => this.getCached(t));
+        for (let i = 0; i < texts.length; i++) {
+          if (results[i] === null) uncached.push(texts[i]);
+        }
+        if (uncached.length === 0) return results;
+        const { provider } = this.config;
+        const uncachedIdxMap = /* @__PURE__ */ new Map();
+        texts.forEach((t, i) => {
+          if (results[i] === null) uncachedIdxMap.set(t, i);
+        });
+        let freshVectors;
+        if (provider === "qianwen") {
+          freshVectors = await this.embedQianwen(uncached);
+        } else if (provider === "openai-compat") {
+          freshVectors = await this.embedOpenAICompat(uncached);
+        } else if (provider === "ollama") {
+          freshVectors = await this.embedOllama(uncached);
+        } else if (provider === "jina") {
+          freshVectors = await this.embedJina(uncached);
+        } else if (provider === "cohere") {
+          freshVectors = await this.embedCohere(uncached);
+        } else {
+          freshVectors = await this.embedOpenAI(uncached);
+        }
+        const finalResults = [...results];
+        for (let i = 0; i < uncached.length; i++) {
+          const originalIdx = uncachedIdxMap.get(uncached[i]);
+          finalResults[originalIdx] = freshVectors[i];
+          this.setCached(uncached[i], freshVectors[i]);
+        }
+        return finalResults;
+      }
+      async embedQuery(text) {
+        const vectors = await this.embed([text]);
+        return vectors[0];
+      }
+      // ---- Qianwen (阿里云 DashScope) — OpenAI-compatible, 国内首选 ----
+      async embedQianwen(texts) {
+        const start = Date.now();
+        try {
+          const apiKey = this.config.apiKey || process.env.QWEN_API_KEY || "";
+          const baseURL = this.config.baseURL || "https://dashscope.aliyuncs.com/api/v1";
+          const resp = await fetchWithRetry(
+            `${baseURL}/services/embeddings/text-embedding/text-embedding`,
+            {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${apiKey}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                model: this.config.model || "text-embedding-v1",
+                input: { text: texts }
+              })
+            }
+          );
+          if (!resp.ok) {
+            const err = await resp.text();
+            throw new Error(`Qianwen embedding error: ${resp.status} ${err}`);
+          }
+          const data = await resp.json();
+          if (!data.output?.embeddings?.length) {
+            throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
+          }
+          const result = data.output.embeddings.map((e) => e.embedding);
+          embeddingLatency.observe({ provider: "qianwen" }, (Date.now() - start) / 1e3);
+          return result;
+        } catch (err) {
+          embeddingLatency.observe({ provider: "qianwen" }, (Date.now() - start) / 1e3);
+          throw err;
+        }
+      }
+      // ---- OpenAI-Compatible (generic endpoint — user provides baseURL + apiKey) ----
+      async embedOpenAICompat(texts) {
+        const start = Date.now();
+        try {
+          const baseURL = this.config.baseURL;
+          const apiKey = this.config.apiKey;
+          if (!baseURL || !apiKey) {
+            throw new Error("openai-compat provider requires both baseURL and apiKey in config");
+          }
+          const resp = await fetchWithRetry(`${baseURL}/embeddings`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+              model: this.config.model || "text-embedding-3-small",
+              input: texts
+            })
+          });
+          if (!resp.ok) {
+            const err = await resp.text();
+            throw new Error(`OpenAI-compatible embedding error: ${resp.status} ${err}`);
+          }
+          const data = await resp.json();
+          if (!data.data?.length) {
+            throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
+          }
+          const result = data.data.map((item) => item.embedding);
+          embeddingLatency.observe({ provider: "openai-compat" }, (Date.now() - start) / 1e3);
+          return result;
+        } catch (err) {
+          embeddingLatency.observe({ provider: "openai-compat" }, (Date.now() - start) / 1e3);
+          throw err;
+        }
+      }
+      // ---- OpenAI ----
+      // NOTE: Use raw fetch instead of OpenAI SDK to avoid dimension truncation issues
+      // with OpenAI-compatible servers (e.g. Xinference returns 1024-dim but SDK truncates to 256)
+      async embedOpenAI(texts) {
+        const start = Date.now();
+        try {
+          const baseURL = this.config.baseURL;
+          const apiKey = this.config.apiKey || process.env.OPENAI_API_KEY || "";
+          const model = this.config.model || "text-embedding-3-small";
+          const resp = await fetchWithRetry(`${baseURL}/embeddings`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...apiKey ? { "Authorization": `Bearer ${apiKey}` } : {}
+            },
+            body: JSON.stringify({ model, input: texts })
+          });
+          if (!resp.ok) {
+            const err = await resp.text();
+            throw new Error(`OpenAI embedding error: ${resp.status} ${err}`);
+          }
+          const data = await resp.json();
+          const result = data.data.map((item) => item.embedding);
+          embeddingLatency.observe({ provider: "openai" }, (Date.now() - start) / 1e3);
+          return result;
+        } catch (err) {
+          embeddingLatency.observe({ provider: "openai" }, (Date.now() - start) / 1e3);
+          throw err;
+        }
+      }
+      // ---- Jina AI (free tier) ----
+      async embedJina(texts) {
+        const start = Date.now();
+        try {
+          const apiKey = this.config.apiKey || process.env.JINA_API_KEY || "";
+          const model = this.config.model || "jina-embeddings-v5-small";
+          const resp = await fetchWithRetry("https://api.jina.ai/v1/embeddings", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...apiKey ? { "Authorization": `Bearer ${apiKey}` } : {}
+            },
+            body: JSON.stringify({ model, input: texts })
+          });
+          if (!resp.ok) throw new Error(`Jina error: ${resp.status}`);
+          const data = await resp.json();
+          const result = data.data.map((item) => item.embedding);
+          embeddingLatency.observe({ provider: "jina" }, (Date.now() - start) / 1e3);
+          return result;
+        } catch (err) {
+          embeddingLatency.observe({ provider: "jina" }, (Date.now() - start) / 1e3);
+          throw err;
+        }
+      }
+      // ---- Cohere (free tier) ----
+      async embedCohere(texts) {
+        const start = Date.now();
+        try {
+          const apiKey = this.config.apiKey || process.env.COHERE_API_KEY || "";
+          const resp = await fetchWithRetry("https://api.cohere.ai/v1/embed", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+              model: "embed-english-v3.0",
+              texts,
+              input_type: "search_document"
+            })
+          });
+          if (!resp.ok) throw new Error(`Cohere error: ${resp.status}`);
+          const data = await resp.json();
+          const result = data.embeddings;
+          embeddingLatency.observe({ provider: "cohere" }, (Date.now() - start) / 1e3);
+          return result;
+        } catch (err) {
+          embeddingLatency.observe({ provider: "cohere" }, (Date.now() - start) / 1e3);
+          throw err;
+        }
+      }
+      // ---- Ollama (local free) ----
+      async embedOllama(texts) {
+        const start = Date.now();
+        try {
+          const baseURL = (this.config.baseURL || process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
+          const model = this.config.model || process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
+          const embedPath = process.env.OLLAMA_EMBED_PATH || "/embeddings";
+          const normalizedBase = baseURL.replace(/\/$/, "");
+          const url = `${normalizedBase}${embedPath}`;
+          const resp = await fetchWithRetry(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model, input: texts })
+          });
+          if (!resp.ok) {
+            const err = await resp.text();
+            throw new Error(`Ollama embedding error: ${resp.status} ${err}`);
+          }
+          const data = await resp.json();
+          if (Array.isArray(data.data)) {
+            const sorted = data.data.sort((a, b) => a.index - b.index);
+            const result = sorted.map((item) => item.embedding);
+            embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
+            return result;
+          }
+          if (Array.isArray(data.embeddings) && Array.isArray(data.embeddings[0])) {
+            embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
+            return data.embeddings;
+          } else if (Array.isArray(data.embeddings)) {
+            embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
+            return [data.embeddings];
+          }
+          throw new Error(`Unexpected embedding response: ${JSON.stringify(data)}`);
+        } catch (err) {
+          embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
+          throw err;
+        }
+      }
+    };
   }
-  // ---- OpenAI-Compatible (generic endpoint — user provides baseURL + apiKey) ----
-  async embedOpenAICompat(texts) {
-    const start = Date.now();
-    try {
-      const baseURL = this.config.baseURL;
-      const apiKey = this.config.apiKey;
-      if (!baseURL || !apiKey) {
-        throw new Error("openai-compat provider requires both baseURL and apiKey in config");
-      }
-      const resp = await fetchWithRetry(`${baseURL}/embeddings`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: this.config.model || "text-embedding-3-small",
-          input: texts
-        })
-      });
-      if (!resp.ok) {
-        const err = await resp.text();
-        throw new Error(`OpenAI-compatible embedding error: ${resp.status} ${err}`);
-      }
-      const data = await resp.json();
-      if (!data.data?.length) {
-        throw new Error(`No vectors returned: ${JSON.stringify(data)}`);
-      }
-      const result = data.data.map((item) => item.embedding);
-      embeddingLatency.observe({ provider: "openai-compat" }, (Date.now() - start) / 1e3);
-      return result;
-    } catch (err) {
-      embeddingLatency.observe({ provider: "openai-compat" }, (Date.now() - start) / 1e3);
-      throw err;
-    }
-  }
-  // ---- OpenAI ----
-  // NOTE: Use raw fetch instead of OpenAI SDK to avoid dimension truncation issues
-  // with OpenAI-compatible servers (e.g. Xinference returns 1024-dim but SDK truncates to 256)
-  async embedOpenAI(texts) {
-    const start = Date.now();
-    try {
-      const baseURL = this.config.baseURL;
-      const apiKey = this.config.apiKey || process.env.OPENAI_API_KEY || "";
-      const model = this.config.model || "text-embedding-3-small";
-      const resp = await fetchWithRetry(`${baseURL}/embeddings`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...apiKey ? { "Authorization": `Bearer ${apiKey}` } : {}
-        },
-        body: JSON.stringify({ model, input: texts })
-      });
-      if (!resp.ok) {
-        const err = await resp.text();
-        throw new Error(`OpenAI embedding error: ${resp.status} ${err}`);
-      }
-      const data = await resp.json();
-      const result = data.data.map((item) => item.embedding);
-      embeddingLatency.observe({ provider: "openai" }, (Date.now() - start) / 1e3);
-      return result;
-    } catch (err) {
-      embeddingLatency.observe({ provider: "openai" }, (Date.now() - start) / 1e3);
-      throw err;
-    }
-  }
-  // ---- Jina AI (free tier) ----
-  async embedJina(texts) {
-    const start = Date.now();
-    try {
-      const apiKey = this.config.apiKey || process.env.JINA_API_KEY || "";
-      const model = this.config.model || "jina-embeddings-v5-small";
-      const resp = await fetchWithRetry("https://api.jina.ai/v1/embeddings", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...apiKey ? { "Authorization": `Bearer ${apiKey}` } : {}
-        },
-        body: JSON.stringify({ model, input: texts })
-      });
-      if (!resp.ok) throw new Error(`Jina error: ${resp.status}`);
-      const data = await resp.json();
-      const result = data.data.map((item) => item.embedding);
-      embeddingLatency.observe({ provider: "jina" }, (Date.now() - start) / 1e3);
-      return result;
-    } catch (err) {
-      embeddingLatency.observe({ provider: "jina" }, (Date.now() - start) / 1e3);
-      throw err;
-    }
-  }
-  // ---- Cohere (free tier) ----
-  async embedCohere(texts) {
-    const start = Date.now();
-    try {
-      const apiKey = this.config.apiKey || process.env.COHERE_API_KEY || "";
-      const resp = await fetchWithRetry("https://api.cohere.ai/v1/embed", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: "embed-english-v3.0",
-          texts,
-          input_type: "search_document"
-        })
-      });
-      if (!resp.ok) throw new Error(`Cohere error: ${resp.status}`);
-      const data = await resp.json();
-      const result = data.embeddings;
-      embeddingLatency.observe({ provider: "cohere" }, (Date.now() - start) / 1e3);
-      return result;
-    } catch (err) {
-      embeddingLatency.observe({ provider: "cohere" }, (Date.now() - start) / 1e3);
-      throw err;
-    }
-  }
-  // ---- Ollama (local free) ----
-  async embedOllama(texts) {
-    const start = Date.now();
-    try {
-      const baseURL = (this.config.baseURL || process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
-      const model = this.config.model || process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
-      const embedPath = process.env.OLLAMA_EMBED_PATH || "/embeddings";
-      const normalizedBase = baseURL.replace(/\/$/, "");
-      const url = `${normalizedBase}${embedPath}`;
-      const resp = await fetchWithRetry(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model, input: texts })
-      });
-      if (!resp.ok) {
-        const err = await resp.text();
-        throw new Error(`Ollama embedding error: ${resp.status} ${err}`);
-      }
-      const data = await resp.json();
-      if (Array.isArray(data.data)) {
-        const sorted = data.data.sort((a, b) => a.index - b.index);
-        const result = sorted.map((item) => item.embedding);
-        embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
-        return result;
-      }
-      if (Array.isArray(data.embeddings) && Array.isArray(data.embeddings[0])) {
-        embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
-        return data.embeddings;
-      } else if (Array.isArray(data.embeddings)) {
-        embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
-        return [data.embeddings];
-      }
-      throw new Error(`Unexpected embedding response: ${JSON.stringify(data)}`);
-    } catch (err) {
-      embeddingLatency.observe({ provider: "ollama" }, (Date.now() - start) / 1e3);
-      throw err;
-    }
-  }
-};
+});
+
+// src/store/adapters/lancedb.ts
+init_embeddings();
+import * as path2 from "path";
+import * as os2 from "os";
 
 // src/config.ts
 import * as fs2 from "fs";
@@ -3176,7 +3228,7 @@ var safeLoadAll = renamed("safeLoadAll", "loadAll");
 var safeDump = renamed("safeDump", "dump");
 
 // src/config.ts
-import * as crypto from "crypto";
+import * as crypto2 from "crypto";
 
 // src/constants.ts
 var BM25_K1 = parseFloat(process.env.HAWK_BM25_K1 || "1.5");
@@ -3597,7 +3649,7 @@ async function recordConfigHistory(config) {
       timestamp: (/* @__PURE__ */ new Date()).toISOString(),
       version: HAWK_CONFIG_VERSION,
       env: envSnapshot,
-      hash: crypto.createHash("md5").update(JSON.stringify(envSnapshot)).digest("hex")
+      hash: crypto2.createHash("md5").update(JSON.stringify(envSnapshot)).digest("hex")
     };
     let entries = [];
     if (fs2.existsSync(historyPath)) {
@@ -3620,6 +3672,8 @@ async function recordConfigHistory(config) {
 }
 
 // src/store/adapters/lancedb.ts
+init_logger();
+init_embeddings();
 var TABLE_NAME = "hawk_memories";
 var LanceDBAdapter = class {
   db = null;
@@ -4594,9 +4648,123 @@ var LanceDBAdapter = class {
       logger.warn({ err: e, memoryId: id }, "incrementImportance failed");
     }
   }
+  async batchCapture(items) {
+    if (!this.table) await this.init();
+    const config = await getConfig();
+    const captureCfg = config.capture ?? {};
+    const maxChunks = captureCfg.maxChunks ?? 3;
+    const threshold = captureCfg.importanceThreshold ?? 0.5;
+    const extractionResults = await Promise.allSettled(
+      items.map((item) => this._extractMemories(item.message, item.response, config))
+    );
+    let totalStored = 0;
+    let totalExtracted = 0;
+    for (const result of extractionResults) {
+      if (result.status !== "fulfilled") continue;
+      const { memories } = result.value;
+      for (const mem of memories) {
+        if (mem.importance < threshold) continue;
+        totalExtracted++;
+        const now = Date.now();
+        const entry = {
+          id: crypto.randomUUID(),
+          name: mem.name ?? mem.text.slice(0, 80),
+          description: mem.description ?? mem.text.slice(0, 200),
+          text: mem.text,
+          vector: [],
+          // Will be populated below
+          category: mem.category,
+          importance: mem.importance,
+          timestamp: now,
+          expiresAt: 0,
+          accessCount: 0,
+          lastAccessedAt: now,
+          deletedAt: null,
+          reliability: 0.5,
+          verificationCount: 0,
+          lastVerifiedAt: null,
+          locked: false,
+          correctionHistory: [],
+          sessionId: null,
+          createdAt: now,
+          updatedAt: now,
+          scope: "personal",
+          importanceOverride: 1,
+          coldStartUntil: null,
+          metadata: {},
+          source_type: "text",
+          source: "batch-capture",
+          driftNote: null,
+          driftDetectedAt: null,
+          last_used_at: null,
+          usefulness_score: null,
+          recall_count: 0,
+          platform: mem.platform ?? "hawk-bridge"
+        };
+        const [vector] = await this.embed([mem.text]);
+        entry.vector = vector;
+        await this.store(entry);
+        totalStored++;
+      }
+    }
+    logger.info({ items: items.length, extracted: totalExtracted, stored: totalStored }, "batchCapture complete");
+    return { stored: totalStored, extracted: totalExtracted };
+  }
+  /**
+   * Extract memories from a conversation turn via LLM (subprocess mode).
+   * Mirrors the logic from hawk-capture/handler.ts.
+   */
+  async _extractMemories(message, response, config) {
+    const conversation = `\u7528\u6237: ${message}
+\u52A9\u624B: ${response}`;
+    const apiKey = config.llm?.apiKey || config.embedding?.apiKey || "";
+    const model = config.llm?.model || "MiniMax-M2.7";
+    const provider = config.llm?.provider || "openclaw";
+    const baseURL = config.llm?.baseURL || "";
+    const prompt = `\u4F60\u662F\u4E00\u4E2A\u8BB0\u5FC6\u63D0\u53D6\u52A9\u624B\u3002\u4ECE\u4EE5\u4E0B\u5BF9\u8BDD\u4E2D\u63D0\u53D6\u503C\u5F97\u4FDD\u5B58\u7684\u8BB0\u5FC6\u7247\u6BB5\uFF08\u4E8B\u5B9E\u3001\u504F\u597D\u3001\u51B3\u5B9A\u3001\u5B9E\u4F53\u7B49\uFF09\uFF0C\u7528 JSON \u683C\u5F0F\u8FD4\u56DE\u3002
+\u8FD4\u56DE\u683C\u5F0F\uFF1A
+{"memories":[{"text":"\u8BB0\u5FC6\u5185\u5BB9","category":"fact|preference|decision|entity|other","importance":0.0-1.0,"name":"\u7B80\u77ED\u540D\u79F0","description":"\u4E00\u53E5\u8BDD\u63CF\u8FF0"}]}
+
+\u5BF9\u8BDD\uFF1A
+${conversation}
+
+\u53EA\u8FD4\u56DE JSON\uFF0C\u4E0D\u8981\u5176\u4ED6\u5185\u5BB9\u3002`;
+    try {
+      const { fetchWithRetry: fetchRetry } = await Promise.resolve().then(() => (init_embeddings(), embeddings_exports));
+      const body = JSON.stringify({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 1024,
+        temperature: 0.1
+      });
+      const response2 = await fetchRetry(
+        `${baseURL}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`
+          },
+          body
+        },
+        3
+      );
+      const data = await response2.json();
+      const content = data.choices?.[0]?.message?.content ?? "";
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return { memories: Array.isArray(parsed.memories) ? parsed.memories : [] };
+      }
+    } catch (err) {
+      logger.warn({ err }, "batchCapture _extractMemories failed");
+    }
+    return { memories: [] };
+  }
 };
 
 // src/seed.ts
+init_logger();
 import { createHash as createHash2 } from "crypto";
 var SEED_MEMORIES = [
   // Generic AI agent team context

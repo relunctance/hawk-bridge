@@ -10622,7 +10622,7 @@ var require_form_data = __commonJS({
     var parseUrl3 = __require("url").parse;
     var fs5 = __require("fs");
     var Stream = __require("stream").Stream;
-    var crypto3 = __require("crypto");
+    var crypto4 = __require("crypto");
     var mime = require_mime_types();
     var asynckit = require_asynckit();
     var setToStringTag = require_es_set_tostringtag();
@@ -10828,7 +10828,7 @@ var require_form_data = __commonJS({
       return Buffer.concat([dataBuffer, Buffer.from(this._lastBoundary())]);
     };
     FormData3.prototype._generateBoundary = function() {
-      this._boundary = "--------------------------" + crypto3.randomBytes(12).toString("hex");
+      this._boundary = "--------------------------" + crypto4.randomBytes(12).toString("hex");
     };
     FormData3.prototype.getLengthSync = function() {
       var knownLength = this._overheadLength + this._valueLength;
@@ -14818,7 +14818,7 @@ var safeLoadAll = renamed("safeLoadAll", "loadAll");
 var safeDump = renamed("safeDump", "dump");
 
 // src/config.ts
-import * as crypto from "crypto";
+import * as crypto2 from "crypto";
 
 // src/constants.ts
 var BM25_K1 = parseFloat(process.env.HAWK_BM25_K1 || "1.5");
@@ -15242,7 +15242,7 @@ async function recordConfigHistory(config) {
       timestamp: (/* @__PURE__ */ new Date()).toISOString(),
       version: HAWK_CONFIG_VERSION,
       env: envSnapshot,
-      hash: crypto.createHash("md5").update(JSON.stringify(envSnapshot)).digest("hex")
+      hash: crypto2.createHash("md5").update(JSON.stringify(envSnapshot)).digest("hex")
     };
     let entries = [];
     if (fs2.existsSync(historyPath)) {
@@ -16241,6 +16241,119 @@ var LanceDBAdapter = class {
       logger.warn({ err: e, memoryId: id }, "incrementImportance failed");
     }
   }
+  async batchCapture(items) {
+    if (!this.table) await this.init();
+    const config = await getConfig();
+    const captureCfg = config.capture ?? {};
+    const maxChunks = captureCfg.maxChunks ?? 3;
+    const threshold = captureCfg.importanceThreshold ?? 0.5;
+    const extractionResults = await Promise.allSettled(
+      items.map((item) => this._extractMemories(item.message, item.response, config))
+    );
+    let totalStored = 0;
+    let totalExtracted = 0;
+    for (const result of extractionResults) {
+      if (result.status !== "fulfilled") continue;
+      const { memories } = result.value;
+      for (const mem of memories) {
+        if (mem.importance < threshold) continue;
+        totalExtracted++;
+        const now = Date.now();
+        const entry = {
+          id: crypto.randomUUID(),
+          name: mem.name ?? mem.text.slice(0, 80),
+          description: mem.description ?? mem.text.slice(0, 200),
+          text: mem.text,
+          vector: [],
+          // Will be populated below
+          category: mem.category,
+          importance: mem.importance,
+          timestamp: now,
+          expiresAt: 0,
+          accessCount: 0,
+          lastAccessedAt: now,
+          deletedAt: null,
+          reliability: 0.5,
+          verificationCount: 0,
+          lastVerifiedAt: null,
+          locked: false,
+          correctionHistory: [],
+          sessionId: null,
+          createdAt: now,
+          updatedAt: now,
+          scope: "personal",
+          importanceOverride: 1,
+          coldStartUntil: null,
+          metadata: {},
+          source_type: "text",
+          source: "batch-capture",
+          driftNote: null,
+          driftDetectedAt: null,
+          last_used_at: null,
+          usefulness_score: null,
+          recall_count: 0,
+          platform: mem.platform ?? "hawk-bridge"
+        };
+        const [vector] = await this.embed([mem.text]);
+        entry.vector = vector;
+        await this.store(entry);
+        totalStored++;
+      }
+    }
+    logger.info({ items: items.length, extracted: totalExtracted, stored: totalStored }, "batchCapture complete");
+    return { stored: totalStored, extracted: totalExtracted };
+  }
+  /**
+   * Extract memories from a conversation turn via LLM (subprocess mode).
+   * Mirrors the logic from hawk-capture/handler.ts.
+   */
+  async _extractMemories(message, response, config) {
+    const conversation = `\u7528\u6237: ${message}
+\u52A9\u624B: ${response}`;
+    const apiKey = config.llm?.apiKey || config.embedding?.apiKey || "";
+    const model = config.llm?.model || "MiniMax-M2.7";
+    const provider = config.llm?.provider || "openclaw";
+    const baseURL = config.llm?.baseURL || "";
+    const prompt = `\u4F60\u662F\u4E00\u4E2A\u8BB0\u5FC6\u63D0\u53D6\u52A9\u624B\u3002\u4ECE\u4EE5\u4E0B\u5BF9\u8BDD\u4E2D\u63D0\u53D6\u503C\u5F97\u4FDD\u5B58\u7684\u8BB0\u5FC6\u7247\u6BB5\uFF08\u4E8B\u5B9E\u3001\u504F\u597D\u3001\u51B3\u5B9A\u3001\u5B9E\u4F53\u7B49\uFF09\uFF0C\u7528 JSON \u683C\u5F0F\u8FD4\u56DE\u3002
+\u8FD4\u56DE\u683C\u5F0F\uFF1A
+{"memories":[{"text":"\u8BB0\u5FC6\u5185\u5BB9","category":"fact|preference|decision|entity|other","importance":0.0-1.0,"name":"\u7B80\u77ED\u540D\u79F0","description":"\u4E00\u53E5\u8BDD\u63CF\u8FF0"}]}
+
+\u5BF9\u8BDD\uFF1A
+${conversation}
+
+\u53EA\u8FD4\u56DE JSON\uFF0C\u4E0D\u8981\u5176\u4ED6\u5185\u5BB9\u3002`;
+    try {
+      const { fetchWithRetry: fetchRetry } = await Promise.resolve().then(() => (init_embeddings(), embeddings_exports));
+      const body = JSON.stringify({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 1024,
+        temperature: 0.1
+      });
+      const response2 = await fetchRetry(
+        `${baseURL}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`
+          },
+          body
+        },
+        3
+      );
+      const data = await response2.json();
+      const content = data.choices?.[0]?.message?.content ?? "";
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return { memories: Array.isArray(parsed.memories) ? parsed.memories : [] };
+      }
+    } catch (err) {
+      logger.warn({ err }, "batchCapture _extractMemories failed");
+    }
+    return { memories: [] };
+  }
 };
 
 // src/store/adapters/http.ts
@@ -16396,6 +16509,18 @@ var HTTPAdapter = class {
   }
   async decrementImportance(id) {
     await this.delete(id);
+  }
+  async batchCapture(items) {
+    const result = await this.request("POST", "/capture/batch", {
+      items: items.map((item) => ({
+        message: item.message,
+        response: item.response,
+        session_id: item.sessionId ?? "",
+        user_id: item.userId ?? "",
+        platform: item.platform ?? "hawk-bridge"
+      }))
+    });
+    return result;
   }
   // ─── Private helpers ────────────────────────────────────────────────────────
   _memoryItemToEntry(m) {
@@ -19430,7 +19555,7 @@ var transitional_default = {
 };
 
 // node_modules/axios/lib/platform/node/index.js
-import crypto2 from "crypto";
+import crypto3 from "crypto";
 
 // node_modules/axios/lib/platform/node/classes/URLSearchParams.js
 import url from "url";
@@ -19448,7 +19573,7 @@ var generateString = (size = 16, alphabet = ALPHABET.ALPHA_DIGIT) => {
   let str2 = "";
   const { length } = alphabet;
   const randomValues = new Uint32Array(size);
-  crypto2.randomFillSync(randomValues);
+  crypto3.randomFillSync(randomValues);
   for (let i = 0; i < size; i++) {
     str2 += alphabet[randomValues[i] % length];
   }
