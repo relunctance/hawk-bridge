@@ -22,6 +22,8 @@ const builds = [
   { entry: 'src/cli/write.ts', out: 'dist/cli/write.js' },
   { entry: 'src/cli/read-source.ts', out: 'dist/cli/read-source.js' },
   { entry: 'src/cli/doctor.ts', out: 'dist/cli/doctor.js' },
+  { entry: 'src/cli/stats.ts', out: 'dist/cli/stats.js' },
+  { entry: 'src/cli/decay-verify.ts', out: 'dist/cli/decay-verify.js' },
 ];
 
 Promise.all(builds.map(({ entry, out }) =>

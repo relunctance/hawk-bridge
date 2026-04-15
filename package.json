@@ -37,6 +37,7 @@
     "verify": "node dist/cli/verify.js",
     "write": "node dist/cli/write.js",
     "read-source": "node dist/cli/read-source.js",
-    "doctor": "node dist/cli/doctor.js"
+    "doctor": "node dist/cli/doctor.js",
+    "stats": "node dist/cli/stats.js"
   }
 }
