@@ -76,6 +76,7 @@ export class LanceDBAdapter implements MemoryStore {
           recall_count: 0,
           name: '__init__',
           description: '__init__',
+          platform: 'hawk-bridge',
         });
         const table = makeArrowTable([sampleRow]);
         this.table = await this.db.createTable(TABLE_NAME, table);
@@ -124,6 +125,7 @@ export class LanceDBAdapter implements MemoryStore {
             { name: 'last_used_at', type: { type: 'int64' } },
             { name: 'usefulness_score', type: { type: 'float' } },
             { name: 'recall_count', type: { type: 'int32' } },
+            { name: 'platform', type: { type: 'utf8' } },
           ]);
         } catch (_) {
           // Columns may already exist — ignore
@@ -192,6 +194,7 @@ export class LanceDBAdapter implements MemoryStore {
     recall_count?: number;
     name?: string;
     description?: string;
+    platform?: string;
   }): any {
     const vec = data.vector.length > 0 ? Array.from(data.vector) : new Array(DEFAULT_EMBEDDING_DIM).fill(0);
     return {
@@ -232,6 +235,8 @@ export class LanceDBAdapter implements MemoryStore {
       // Use 0.0 for null usefulness_score
       usefulness_score: data.usefulness_score ?? 0.0,
       recall_count: data.recall_count ?? 0,
+      // Use 'hawk-bridge' as default platform
+      platform: data.platform ?? 'hawk-bridge',
     };
   }
 
@@ -389,6 +394,7 @@ export class LanceDBAdapter implements MemoryStore {
       last_used_at: Number(r.last_used_at ?? 0),
       usefulness_score: r.usefulness_score ?? 0.5,
       recall_count: r.recall_count ?? 0,
+      platform: r.platform ?? 'hawk-bridge',
     };
   }
 
@@ -432,6 +438,7 @@ export class LanceDBAdapter implements MemoryStore {
       last_used_at: r.last_used_at !== null ? Number(r.last_used_at) : null,
       usefulness_score: r.usefulness_score ?? null,
       recall_count: r.recall_count ?? 0,
+      platform: r.platform ?? 'hawk-bridge',
     };
   }
 
@@ -476,6 +483,7 @@ export class LanceDBAdapter implements MemoryStore {
       last_used_at: entry.last_used_at ?? null,
       usefulness_score: entry.usefulness_score ?? null,
       recall_count: entry.recall_count ?? 0,
+      platform: (entry as any).platform ?? entry.metadata?.platform ?? 'hawk-bridge',
     });
     await this.table.add([row]);
   }
@@ -821,7 +829,8 @@ export class LanceDBAdapter implements MemoryStore {
     query: string,
     topK: number,
     scope?: string,
-    sourceTypes?: SourceType[]
+    sourceTypes?: SourceType[],
+    platform?: string,
   ): Promise<RetrievedMemory[]> {
     if (!this.table) await this.init();
 
@@ -838,6 +847,9 @@ export class LanceDBAdapter implements MemoryStore {
         const type = r.source_type || 'text';
         return sourceTypes.includes(type);
       });
+    }
+    if (platform) {
+      results = results.filter((r: any) => r.platform === platform);
     }
 
     const now = Date.now();
@@ -864,6 +876,7 @@ export class LanceDBAdapter implements MemoryStore {
     scope?: string,
     sourceTypes?: SourceType[],
     queryText?: string,
+    platform?: string,
   ): Promise<RetrievedMemory[]> {
     if (!this.table) await this.init();
 
@@ -880,6 +893,9 @@ export class LanceDBAdapter implements MemoryStore {
         const type = r.source_type || 'text';
         return sourceTypes.includes(type);
       });
+    }
+    if (platform) {
+      results = results.filter((r: any) => r.platform === platform);
     }
 
     const now = Date.now();

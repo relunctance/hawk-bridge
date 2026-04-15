@@ -82,12 +82,13 @@ export class HTTPAdapter implements MemoryStore {
   async store(entry: MemoryEntry, sessionId?: string): Promise<void> {
     // hawk-memory-api /capture expects message/response pairs for LLM extraction.
     // We store entry.text as a synthetic "user message" and let the API handle embedding.
+    const platform = (entry as any).platform ?? entry.metadata?.platform ?? 'hawk-bridge';
     await this.request('POST', '/capture', {
       session_id: sessionId ?? entry.sessionId ?? '',
       user_id: (entry.metadata?.user_id as string) ?? '',
       message: entry.text,
       response: '', // No agent response for programmatic storage
-      platform: entry.source || 'hawk-bridge',
+      platform,
     });
   }
 

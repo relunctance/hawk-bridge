@@ -4370,7 +4370,7 @@ var LanceDBAdapter = class {
     return deleted;
   }
   // ─── Additional HawkDB-compatible methods ────────────────────────────────────
-  async ftsSearch(query, topK, scope, sourceTypes) {
+  async ftsSearch(query, topK, scope, sourceTypes, platform) {
     if (!this.table) await this.init();
     let results = await this.table.search(query, "fts").limit(topK * 4).toArray();
     results = results.filter((r) => r.deleted_at === null);
@@ -4380,6 +4380,9 @@ var LanceDBAdapter = class {
         const type2 = r.source_type || "text";
         return sourceTypes.includes(type2);
       });
+    }
+    if (platform) {
+      results = results.filter((r) => r.platform === platform);
     }
     const now = Date.now();
     results = results.filter((r) => {
@@ -4394,7 +4397,7 @@ var LanceDBAdapter = class {
     }
     return retrieved;
   }
-  async search(queryVector, topK, minScore, scope, sourceTypes, queryText) {
+  async search(queryVector, topK, minScore, scope, sourceTypes, queryText, platform) {
     if (!this.table) await this.init();
     let results = await this.table.search(queryVector).limit(topK * 4).toArray();
     results = results.filter((r) => r.deleted_at === null);
@@ -4404,6 +4407,9 @@ var LanceDBAdapter = class {
         const type2 = r.source_type || "text";
         return sourceTypes.includes(type2);
       });
+    }
+    if (platform) {
+      results = results.filter((r) => r.platform === platform);
     }
     const now = Date.now();
     results = results.filter((r) => {
@@ -4699,13 +4705,14 @@ var HTTPAdapter = class {
   async close() {
   }
   async store(entry, sessionId) {
+    const platform = entry.platform ?? entry.metadata?.platform ?? "hawk-bridge";
     await this.request("POST", "/capture", {
       session_id: sessionId ?? entry.sessionId ?? "",
       user_id: entry.metadata?.user_id ?? "",
       message: entry.text,
       response: "",
       // No agent response for programmatic storage
-      platform: entry.source || "hawk-bridge"
+      platform
     });
   }
   async update(id, fields) {
@@ -5092,14 +5099,14 @@ var HybridRetriever = class {
     return candidates.map((c) => ({ id: c.id, text: c.text, rerankScore: c.score }));
   }
   // ---------- Main Search Pipeline ----------
-  async search(query, topK, scope, sourceTypes) {
+  async search(query, topK, scope, sourceTypes, platform) {
     const hasEmbedding = hasEmbeddingProvider();
     if (hasEmbedding) {
       try {
         const queryVector = await this.embedder.embedQuery(query);
         const [vectorResults, ftsResults] = await Promise.all([
-          this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, 0, scope, sourceTypes),
-          this.db.ftsSearch(query, topK * VECTOR_SEARCH_MULTIPLIER, scope, sourceTypes)
+          this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, 0, scope, sourceTypes, query, platform),
+          this.db.ftsSearch(query, topK * VECTOR_SEARCH_MULTIPLIER, scope, sourceTypes, platform)
         ]);
         const vectorRanked = vectorResults.map((r, i) => ({ id: r.id, score: 1 - i * 0.01, text: r.text })).sort((a, b) => b.score - a.score);
         const ftsRanked = ftsResults.map((r, i) => ({ id: r.id, score: r.score, text: r.text })).sort((a, b) => b.score - a.score).slice(0, topK * VECTOR_SEARCH_MULTIPLIER);
@@ -5142,7 +5149,7 @@ var HybridRetriever = class {
     }
     console.log("[hawk-bridge] Running in FTS-only mode (LanceDB native full-text search)");
     try {
-      const ftsResults = await this.db.ftsSearch(query, topK * 3, scope, sourceTypes);
+      const ftsResults = await this.db.ftsSearch(query, topK * 3, scope, sourceTypes, platform);
       const idToScore = new Map(ftsResults.map((r) => [r.id, r.score]));
       const ftsIds = ftsResults.map((r) => r.id);
       const fetched = await this.db.getByIds(ftsIds);
@@ -5183,6 +5190,9 @@ init_embeddings();
 init_logger();
 init_metrics();
 var LANG = process.env.HAWK_LANG || "zh";
+var HAWK_PLATFORM = process.env.HAWK_PLATFORM || "openclaw";
+var RECALL_MODE = process.env.HAWK_RECALL_MODE || "global";
+var FEDERATED_PLATFORMS = process.env.HAWK_FEDERATED_PLATFORMS?.split(",").map((p) => p.trim()) || [];
 var INJECTION_LIMIT = 5;
 var MAX_INJECTION_CHARS = 2e3;
 var COMPOSITE_WEIGHT_RELIABILITY = 0.4;
@@ -6296,11 +6306,17 @@ ${injectEmoji} \u6CA1\u6709\u627E\u5230\u9700\u8981\u7EA0\u6B63\u7684\u8BB0\u5FC
         return;
       }
     }
+    let platformFilter;
+    if (RECALL_MODE === "platform_only") {
+      platformFilter = HAWK_PLATFORM;
+    } else if (RECALL_MODE === "federated") {
+      platformFilter = FEDERATED_PLATFORMS[0] ?? HAWK_PLATFORM;
+    }
     let memories = [];
     const selectedIds = await dualSelect(trimmed, db, topK * 2);
     if (selectedIds.length > 0) {
       const retriever = await getRetriever();
-      const allResults = await retriever.search(trimmed, topK * 3);
+      const allResults = await retriever.search(trimmed, topK * 3, void 0, void 0, platformFilter);
       memories = allResults.filter((m2) => selectedIds.includes(m2.id));
       if (memories.length < topK) {
         const selectedSet = new Set(selectedIds);
@@ -6309,7 +6325,7 @@ ${injectEmoji} \u6CA1\u6709\u627E\u5230\u9700\u8981\u7EA0\u6B63\u7684\u8BB0\u5FC
       }
     } else {
       const retriever = await getRetriever();
-      memories = await retriever.search(trimmed, topK);
+      memories = await retriever.search(trimmed, topK, void 0, void 0, platformFilter);
     }
     const useable = memories.filter((m2) => m2.score >= minScore || m2.reliability >= RELIABILITY_THRESHOLD_HIGH);
     recordSearch(trimmed, useable.length);

@@ -186,7 +186,8 @@ export class HybridRetriever {
     query: string,
     topK: number,
     scope?: string,
-    sourceTypes?: SourceType[]
+    sourceTypes?: SourceType[],
+    platform?: string,
   ): Promise<RetrievedMemory[]> {
     const hasEmbedding = hasEmbeddingProvider();
 
@@ -196,8 +197,8 @@ export class HybridRetriever {
         const queryVector = await this.embedder.embedQuery(query);
 
         const [vectorResults, ftsResults] = await Promise.all([
-          this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, 0.0, scope, sourceTypes),
-          this.db.ftsSearch(query, topK * VECTOR_SEARCH_MULTIPLIER, scope, sourceTypes),
+          this.db.search(queryVector, topK * VECTOR_SEARCH_MULTIPLIER, 0.0, scope, sourceTypes, query, platform),
+          this.db.ftsSearch(query, topK * VECTOR_SEARCH_MULTIPLIER, scope, sourceTypes, platform),
         ]);
 
         const vectorRanked = vectorResults
@@ -256,7 +257,7 @@ export class HybridRetriever {
     // Fallback: pure FTS search via LanceDB (no embedding needed)
     console.log('[hawk-bridge] Running in FTS-only mode (LanceDB native full-text search)');
     try {
-      const ftsResults = await this.db.ftsSearch(query, topK * 3, scope, sourceTypes);
+      const ftsResults = await this.db.ftsSearch(query, topK * 3, scope, sourceTypes, platform);
       const idToScore = new Map(ftsResults.map(r => [r.id, r.score]));
       const ftsIds = ftsResults.map(r => r.id);
       const fetched = await this.db.getByIds(ftsIds);

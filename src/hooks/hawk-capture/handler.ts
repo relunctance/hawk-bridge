@@ -24,6 +24,9 @@ import { markBm25Dirty } from '../hawk-recall/handler.js';
 import { logger } from '../../logger.js';
 import { memoryErrors } from '../../metrics.js';
 
+// Platform identity — set via HAWK_PLATFORM env var (openclaw | hermes | ...)
+const HAWK_PLATFORM = process.env.HAWK_PLATFORM || 'openclaw';
+
 const exec = promisify(execSync);
 
 // ─── Concurrency limiter ───────────────────────────────────────────────────────
@@ -624,7 +627,10 @@ const captureHandler = async (event: HookEvent) => {
             description: (m as any).description || '',
             source_type: sourceType,
             sender_id: senderId,
+            platform: HAWK_PLATFORM,
           },
+          source_type: 'text',
+          platform: HAWK_PLATFORM,
         }, sessionId);
         storedCount++;
         audit('capture', 'success', text);

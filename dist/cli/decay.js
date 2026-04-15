@@ -4302,7 +4302,7 @@ var LanceDBAdapter = class {
     return deleted;
   }
   // ─── Additional HawkDB-compatible methods ────────────────────────────────────
-  async ftsSearch(query, topK, scope, sourceTypes) {
+  async ftsSearch(query, topK, scope, sourceTypes, platform) {
     if (!this.table) await this.init();
     let results = await this.table.search(query, "fts").limit(topK * 4).toArray();
     results = results.filter((r) => r.deleted_at === null);
@@ -4312,6 +4312,9 @@ var LanceDBAdapter = class {
         const type2 = r.source_type || "text";
         return sourceTypes.includes(type2);
       });
+    }
+    if (platform) {
+      results = results.filter((r) => r.platform === platform);
     }
     const now = Date.now();
     results = results.filter((r) => {
@@ -4326,7 +4329,7 @@ var LanceDBAdapter = class {
     }
     return retrieved;
   }
-  async search(queryVector, topK, minScore, scope, sourceTypes, queryText) {
+  async search(queryVector, topK, minScore, scope, sourceTypes, queryText, platform) {
     if (!this.table) await this.init();
     let results = await this.table.search(queryVector).limit(topK * 4).toArray();
     results = results.filter((r) => r.deleted_at === null);
@@ -4336,6 +4339,9 @@ var LanceDBAdapter = class {
         const type2 = r.source_type || "text";
         return sourceTypes.includes(type2);
       });
+    }
+    if (platform) {
+      results = results.filter((r) => r.platform === platform);
     }
     const now = Date.now();
     results = results.filter((r) => {

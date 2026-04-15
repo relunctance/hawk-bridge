@@ -169,6 +169,8 @@ export interface MemoryEntry {
   usefulness_score: number | null;
   /** How many times this memory was recalled */
   recall_count: number;
+  /** 记忆来源平台: openclaw | hermes | 其他标识 */
+  platform: string;
 }
 
 export interface RetrievedMemory {
@@ -212,8 +214,11 @@ export interface RetrievedMemory {
   usefulness_score: number | null;
   /** How many times this memory was recalled */
   recall_count: number;
+  /** 记忆来源平台: openclaw | hermes | 其他标识 */
+  platform: string;
 }
 
+/** 检索结果（不含 vector 字段） */
 export interface ExtractionResult {
   memories: Array<{
     text: string;

@@ -16,6 +16,17 @@ import { t } from '../../i18n/index.js';
 // Language from env (set via HAWK_LANG=zh or HAWK_LANG=en)
 // Full i18n Phase 2: migrate output strings to t() calls
 const LANG = (process.env.HAWK_LANG as 'zh' | 'en') || 'zh';
+
+// Platform identity: which system this bridge belongs to (openclaw | hermes | ...)
+// Used for platform-scoped recall and storage filtering
+const HAWK_PLATFORM = process.env.HAWK_PLATFORM || 'openclaw';
+
+// Recall mode: global (all platforms, default) | platform_only (current platform) | federated (comma-separated list)
+// federated mode: HAWK_RECALL_MODE=federated,HAWK_FEDERATED_PLATFORMS=openclaw,hermes
+type RecallMode = 'global' | 'platform_only' | 'federated';
+const RECALL_MODE: RecallMode = (process.env.HAWK_RECALL_MODE as RecallMode) || 'global';
+const FEDERATED_PLATFORMS = process.env.HAWK_FEDERATED_PLATFORMS?.split(',').map(p => p.trim()) || [];
+
 import { getEmbedder } from '../../embeddings.js';
 import { RELIABILITY_THRESHOLD_HIGH, DRIFT_THRESHOLD_DAYS, EVOLUTION_SUCCESS, EVOLUTION_FAILURE } from '../../constants.js';
 import { logger } from '../../logger.js';
@@ -1039,12 +1050,24 @@ const recallHandler = async (event: HookEvent) => {
     // ─── 正常召回 ───────────────────────────────────────────────────────
     // Dual selector (from Claude): header scan + LLM select for better accuracy
     // Falls back to normal hybrid search if no name/description fields populated
+
+    // Compute platform filter based on recall mode
+    let platformFilter: string | undefined;
+    if (RECALL_MODE === 'platform_only') {
+      platformFilter = HAWK_PLATFORM;
+    } else if (RECALL_MODE === 'federated') {
+      // Federated: filter to specific platforms (handled at LanceDB level)
+      // Pass first platform; caller can invoke multiple times for full federated results
+      platformFilter = FEDERATED_PLATFORMS[0] ?? HAWK_PLATFORM;
+    }
+    // 'global': platformFilter = undefined → all platforms
+
     let memories: any[] = [];
     const selectedIds = await dualSelect(trimmed, db, topK * 2);
     if (selectedIds.length > 0) {
       // Dual select hit: use LLM-selected IDs to filter hybrid search
       const retriever = await getRetriever();
-      const allResults = await retriever.search(trimmed, topK * 3);
+      const allResults = await retriever.search(trimmed, topK * 3, undefined, undefined, platformFilter);
       memories = allResults.filter((m: any) => selectedIds.includes(m.id));
       if (memories.length < topK) {
         // Fill remaining slots from unselected results
@@ -1057,7 +1080,7 @@ const recallHandler = async (event: HookEvent) => {
     } else {
       // No dual select data — use normal hybrid search
       const retriever = await getRetriever();
-      memories = await retriever.search(trimmed, topK);
+      memories = await retriever.search(trimmed, topK, undefined, undefined, platformFilter);
     }
     const useable   = memories.filter(m => m.score >= minScore || m.reliability >= RELIABILITY_THRESHOLD_HIGH);
     recordSearch(trimmed, useable.length);  // track search history

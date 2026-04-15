@@ -4344,7 +4344,7 @@ var LanceDBAdapter = class {
     return deleted;
   }
   // ─── Additional HawkDB-compatible methods ────────────────────────────────────
-  async ftsSearch(query, topK, scope, sourceTypes) {
+  async ftsSearch(query, topK, scope, sourceTypes, platform) {
     if (!this.table) await this.init();
     let results = await this.table.search(query, "fts").limit(topK * 4).toArray();
     results = results.filter((r) => r.deleted_at === null);
@@ -4354,6 +4354,9 @@ var LanceDBAdapter = class {
         const type2 = r.source_type || "text";
         return sourceTypes.includes(type2);
       });
+    }
+    if (platform) {
+      results = results.filter((r) => r.platform === platform);
     }
     const now = Date.now();
     results = results.filter((r) => {
@@ -4368,7 +4371,7 @@ var LanceDBAdapter = class {
     }
     return retrieved;
   }
-  async search(queryVector, topK, minScore, scope, sourceTypes, queryText) {
+  async search(queryVector, topK, minScore, scope, sourceTypes, queryText, platform) {
     if (!this.table) await this.init();
     let results = await this.table.search(queryVector).limit(topK * 4).toArray();
     results = results.filter((r) => r.deleted_at === null);
@@ -4378,6 +4381,9 @@ var LanceDBAdapter = class {
         const type2 = r.source_type || "text";
         return sourceTypes.includes(type2);
       });
+    }
+    if (platform) {
+      results = results.filter((r) => r.platform === platform);
     }
     const now = Date.now();
     results = results.filter((r) => {
@@ -4673,13 +4679,14 @@ var HTTPAdapter = class {
   async close() {
   }
   async store(entry, sessionId) {
+    const platform = entry.platform ?? entry.metadata?.platform ?? "hawk-bridge";
     await this.request("POST", "/capture", {
       session_id: sessionId ?? entry.sessionId ?? "",
       user_id: entry.metadata?.user_id ?? "",
       message: entry.text,
       response: "",
       // No agent response for programmatic storage
-      platform: entry.source || "hawk-bridge"
+      platform
     });
   }
   async update(id, fields) {
@@ -4925,6 +4932,9 @@ init_embeddings();
 init_logger();
 init_metrics();
 var LANG = process.env.HAWK_LANG || "zh";
+var HAWK_PLATFORM = process.env.HAWK_PLATFORM || "openclaw";
+var RECALL_MODE = process.env.HAWK_RECALL_MODE || "global";
+var FEDERATED_PLATFORMS = process.env.HAWK_FEDERATED_PLATFORMS?.split(",").map((p) => p.trim()) || [];
 var bm25DirtyGlobal = false;
 function markBm25Dirty() {
   bm25DirtyGlobal = true;
@@ -4934,6 +4944,7 @@ var DRIFT_VERIFY_QUEUE = path3.join(homedir4(), ".hawk", "drift-verify-queue.jso
 // src/hooks/hawk-capture/handler.ts
 init_logger();
 init_metrics();
+var HAWK_PLATFORM2 = process.env.HAWK_PLATFORM || "openclaw";
 var exec = promisify(execSync);
 var MAX_CONCURRENT_SUBPROCESSES = parseInt(
   process.env.HAWK_MAX_CONCURRENT_SUBPROCESSES ?? "5",
@@ -5344,8 +5355,11 @@ var captureHandler = async (event) => {
             name: m.name || "",
             description: m.description || "",
             source_type: sourceType,
-            sender_id: senderId
-          }
+            sender_id: senderId,
+            platform: HAWK_PLATFORM2
+          },
+          source_type: "text",
+          platform: HAWK_PLATFORM2
         }, sessionId);
         storedCount++;
         audit("capture", "success", text);
