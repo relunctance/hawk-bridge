@@ -3782,7 +3782,8 @@ var LanceDBAdapter = class {
             { name: "platform", type: { type: "utf8" } },
             { name: "confidence", type: { type: "float" } },
             { name: "supersedes", type: { type: "utf8" } },
-            { name: "supersededBy", type: { type: "utf8" } }
+            { name: "supersededBy", type: { type: "utf8" } },
+            { name: "generation_version", type: { type: "int32" } }
           ]);
         } catch (_) {
         }
@@ -3850,7 +3851,8 @@ var LanceDBAdapter = class {
       last_used_at: BigInt(data.last_used_at ?? 0),
       usefulness_score: data.usefulness_score ?? 0,
       recall_count: data.recall_count ?? 0,
-      platform: data.platform ?? "hawk-bridge"
+      platform: data.platform ?? "hawk-bridge",
+      generation_version: data.generation_version ?? 0
     };
   }
   computeEffectiveReliability(base, verificationCount, lastVerifiedAt, correctionCount) {
@@ -4538,7 +4540,11 @@ var LanceDBAdapter = class {
           driftDetectedAt: r.drift_detected_at !== null ? Number(r.drift_detected_at) : null,
           last_used_at: Number(r.last_used_at ?? 0),
           usefulness_score: r.usefulness_score ?? 0.5,
-          recall_count: r.recall_count ?? 0
+          recall_count: r.recall_count ?? 0,
+          supersededBy: r.superseded_by ? String(r.superseded_by) : null,
+          supersedes: r.supersedes ? String(r.supersedes) : null,
+          generation_version: Number(r.generation_version ?? 0),
+          confidence: r.confidence ?? 0
         });
       }
     } catch {
