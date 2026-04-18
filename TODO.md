@@ -773,6 +773,143 @@ interface HealthAlert {
 
 ---
 
+## 🚀 行业突破功能 — 成为顶级记忆组件的关键
+
+> 新增 — 2026-04-19
+> 这三项是 hawk-bridge 从"功能完整"跨越到"行业领先"的核心
+
+### [ ] 44. 记忆验证引擎（Memory Verification Engine）
+**解决的问题**：记忆会过时/被污染，但系统无法判断"这条记忆现在还正确吗"
+
+**行业痛点**：所有记忆系统（Mem0/Notion AI/Copilot）的通病 — 记忆说X，系统无法验证X是否还正确。只能靠TTL衰减或人工复核。
+
+**实现方向**：
+```typescript
+// POST /api/v1/verify
+interface VerifyRequest {
+  memory_id: string;
+  verify_type: "file_exists" | "code_grep" | "api_check" | "user_confirm";
+}
+
+// 返回验证结果
+interface VerifyResult {
+  memory_id: string;
+  status: "verified" | "stale" | "contradicted" | "unknown";
+  evidence: string;        // "文件存在于 /path/to/file"
+  verified_at: number;
+  suggested_action: "keep" | "update" | "delete" | "reverify";
+}
+```
+
+**验证类型**：
+- `file_exists`: 检查记忆中的文件路径是否仍然存在
+- `code_grep`: grep 检查代码是否还和记忆描述一致
+- `api_check`: 对外部API记忆，发请求验证返回值
+- `user_confirm`: 无法自动验证时，推送用户确认
+
+**触发机制**：
+- 记忆超过 30 天自动触发 verify
+- recall 时发现高风险记忆优先 verify
+- 每日定时全量巡检
+
+**前置依赖**：Audit Log (#27)、Drift Detector (#30)
+
+**状态**：❌ 未实现
+
+**版本目标**：v2.2（核心），v2.3（完整）
+
+---
+
+### [ ] 45. 知识图谱关系层（Knowledge Graph Relations）
+**解决的问题**：记忆之间孤立存储，无法表达"依赖/矛盾/包含"等关系
+
+**行业痛点**：现有记忆系统只有"文本块"，记忆之间的关系靠人脑维护。当多个记忆描述同一实体时，系统完全不知道。
+
+**实现方向**：
+```typescript
+// 关系表 memory_relations
+interface MemoryRelation {
+  id: string;
+  memory_a_id: string;
+  relation_type: "depends_on" | "contradicts" | "contains" | "related_to" | "supersedes";
+  memory_b_id: string;
+  created_at: number;
+  confidence: number;       // 关系置信度
+  bidirectional: boolean;
+}
+
+// 查询示例
+// "查找所有与X相矛盾的记忆"
+GET /api/v1/relations/{memory_id}/contradicts
+
+// "查找所有依赖X的记忆"
+GET /api/v1/relations/{memory_id}/depends_on
+```
+
+**自动关系发现**：
+- capture 时 LLM 推断关系（"这条记忆和已有的Y有什么关系？"）
+- recall 时交叉分析多条记忆的关系
+- 一致性巡检验证矛盾关系
+
+**版本规划**：
+- v2.0: 关系表 schema + 手动添加关系 API
+- v2.3: 自动关系发现（LLM 推断）
+- v2.4: 矛盾检测 + 关系推理查询
+
+**前置依赖**：无（独立表结构）
+
+**状态**：❌ 未实现
+
+**版本目标**：v2.0（schema+API）→ v2.3（自动发现）
+
+---
+
+### [ ] 46. 主动记忆推送（Proactive Memory）
+**解决的问题**：系统只能"被动召回"，用户问才回答，从不主动
+
+**行业痛点**：RAG 的根本局限 — 用户必须知道自己不知道什么，才能问出正确的问题。
+
+**实现方向**：
+```typescript
+// POST /api/v1/proactive
+interface ProactiveRequest {
+  current_context: {
+    active_file?: string;      // 当前打开的文件
+    recent_changes?: string[]; // 最近修改的文件
+    active_tools?: string[];   // 正在使用的工具
+    session_id: string;
+  };
+  max_suggestions: number;    // 最多推送几条
+}
+
+// 返回主动推送的记忆
+interface ProactiveSuggestion {
+  memory: RetrievedMemory;
+  trigger_reason: string;     // "这条API上次改了导致XXX问题"
+  relevance_score: number;
+  action_hint?: string;       // "建议在PR描述中引用"
+}
+```
+
+**触发场景**：
+- 用户刚打开一个文件 → 推送与该文件相关的历史决策/注释
+- 代码变更检测到 → 推送"这条API上次改了导致的问题"
+- 用户执行危险操作（delete/force push）→ 推送相关风险记忆
+- 每日 standup → 推送"昨天你在这个项目做了XXX"
+
+**推送方式**：
+- WebSocket 实时推送（连接中时）
+- 写入 `~/.hawk/proactive_queue.json`（离线缓冲）
+- 可选飞书通知
+
+**前置依赖**：Knowledge Graph (#45)、Session Insights (#36)
+
+**状态**：❌ 未实现
+
+**版本目标**：v2.4（基础推送）→ v2.5（智能场景触发）
+
+---
+
 ## 🟢 低优先级 — 已完成
 
 | 功能 | 版本 | 状态 |
@@ -845,16 +982,94 @@ interface HealthAlert {
 
 ---
 
-## 📋 v2.0 架构升级 — 未来规划
+## 📋 版本迭代规划
 
-| 功能 | 目标版本 |
-|------|---------|
-| 统一 Schema（Tier+Scope） | v2.0 |
-| DARK Archive | v2.1 |
-| 冷存储管道（GitHub+Gitee+NAS） | v2.1 |
-| knowledg-hub 连接器 | v2.5 |
-| 企业连接器（飞书/Jira/Confluence） | v2.6 |
-| Org 记忆层 + ACL | v2.7 |
-| 层级晋升引擎 | v2.8 |
+### v1.x — 内核强化（当前阶段）
+
+| 版本 | 重点任务 | 目标 |
+|------|---------|------|
+| v1.3 | Recall 质量：#1-#12（Taxonomy/Trust/Freshness/Team Memory/双重选择器等） | 召回质量对标 Claude Code |
+| v1.4 | Capture 质量：#13-#15（Context Fence/安全扫描/字符限额） | 写入安全对标 Hermes |
+| v1.5 | autoself 支撑：#16-#23（Hook系统/上下文注入/Learnings/Task History等） | 支撑 autoself 10层闭环 |
+
+### v2.0 — 架构升级
+
+| 功能 | 内容 |
+|------|------|
+| 统一 Schema（Tier+Scope） | L0-L4 时间维度 × personal/team/org/system 所有权维度 |
+| 知识图谱关系层（#45） | 关系表 schema + 手动/自动关系发现 API |
+| DARK Archive | 每条记忆独立 JSON 文件，冷存储到 GitHub + Gitee + NAS |
+| 冷存储管道 | 自动归档 + 多云同步 |
+
+### v2.1 — 冷存储 + 观测
+
+| 功能 | 内容 |
+|------|------|
+| 冷存储管道 | GitHub + Gitee + NAS 多端同步 |
+| 增强 Health Alerting（#43） | P0/P1/P2 分级告警 |
+| Session Insights（#36） | 会话洞察（token趋势/工具模式/活跃规律） |
+
+### v2.2 — 行业突破：验证引擎
+
+| 功能 | 内容 |
+|------|------|
+| **记忆验证引擎核心（#44）** | file_exists / code_grep / api_check / user_confirm |
+| Background Prefetch（#35） | recall 异步预取，不阻塞主流程 |
+| 记忆漂移检测（#30） | 同一记忆内容大幅变化时告警 |
+
+### v2.3 — 行业突破：知识图谱 + 自动化
+
+| 功能 | 内容 |
+|------|------|
+| 自动关系发现 | capture 时 LLM 推断记忆间关系 |
+| 矛盾检测 | recall 返回矛盾记忆时警告 |
+| LLM 自验证（#25） | 高风险写入前二次验证 |
+
+### v2.4 — 行业突破：主动推送
+
+| 功能 | 内容 |
+|------|------|
+| **主动记忆推送基础（#46）** | 文件变更触发、历史决策推送 |
+| Multi-tenant（#39） | 多租户隔离，多 agent 独立记忆空间 |
+| Drift Detector 升级 | 版本链保留，可回滚 |
+
+### v2.5 — 连接器生态
+
+| 功能 | 内容 |
+|------|------|
+| knowledg-hub 连接器 | 外部知识库统一接口 |
+| 主动推送智能场景 | 根据工具使用模式主动推断需求 |
+| User Modeling（#41） | 结构化用户画像 |
+
+### v2.6 — 企业级
+
+| 功能 | 内容 |
+|------|------|
+| 企业连接器 | 飞书 / Jira / Confluence 连接器 |
+| Org 记忆层 + ACL | 组织级别记忆 + 权限控制 |
+
+### v2.7 — 智能进化
+
+| 功能 | 内容 |
+|------|------|
+| 层级晋升引擎 | 自动晋升规则（L3→L2→L1→L0） |
+| Skill Auto-Creation（#38） | 同一 pattern ≥3 次自动创建 skill |
+| Skills Hub 兼容（#42） | agentskills.io 标准兼容 |
+
+---
+
+## 📊 行业突破功能 vs 竞品对比
+
+| 功能 | Mem0 | Notion AI | Copilot | hawk-bridge |
+|------|------|-----------|---------|-------------|
+| 向量+RAG 检索 | ✅ | ✅ | ✅ | ✅（BM25+ANN+RRF） |
+| 多租户隔离 | ✅ | ❌ | ❌ | ❌（规划中 #39） |
+| 记忆验证 | ❌ | ❌ | ❌ | ❌（#44 规划） |
+| 知识图谱关系 | ❌ | ❌ | ❌ | ❌（#45 规划） |
+| 主动推送 | ❌ | ❌ | ❌ | ❌（#46 规划） |
+| 冷存储归档 | ❌ | ❌ | ❌ | ❌（#DARK 规划） |
+| 多 Agent 联邦 | ❌ | ❌ | ❌ | ❌（#Connector 规划） |
+
+**结论**：记忆验证 + 知识图谱 + 主动推送 是行业空白，hawk-bridge 有机会率先建立标准。
 
 ---
