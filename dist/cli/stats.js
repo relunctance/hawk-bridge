@@ -3286,6 +3286,7 @@ var WEIGHT_RECENCY = parseFloat(process.env.HAWK_WEIGHT_RECENCY || "0.2");
 var ACCESS_BONUS_MAX = parseFloat(process.env.HAWK_ACCESS_BONUS_MAX || "0.1");
 
 // src/config/env.ts
+init_logger();
 var DEPRECATED_VARS = [
   { var: "OLLAMA_BASE_URL", message: "Use HAWK__EMBEDDING__BASE_URL instead" },
   { var: "OLLAMA_EMBED_MODEL", message: "Use HAWK__EMBEDDING__MODEL instead" },
@@ -3309,7 +3310,7 @@ function printDeprecationWarnings() {
   deprecationWarningsPrinted = true;
   for (const { var: v, message } of DEPRECATED_VARS) {
     if (process.env[v] !== void 0) {
-      console.warn(`[hawk-bridge] DEPRECATED: ${v} is deprecated. ${message}`);
+      logger.warn({ var: v }, `DEPRECATED: ${v} is deprecated. ${message}`);
     }
   }
 }
@@ -3556,75 +3557,79 @@ function loadYamlConfig() {
   return {};
 }
 var configPromise = null;
+var cachedConfig = null;
 async function getConfig() {
+  if (cachedConfig) return cachedConfig;
   if (!configPromise) {
     configPromise = (async () => {
-      let config = { ...DEFAULT_CONFIG };
+      let config2 = { ...DEFAULT_CONFIG };
       const yamlConfig = loadYamlConfig();
       if (Object.keys(yamlConfig).length > 0) {
-        config = deepMerge(DEFAULT_CONFIG, yamlConfig);
+        config2 = deepMerge(DEFAULT_CONFIG, yamlConfig);
       }
       const envOverrides = getEnvOverrides();
       if (Object.keys(envOverrides).length > 0) {
-        config = deepMerge(config, envOverrides);
+        config2 = deepMerge(config2, envOverrides);
       }
-      const hasEmbedding = config.embedding?.provider || config.embedding?.apiKey || config.embedding?.baseURL;
+      const hasEmbedding = config2.embedding?.provider || config2.embedding?.apiKey || config2.embedding?.baseURL;
       if (!hasEmbedding) {
         if (process.env.OLLAMA_BASE_URL) {
-          config.embedding.provider = "ollama";
-          config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
-          config.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
-          config.embedding.dimensions = parseInt(process.env.HAWK_EMBEDDING_DIM || "768", 10);
+          config2.embedding.provider = "ollama";
+          config2.embedding.baseURL = process.env.OLLAMA_BASE_URL;
+          config2.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
+          config2.embedding.dimensions = parseInt(process.env.HAWK_EMBEDDING_DIM || "768", 10);
         } else {
           const openclawkKey = getAgentModelKey("minimax");
           if (openclawkKey?.apiKey) {
-            config.embedding.provider = "minimax";
-            config.embedding.apiKey = openclawkKey.apiKey;
-            config.embedding.baseURL = openclawkKey.baseUrl || "https://api.minimaxi.com/v1";
-            config.embedding.model = "text-embedding-v2";
-            config.embedding.dimensions = 1024;
+            config2.embedding.provider = "minimax";
+            config2.embedding.apiKey = openclawkKey.apiKey;
+            config2.embedding.baseURL = openclawkKey.baseUrl || "https://api.minimaxi.com/v1";
+            config2.embedding.model = "text-embedding-v2";
+            config2.embedding.dimensions = 1024;
           } else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
-            config.embedding.provider = "qianwen";
-            config.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || "";
-            config.embedding.baseURL = "https://dashscope.aliyuncs.com/api/v1";
-            config.embedding.model = "text-embedding-v1";
-            config.embedding.dimensions = 1024;
+            config2.embedding.provider = "qianwen";
+            config2.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || "";
+            config2.embedding.baseURL = "https://dashscope.aliyuncs.com/api/v1";
+            config2.embedding.model = "text-embedding-v1";
+            config2.embedding.dimensions = 1024;
           } else if (process.env.JINA_API_KEY) {
-            config.embedding.provider = "jina";
-            config.embedding.apiKey = process.env.JINA_API_KEY;
-            config.embedding.baseURL = "";
-            config.embedding.model = "jina-embeddings-v5-small";
-            config.embedding.dimensions = 1024;
+            config2.embedding.provider = "jina";
+            config2.embedding.apiKey = process.env.JINA_API_KEY;
+            config2.embedding.baseURL = "";
+            config2.embedding.model = "jina-embeddings-v5-small";
+            config2.embedding.dimensions = 1024;
           } else if (process.env.OPENAI_API_KEY) {
-            config.embedding.provider = "openai";
-            config.embedding.apiKey = process.env.OPENAI_API_KEY;
-            config.embedding.baseURL = "";
-            config.embedding.model = "text-embedding-3-small";
-            config.embedding.dimensions = 1536;
+            config2.embedding.provider = "openai";
+            config2.embedding.apiKey = process.env.OPENAI_API_KEY;
+            config2.embedding.baseURL = "";
+            config2.embedding.model = "text-embedding-3-small";
+            config2.embedding.dimensions = 1536;
           } else if (process.env.COHERE_API_KEY) {
-            config.embedding.provider = "cohere";
-            config.embedding.apiKey = process.env.COHERE_API_KEY;
-            config.embedding.baseURL = "";
-            config.embedding.model = "embed-english-v3.0";
-            config.embedding.dimensions = 1024;
+            config2.embedding.provider = "cohere";
+            config2.embedding.apiKey = process.env.COHERE_API_KEY;
+            config2.embedding.baseURL = "";
+            config2.embedding.model = "embed-english-v3.0";
+            config2.embedding.dimensions = 1024;
           }
         }
       }
-      if (!config.llm.model || !config.llm.apiKey) {
+      if (!config2.llm.model || !config2.llm.apiKey) {
         const openclawkKey = getAgentModelKey("minimax");
         if (openclawkKey?.apiKey) {
-          config.llm = config.llm || {};
-          config.llm.model = config.llm.model || getDefaultModelId();
-          config.llm.apiKey = openclawkKey.apiKey;
-          config.llm.baseURL = config.llm.baseURL || openclawkKey.baseUrl || "";
-          config.llm.provider = config.llm.provider || "minimax";
+          config2.llm = config2.llm || {};
+          config2.llm.model = config2.llm.model || getDefaultModelId();
+          config2.llm.apiKey = openclawkKey.apiKey;
+          config2.llm.baseURL = config2.llm.baseURL || openclawkKey.baseUrl || "";
+          config2.llm.provider = config2.llm.provider || "minimax";
         }
       }
-      await recordConfigHistory(config);
-      return config;
+      await recordConfigHistory(config2);
+      return config2;
     })();
   }
-  return configPromise;
+  const config = await configPromise;
+  cachedConfig = config;
+  return config;
 }
 var HAWK_CONFIG_VERSION = process.env.HAWK_CONFIG_VERSION || "1";
 async function recordConfigHistory(config) {
@@ -3671,8 +3676,8 @@ async function recordConfigHistory(config) {
     entries.push(entry);
     if (entries.length > 100) entries = entries.slice(-100);
     const dir = path.dirname(historyPath);
-    if (!fs2.existsSync(dir)) fs2.mkdirSync(dir, { recursive: true });
-    fs2.writeFileSync(historyPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+    await fs2.promises.mkdir(dir, { recursive: true });
+    await fs2.promises.writeFile(historyPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
   } catch {
   }
 }
@@ -3680,7 +3685,29 @@ async function recordConfigHistory(config) {
 // src/store/adapters/lancedb.ts
 init_logger();
 init_embeddings();
+var Semaphore = class {
+  constructor(permits) {
+    this.permits = permits;
+  }
+  queue = [];
+  async acquire() {
+    if (this.permits > 0) {
+      this.permits--;
+      return;
+    }
+    return new Promise((resolve) => this.queue.push(resolve));
+  }
+  release() {
+    this.permits++;
+    const next = this.queue.shift();
+    if (next) {
+      this.permits--;
+      next();
+    }
+  }
+};
 var TABLE_NAME = "hawk_memories";
+var BATCH_EXTRACT_SEMAPHORE = new Semaphore(5);
 var LanceDBAdapter = class {
   db = null;
   table = null;
@@ -3742,7 +3769,7 @@ var LanceDBAdapter = class {
           const { Index } = await import("@lancedb/lancedb");
           await this.table.createIndex("text", Index.fts());
         } catch (err) {
-          logger.warn({ err: err?.message }, "FTS index creation failed (non-fatal)");
+          logger.error({ err: err?.message }, "FTS index creation failed \u2014 search will fall back to full-table scan; rebuild with: npx hawk-bridge rebuild-index");
         }
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
@@ -3751,10 +3778,12 @@ var LanceDBAdapter = class {
           await this.table.createIndex("text", Index.fts());
           logger.info("FTS index ensured on text column");
         } catch (err) {
-          logger.warn({ err: err?.message }, "FTS index creation failed (non-fatal, index may already exist)");
+          logger.warn({ err: err?.message }, "FTS index creation warning (index may already exist \u2014 search quality unaffected if FTS was previously built)");
         }
         try {
-          await this.table.alterAddColumns([
+          const schema2 = await this.table.describe();
+          const existingCols = new Set((schema2 ?? []).map((f) => f.name));
+          const colsToAdd = [
             { name: "expires_at", type: { type: "int64" } },
             { name: "created_at", type: { type: "int64" } },
             { name: "source_type", type: { type: "utf8" } },
@@ -3784,7 +3813,10 @@ var LanceDBAdapter = class {
             { name: "generation_version", type: { type: "int32" } },
             { name: "soul_pattern_id", type: { type: "utf8" } },
             { name: "soul_verified", type: { type: "int8" } }
-          ]);
+          ].filter((c) => !existingCols.has(c.name));
+          if (colsToAdd.length > 0) {
+            await this.table.alterAddColumns(colsToAdd);
+          }
         } catch (_) {
         }
       }
@@ -3922,28 +3954,36 @@ var LanceDBAdapter = class {
   async runTierMaintenance() {
     if (!this.table) await this.init();
     const memories = await this.getAllMemories();
-    let updated = 0;
+    const now = Date.now();
+    const updates = [];
     for (const memory of memories) {
       if (memory.locked) continue;
       const newScore = this.computeEffectiveImportance(memory);
       const oldTier = memory.scope;
       const newTier = this.recomputeTier(memory);
       if (oldTier !== newTier || Math.abs(memory.importance - newScore) > 1e-3) {
-        try {
-          await this.table.update(
-            {
-              scope: newTier,
-              importance: String(newScore),
-              updated_at: String(Date.now())
-            },
-            { where: `id = '${memory.id.replace(/'/g, "''")}'` }
-          );
-          updated++;
-        } catch {
-        }
+        updates.push({
+          id: memory.id,
+          scope: newTier,
+          importance: String(newScore),
+          updated_at: String(now)
+        });
       }
     }
-    return { updated };
+    if (updates.length > 0) {
+      try {
+        await Promise.all(
+          updates.map(
+            (u) => this.table.update(
+              { scope: u.scope, importance: u.importance, updated_at: u.updated_at },
+              { where: `id = '${u.id.replace(/'/g, "''")}'` }
+            )
+          )
+        );
+      } catch {
+      }
+    }
+    return { updated: updates.length };
   }
   _rowToMemory(r) {
     const correctionHistory = typeof r.correction_history === "string" ? JSON.parse(r.correction_history || "[]") : r.correction_history || [];
@@ -4142,15 +4182,16 @@ var LanceDBAdapter = class {
   /** Returns DB stats: memory count, total size in MB, directory path */
   async getDBStats() {
     if (!this.table) await this.init();
-    const all = await this.table.query().limit(1e5).toArray();
-    const count = all.filter((r) => r.deleted_at === null).length;
+    const count = await this.table.countRows();
+    const all = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
+    const activeCount = all.filter((r) => r.deleted_at === null).length;
     let sizeMB = 0;
     try {
       const sizeBytes = await this._dirSize(this.dbPath);
       sizeMB = sizeBytes / (1024 * 1024);
     } catch {
     }
-    return { count, sizeMB, path: this.dbPath };
+    return { count: activeCount, sizeMB, path: this.dbPath };
   }
   async _dirSize(dirPath) {
     const fs22 = await import("fs/promises");
@@ -4172,8 +4213,10 @@ var LanceDBAdapter = class {
   }
   async getAllMemories(agentId) {
     if (!this.table) await this.init();
-    const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
-    return rows.filter((r) => r.deleted_at === null).filter((r) => !r.superseded_by).filter((r) => {
+    const now = Date.now();
+    const predicate = `deleted_at IS NULL AND (expires_at = 0 OR expires_at > ${now}) AND superseded_by IS NULL`;
+    const rows = await this.table.query().where(predicate).limit(BM25_QUERY_LIMIT).toArray();
+    return rows.filter((r) => {
       if (!agentId) return true;
       const owner = r.metadata?.owner_agent ?? r.metadata?.ownerAgent ?? null;
       return owner === null || owner === agentId;
@@ -4237,16 +4280,17 @@ var LanceDBAdapter = class {
     return this.search(queryVector, topK, 0);
   }
   async findSimilarEntity(text, threshold = ENTITY_DEDUP_THRESHOLD) {
-    const all = await this.getAllMemories();
+    const candidates = await this.ftsSearch(text, 20, 0, void 0, void 0, void 0);
+    if (!candidates.length) return null;
     const keywords = this._extractKeywords(text);
     let best = null;
-    for (const m of all) {
-      if (m.category !== "entity") continue;
-      const memKeywords = this._extractKeywords(m.text);
+    for (const c of candidates) {
+      if (c.category !== "entity") continue;
+      const memKeywords = this._extractKeywords(c.text);
       const overlap = keywords.filter((k) => memKeywords.includes(k)).length;
       const union = (/* @__PURE__ */ new Set([...keywords, ...memKeywords])).size;
       const score = union > 0 ? overlap / union : 0;
-      if (!best || score > best.score) best = { m, score };
+      if (!best || score > best.score) best = { m: c, score };
     }
     return best && best.score >= threshold ? best.m : null;
   }
@@ -4296,7 +4340,8 @@ var LanceDBAdapter = class {
         { locked: "1" },
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
-    } catch {
+    } catch (err) {
+      logger.warn({ err }, "lock failed");
     }
   }
   async unlock(id) {
@@ -4306,7 +4351,8 @@ var LanceDBAdapter = class {
         { locked: "0" },
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
-    } catch {
+    } catch (err) {
+      logger.warn({ err }, "unlock failed");
     }
   }
   async flagUnhelpful(id, penalty = 0.05) {
@@ -4320,7 +4366,8 @@ var LanceDBAdapter = class {
         { reliability: String(newRel), verification_count: String(newVerifications), last_verified_at: String(Date.now()) },
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
-    } catch {
+    } catch (err) {
+      logger.warn({ err }, "flagUnhelpful failed");
     }
   }
   async incrementAccess(id) {
@@ -4340,6 +4387,47 @@ var LanceDBAdapter = class {
     } catch {
     }
   }
+  /**
+   * Batch version of incrementAccess — updates access counters for multiple memories
+   * in a single round-trip (1 query to fetch all counts + N individual updates).
+   * Used by search() to avoid N+1 query pattern.
+   */
+  async incrementAccessBatch(ids) {
+    if (!ids.length) return;
+    try {
+      const now = Date.now();
+      const predicate = ids.map((id) => `id = '${id.replace(/'/g, "''")}'`).join(" OR ");
+      const rows = await this.table.query().where(predicate).limit(ids.length).toArray();
+      const countMap = /* @__PURE__ */ new Map();
+      for (const r of rows) {
+        countMap.set(r.id, Number(r.access_count ?? 0));
+      }
+      const updates = ids.map((id) => {
+        const current = countMap.get(id) ?? 0;
+        return {
+          id,
+          access_count: String(current + 1),
+          last_accessed_at: String(now),
+          last_used_at: String(now),
+          recall_count: String(current + 1)
+        };
+      });
+      await Promise.all(
+        updates.map(
+          (u) => this.table.update(
+            {
+              access_count: u.access_count,
+              last_accessed_at: u.last_accessed_at,
+              last_used_at: u.last_used_at,
+              recall_count: u.recall_count
+            },
+            { where: `id = '${u.id.replace(/'/g, "''")}'` }
+          )
+        )
+      );
+    } catch {
+    }
+  }
   async decay() {
     if (!this.table) await this.init();
     const ARCHIVE_TTL_DAYS = 180;
@@ -4352,6 +4440,9 @@ var LanceDBAdapter = class {
     let updated = 0;
     let deleted = 0;
     const now = Date.now();
+    const importanceUpdates = [];
+    const tierUpdates = [];
+    const toDelete = [];
     for (const m of memories) {
       if (m.locked) continue;
       if (m.coldStartUntil && now < m.coldStartUntil) {
@@ -4359,14 +4450,7 @@ var LanceDBAdapter = class {
         if (daysInGrace > 1) {
           const newImportance = m.importance * Math.pow(COLD_START_DECAY_MULTIPLIER, 0.5);
           if (Math.abs(newImportance - m.importance) > 1e-3) {
-            try {
-              await this.table.update(
-                { importance: String(newImportance) },
-                { where: `id = '${m.id.replace(/'/g, "''")}'` }
-              );
-              updated++;
-            } catch {
-            }
+            importanceUpdates.push({ id: m.id, importance: String(newImportance) });
           }
         }
         continue;
@@ -4374,11 +4458,8 @@ var LanceDBAdapter = class {
       const daysIdle = Math.max(0, Math.floor((now - m.lastAccessedAt) / 864e5));
       if (m.scope === "archived" || m.scope === "archive") {
         if (daysIdle > ARCHIVE_TTL_DAYS) {
-          try {
-            await this.table.delete(`id = '${m.id.replace(/'/g, "''")}'`);
-            deleted++;
-          } catch {
-          }
+          toDelete.push(m.id);
+          deleted++;
         }
         continue;
       }
@@ -4390,26 +4471,31 @@ var LanceDBAdapter = class {
         const prospectiveMem = { ...m, importance: newImportance };
         const newTier = this.recomputeTier(prospectiveMem);
         if (newTier !== m.scope) {
-          try {
-            await this.table.update(
-              { importance: String(newImportance), scope: newTier, updated_at: String(Date.now()) },
-              { where: `id = '${m.id.replace(/'/g, "''")}'` }
-            );
-            updated++;
-          } catch {
-          }
+          tierUpdates.push({ id: m.id, scope: newTier, importance: String(newImportance) });
         } else if (Math.abs(newImportance - m.importance) > 1e-3) {
-          try {
-            await this.table.update(
-              { importance: String(newImportance) },
-              { where: `id = '${m.id.replace(/'/g, "''")}'` }
-            );
-            updated++;
-          } catch {
-          }
+          importanceUpdates.push({ id: m.id, importance: String(newImportance) });
         }
       }
     }
+    const allUpdates = [
+      ...importanceUpdates.map(
+        (u) => this.table.update(
+          { importance: u.importance, updated_at: String(now) },
+          { where: `id = '${u.id.replace(/'/g, "''")}'` }
+        ).catch(() => null)
+      ),
+      ...tierUpdates.map(
+        (u) => this.table.update(
+          { importance: u.importance, scope: u.scope, updated_at: String(now) },
+          { where: `id = '${u.id.replace(/'/g, "''")}'` }
+        ).catch(() => null)
+      ),
+      ...toDelete.map(
+        (id) => this.table.delete(`id = '${id.replace(/'/g, "''")}'`).catch(() => null)
+      )
+    ];
+    const results = await Promise.all(allUpdates);
+    updated = [...importanceUpdates, ...tierUpdates].length;
     const purged = await this.purgeForgotten(FORGET_GRACE_DAYS);
     deleted += purged;
     try {
@@ -4495,8 +4581,8 @@ var LanceDBAdapter = class {
       retrieved.push(this._rowToRetrieved(row, score));
       if (retrieved.length >= topK) break;
     }
-    for (const r of retrieved) {
-      await this.incrementAccess(r.id);
+    if (retrieved.length > 0) {
+      await this.incrementAccessBatch(retrieved.map((r) => r.id));
     }
     const reranked = await this.rerankResults(queryText || "", retrieved);
     return reranked;
@@ -4611,7 +4697,8 @@ var LanceDBAdapter = class {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
       return true;
-    } catch {
+    } catch (err) {
+      logger.warn({ err }, "forget failed");
       return false;
     }
   }
@@ -4637,7 +4724,8 @@ var LanceDBAdapter = class {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
       return true;
-    } catch {
+    } catch (err) {
+      logger.warn({ err }, "verifyMemory failed");
       return false;
     }
   }
@@ -4747,7 +4835,14 @@ var LanceDBAdapter = class {
     const maxChunks = captureCfg.maxChunks ?? 3;
     const threshold = captureCfg.importanceThreshold ?? 0.5;
     const extractionResults = await Promise.allSettled(
-      items.map((item) => this._extractMemories(item.message, item.response, config))
+      items.map((item) => (async () => {
+        await BATCH_EXTRACT_SEMAPHORE.acquire();
+        try {
+          return await this._extractMemories(item.message, item.response, config);
+        } finally {
+          BATCH_EXTRACT_SEMAPHORE.release();
+        }
+      })())
     );
     let totalStored = 0;
     let totalExtracted = 0;

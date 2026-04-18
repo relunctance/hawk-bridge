@@ -102,6 +102,11 @@ async function getRetriever(): Promise<HybridRetriever> {
 // 2. LLM select: lightweight model picks top N from candidates (accurate)
 // This is more accurate than pure vector search because it uses structured description.
 
+// TTL cache for getAllMemories manifest used by dualSelect
+interface ManifestCache { manifest: Array<{ id: string; name: string; description: string; category: string }>; ts: number }
+const MANIFEST_CACHE_TTL_MS = 30_000;
+let manifestCache: ManifestCache | null = null;
+
 const SELECT_MEMORIES_SYSTEM_PROMPT = `你是一个记忆筛选助手，负责从用户的记忆列表中选出最相关的那几条。
 
 我给你一个查询词（query），以及一批记忆文件的名称、描述和分类。
@@ -115,18 +120,24 @@ async function dualSelect(
   topN: number = 8
 ): Promise<string[]> {
   try {
-    const all = await db.getAllMemories();
-    if (!all.length) return [];
+    const now = Date.now();
+    let manifest: Array<{ id: string; name: string; description: string; category: string }>;
 
-    // Build manifest: id, name, description, category
-    const manifest = all
-      .filter((m: any) => m.deletedAt === null && m.name)
-      .map((m: any) => ({
-        id: m.id,
-        name: m.name,
-        description: m.description || m.text.slice(0, 200),
-        category: m.category,
-      }));
+    if (manifestCache && (now - manifestCache.ts) < MANIFEST_CACHE_TTL_MS) {
+      manifest = manifestCache.manifest;
+    } else {
+      const all = await db.getAllMemories();
+      if (!all.length) return [];
+      manifest = all
+        .filter((m: any) => m.deletedAt === null && m.name)
+        .map((m: any) => ({
+          id: m.id,
+          name: m.name,
+          description: m.description || m.text.slice(0, 200),
+          category: m.category,
+        }));
+      manifestCache = { manifest, ts: now };
+    }
 
     if (!manifest.length) return [];
 

@@ -14876,6 +14876,7 @@ var WEIGHT_RECENCY = parseFloat(process.env.HAWK_WEIGHT_RECENCY || "0.2");
 var ACCESS_BONUS_MAX = parseFloat(process.env.HAWK_ACCESS_BONUS_MAX || "0.1");
 
 // src/config/env.ts
+init_logger();
 var DEPRECATED_VARS = [
   { var: "OLLAMA_BASE_URL", message: "Use HAWK__EMBEDDING__BASE_URL instead" },
   { var: "OLLAMA_EMBED_MODEL", message: "Use HAWK__EMBEDDING__MODEL instead" },
@@ -14899,7 +14900,7 @@ function printDeprecationWarnings() {
   deprecationWarningsPrinted = true;
   for (const { var: v, message } of DEPRECATED_VARS) {
     if (process.env[v] !== void 0) {
-      console.warn(`[hawk-bridge] DEPRECATED: ${v} is deprecated. ${message}`);
+      logger2.warn({ var: v }, `DEPRECATED: ${v} is deprecated. ${message}`);
     }
   }
 }
@@ -15146,75 +15147,79 @@ function loadYamlConfig() {
   return {};
 }
 var configPromise = null;
+var cachedConfig = null;
 async function getConfig() {
+  if (cachedConfig) return cachedConfig;
   if (!configPromise) {
     configPromise = (async () => {
-      let config = { ...DEFAULT_CONFIG };
+      let config2 = { ...DEFAULT_CONFIG };
       const yamlConfig = loadYamlConfig();
       if (Object.keys(yamlConfig).length > 0) {
-        config = deepMerge(DEFAULT_CONFIG, yamlConfig);
+        config2 = deepMerge(DEFAULT_CONFIG, yamlConfig);
       }
       const envOverrides = getEnvOverrides();
       if (Object.keys(envOverrides).length > 0) {
-        config = deepMerge(config, envOverrides);
+        config2 = deepMerge(config2, envOverrides);
       }
-      const hasEmbedding = config.embedding?.provider || config.embedding?.apiKey || config.embedding?.baseURL;
+      const hasEmbedding = config2.embedding?.provider || config2.embedding?.apiKey || config2.embedding?.baseURL;
       if (!hasEmbedding) {
         if (process.env.OLLAMA_BASE_URL) {
-          config.embedding.provider = "ollama";
-          config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
-          config.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
-          config.embedding.dimensions = parseInt(process.env.HAWK_EMBEDDING_DIM || "768", 10);
+          config2.embedding.provider = "ollama";
+          config2.embedding.baseURL = process.env.OLLAMA_BASE_URL;
+          config2.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
+          config2.embedding.dimensions = parseInt(process.env.HAWK_EMBEDDING_DIM || "768", 10);
         } else {
           const openclawkKey = getAgentModelKey("minimax");
           if (openclawkKey?.apiKey) {
-            config.embedding.provider = "minimax";
-            config.embedding.apiKey = openclawkKey.apiKey;
-            config.embedding.baseURL = openclawkKey.baseUrl || "https://api.minimaxi.com/v1";
-            config.embedding.model = "text-embedding-v2";
-            config.embedding.dimensions = 1024;
+            config2.embedding.provider = "minimax";
+            config2.embedding.apiKey = openclawkKey.apiKey;
+            config2.embedding.baseURL = openclawkKey.baseUrl || "https://api.minimaxi.com/v1";
+            config2.embedding.model = "text-embedding-v2";
+            config2.embedding.dimensions = 1024;
           } else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
-            config.embedding.provider = "qianwen";
-            config.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || "";
-            config.embedding.baseURL = "https://dashscope.aliyuncs.com/api/v1";
-            config.embedding.model = "text-embedding-v1";
-            config.embedding.dimensions = 1024;
+            config2.embedding.provider = "qianwen";
+            config2.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || "";
+            config2.embedding.baseURL = "https://dashscope.aliyuncs.com/api/v1";
+            config2.embedding.model = "text-embedding-v1";
+            config2.embedding.dimensions = 1024;
           } else if (process.env.JINA_API_KEY) {
-            config.embedding.provider = "jina";
-            config.embedding.apiKey = process.env.JINA_API_KEY;
-            config.embedding.baseURL = "";
-            config.embedding.model = "jina-embeddings-v5-small";
-            config.embedding.dimensions = 1024;
+            config2.embedding.provider = "jina";
+            config2.embedding.apiKey = process.env.JINA_API_KEY;
+            config2.embedding.baseURL = "";
+            config2.embedding.model = "jina-embeddings-v5-small";
+            config2.embedding.dimensions = 1024;
           } else if (process.env.OPENAI_API_KEY) {
-            config.embedding.provider = "openai";
-            config.embedding.apiKey = process.env.OPENAI_API_KEY;
-            config.embedding.baseURL = "";
-            config.embedding.model = "text-embedding-3-small";
-            config.embedding.dimensions = 1536;
+            config2.embedding.provider = "openai";
+            config2.embedding.apiKey = process.env.OPENAI_API_KEY;
+            config2.embedding.baseURL = "";
+            config2.embedding.model = "text-embedding-3-small";
+            config2.embedding.dimensions = 1536;
           } else if (process.env.COHERE_API_KEY) {
-            config.embedding.provider = "cohere";
-            config.embedding.apiKey = process.env.COHERE_API_KEY;
-            config.embedding.baseURL = "";
-            config.embedding.model = "embed-english-v3.0";
-            config.embedding.dimensions = 1024;
+            config2.embedding.provider = "cohere";
+            config2.embedding.apiKey = process.env.COHERE_API_KEY;
+            config2.embedding.baseURL = "";
+            config2.embedding.model = "embed-english-v3.0";
+            config2.embedding.dimensions = 1024;
           }
         }
       }
-      if (!config.llm.model || !config.llm.apiKey) {
+      if (!config2.llm.model || !config2.llm.apiKey) {
         const openclawkKey = getAgentModelKey("minimax");
         if (openclawkKey?.apiKey) {
-          config.llm = config.llm || {};
-          config.llm.model = config.llm.model || getDefaultModelId();
-          config.llm.apiKey = openclawkKey.apiKey;
-          config.llm.baseURL = config.llm.baseURL || openclawkKey.baseUrl || "";
-          config.llm.provider = config.llm.provider || "minimax";
+          config2.llm = config2.llm || {};
+          config2.llm.model = config2.llm.model || getDefaultModelId();
+          config2.llm.apiKey = openclawkKey.apiKey;
+          config2.llm.baseURL = config2.llm.baseURL || openclawkKey.baseUrl || "";
+          config2.llm.provider = config2.llm.provider || "minimax";
         }
       }
-      await recordConfigHistory(config);
-      return config;
+      await recordConfigHistory(config2);
+      return config2;
     })();
   }
-  return configPromise;
+  const config = await configPromise;
+  cachedConfig = config;
+  return config;
 }
 function hasEmbeddingProvider() {
   return !!(process.env.OLLAMA_BASE_URL || process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.JINA_API_KEY || process.env.OPENAI_API_KEY || process.env.COHERE_API_KEY || (process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_PROVIDER));
@@ -15264,8 +15269,8 @@ async function recordConfigHistory(config) {
     entries.push(entry);
     if (entries.length > 100) entries = entries.slice(-100);
     const dir = path.dirname(historyPath);
-    if (!fs2.existsSync(dir)) fs2.mkdirSync(dir, { recursive: true });
-    fs2.writeFileSync(historyPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+    await fs2.promises.mkdir(dir, { recursive: true });
+    await fs2.promises.writeFile(historyPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
   } catch {
   }
 }
@@ -15273,7 +15278,29 @@ async function recordConfigHistory(config) {
 // src/store/adapters/lancedb.ts
 init_logger();
 init_embeddings();
+var Semaphore = class {
+  constructor(permits) {
+    this.permits = permits;
+  }
+  queue = [];
+  async acquire() {
+    if (this.permits > 0) {
+      this.permits--;
+      return;
+    }
+    return new Promise((resolve) => this.queue.push(resolve));
+  }
+  release() {
+    this.permits++;
+    const next = this.queue.shift();
+    if (next) {
+      this.permits--;
+      next();
+    }
+  }
+};
 var TABLE_NAME = "hawk_memories";
+var BATCH_EXTRACT_SEMAPHORE = new Semaphore(5);
 var LanceDBAdapter = class {
   db = null;
   table = null;
@@ -15335,7 +15362,7 @@ var LanceDBAdapter = class {
           const { Index } = await import("@lancedb/lancedb");
           await this.table.createIndex("text", Index.fts());
         } catch (err) {
-          logger2.warn({ err: err?.message }, "FTS index creation failed (non-fatal)");
+          logger2.error({ err: err?.message }, "FTS index creation failed \u2014 search will fall back to full-table scan; rebuild with: npx hawk-bridge rebuild-index");
         }
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
@@ -15344,10 +15371,12 @@ var LanceDBAdapter = class {
           await this.table.createIndex("text", Index.fts());
           logger2.info("FTS index ensured on text column");
         } catch (err) {
-          logger2.warn({ err: err?.message }, "FTS index creation failed (non-fatal, index may already exist)");
+          logger2.warn({ err: err?.message }, "FTS index creation warning (index may already exist \u2014 search quality unaffected if FTS was previously built)");
         }
         try {
-          await this.table.alterAddColumns([
+          const schema2 = await this.table.describe();
+          const existingCols = new Set((schema2 ?? []).map((f) => f.name));
+          const colsToAdd = [
             { name: "expires_at", type: { type: "int64" } },
             { name: "created_at", type: { type: "int64" } },
             { name: "source_type", type: { type: "utf8" } },
@@ -15377,7 +15406,10 @@ var LanceDBAdapter = class {
             { name: "generation_version", type: { type: "int32" } },
             { name: "soul_pattern_id", type: { type: "utf8" } },
             { name: "soul_verified", type: { type: "int8" } }
-          ]);
+          ].filter((c) => !existingCols.has(c.name));
+          if (colsToAdd.length > 0) {
+            await this.table.alterAddColumns(colsToAdd);
+          }
         } catch (_) {
         }
       }
@@ -15515,28 +15547,36 @@ var LanceDBAdapter = class {
   async runTierMaintenance() {
     if (!this.table) await this.init();
     const memories = await this.getAllMemories();
-    let updated = 0;
+    const now = Date.now();
+    const updates = [];
     for (const memory of memories) {
       if (memory.locked) continue;
       const newScore = this.computeEffectiveImportance(memory);
       const oldTier = memory.scope;
       const newTier = this.recomputeTier(memory);
       if (oldTier !== newTier || Math.abs(memory.importance - newScore) > 1e-3) {
-        try {
-          await this.table.update(
-            {
-              scope: newTier,
-              importance: String(newScore),
-              updated_at: String(Date.now())
-            },
-            { where: `id = '${memory.id.replace(/'/g, "''")}'` }
-          );
-          updated++;
-        } catch {
-        }
+        updates.push({
+          id: memory.id,
+          scope: newTier,
+          importance: String(newScore),
+          updated_at: String(now)
+        });
       }
     }
-    return { updated };
+    if (updates.length > 0) {
+      try {
+        await Promise.all(
+          updates.map(
+            (u) => this.table.update(
+              { scope: u.scope, importance: u.importance, updated_at: u.updated_at },
+              { where: `id = '${u.id.replace(/'/g, "''")}'` }
+            )
+          )
+        );
+      } catch {
+      }
+    }
+    return { updated: updates.length };
   }
   _rowToMemory(r) {
     const correctionHistory = typeof r.correction_history === "string" ? JSON.parse(r.correction_history || "[]") : r.correction_history || [];
@@ -15735,15 +15775,16 @@ var LanceDBAdapter = class {
   /** Returns DB stats: memory count, total size in MB, directory path */
   async getDBStats() {
     if (!this.table) await this.init();
-    const all3 = await this.table.query().limit(1e5).toArray();
-    const count = all3.filter((r) => r.deleted_at === null).length;
+    const count = await this.table.countRows();
+    const all3 = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
+    const activeCount = all3.filter((r) => r.deleted_at === null).length;
     let sizeMB = 0;
     try {
       const sizeBytes = await this._dirSize(this.dbPath);
       sizeMB = sizeBytes / (1024 * 1024);
     } catch {
     }
-    return { count, sizeMB, path: this.dbPath };
+    return { count: activeCount, sizeMB, path: this.dbPath };
   }
   async _dirSize(dirPath) {
     const fs22 = await import("fs/promises");
@@ -15765,8 +15806,10 @@ var LanceDBAdapter = class {
   }
   async getAllMemories(agentId) {
     if (!this.table) await this.init();
-    const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
-    return rows.filter((r) => r.deleted_at === null).filter((r) => !r.superseded_by).filter((r) => {
+    const now = Date.now();
+    const predicate = `deleted_at IS NULL AND (expires_at = 0 OR expires_at > ${now}) AND superseded_by IS NULL`;
+    const rows = await this.table.query().where(predicate).limit(BM25_QUERY_LIMIT).toArray();
+    return rows.filter((r) => {
       if (!agentId) return true;
       const owner = r.metadata?.owner_agent ?? r.metadata?.ownerAgent ?? null;
       return owner === null || owner === agentId;
@@ -15830,16 +15873,17 @@ var LanceDBAdapter = class {
     return this.search(queryVector, topK, 0);
   }
   async findSimilarEntity(text, threshold = ENTITY_DEDUP_THRESHOLD) {
-    const all3 = await this.getAllMemories();
+    const candidates = await this.ftsSearch(text, 20, 0, void 0, void 0, void 0);
+    if (!candidates.length) return null;
     const keywords = this._extractKeywords(text);
     let best = null;
-    for (const m of all3) {
-      if (m.category !== "entity") continue;
-      const memKeywords = this._extractKeywords(m.text);
+    for (const c of candidates) {
+      if (c.category !== "entity") continue;
+      const memKeywords = this._extractKeywords(c.text);
       const overlap = keywords.filter((k) => memKeywords.includes(k)).length;
       const union = (/* @__PURE__ */ new Set([...keywords, ...memKeywords])).size;
       const score = union > 0 ? overlap / union : 0;
-      if (!best || score > best.score) best = { m, score };
+      if (!best || score > best.score) best = { m: c, score };
     }
     return best && best.score >= threshold ? best.m : null;
   }
@@ -15889,7 +15933,8 @@ var LanceDBAdapter = class {
         { locked: "1" },
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
-    } catch {
+    } catch (err) {
+      logger2.warn({ err }, "lock failed");
     }
   }
   async unlock(id) {
@@ -15899,7 +15944,8 @@ var LanceDBAdapter = class {
         { locked: "0" },
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
-    } catch {
+    } catch (err) {
+      logger2.warn({ err }, "unlock failed");
     }
   }
   async flagUnhelpful(id, penalty = 0.05) {
@@ -15913,7 +15959,8 @@ var LanceDBAdapter = class {
         { reliability: String(newRel), verification_count: String(newVerifications), last_verified_at: String(Date.now()) },
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
-    } catch {
+    } catch (err) {
+      logger2.warn({ err }, "flagUnhelpful failed");
     }
   }
   async incrementAccess(id) {
@@ -15933,6 +15980,47 @@ var LanceDBAdapter = class {
     } catch {
     }
   }
+  /**
+   * Batch version of incrementAccess — updates access counters for multiple memories
+   * in a single round-trip (1 query to fetch all counts + N individual updates).
+   * Used by search() to avoid N+1 query pattern.
+   */
+  async incrementAccessBatch(ids) {
+    if (!ids.length) return;
+    try {
+      const now = Date.now();
+      const predicate = ids.map((id) => `id = '${id.replace(/'/g, "''")}'`).join(" OR ");
+      const rows = await this.table.query().where(predicate).limit(ids.length).toArray();
+      const countMap = /* @__PURE__ */ new Map();
+      for (const r of rows) {
+        countMap.set(r.id, Number(r.access_count ?? 0));
+      }
+      const updates = ids.map((id) => {
+        const current = countMap.get(id) ?? 0;
+        return {
+          id,
+          access_count: String(current + 1),
+          last_accessed_at: String(now),
+          last_used_at: String(now),
+          recall_count: String(current + 1)
+        };
+      });
+      await Promise.all(
+        updates.map(
+          (u) => this.table.update(
+            {
+              access_count: u.access_count,
+              last_accessed_at: u.last_accessed_at,
+              last_used_at: u.last_used_at,
+              recall_count: u.recall_count
+            },
+            { where: `id = '${u.id.replace(/'/g, "''")}'` }
+          )
+        )
+      );
+    } catch {
+    }
+  }
   async decay() {
     if (!this.table) await this.init();
     const ARCHIVE_TTL_DAYS = 180;
@@ -15945,6 +16033,9 @@ var LanceDBAdapter = class {
     let updated = 0;
     let deleted = 0;
     const now = Date.now();
+    const importanceUpdates = [];
+    const tierUpdates = [];
+    const toDelete = [];
     for (const m of memories) {
       if (m.locked) continue;
       if (m.coldStartUntil && now < m.coldStartUntil) {
@@ -15952,14 +16043,7 @@ var LanceDBAdapter = class {
         if (daysInGrace > 1) {
           const newImportance = m.importance * Math.pow(COLD_START_DECAY_MULTIPLIER, 0.5);
           if (Math.abs(newImportance - m.importance) > 1e-3) {
-            try {
-              await this.table.update(
-                { importance: String(newImportance) },
-                { where: `id = '${m.id.replace(/'/g, "''")}'` }
-              );
-              updated++;
-            } catch {
-            }
+            importanceUpdates.push({ id: m.id, importance: String(newImportance) });
           }
         }
         continue;
@@ -15967,11 +16051,8 @@ var LanceDBAdapter = class {
       const daysIdle = Math.max(0, Math.floor((now - m.lastAccessedAt) / 864e5));
       if (m.scope === "archived" || m.scope === "archive") {
         if (daysIdle > ARCHIVE_TTL_DAYS) {
-          try {
-            await this.table.delete(`id = '${m.id.replace(/'/g, "''")}'`);
-            deleted++;
-          } catch {
-          }
+          toDelete.push(m.id);
+          deleted++;
         }
         continue;
       }
@@ -15983,26 +16064,31 @@ var LanceDBAdapter = class {
         const prospectiveMem = { ...m, importance: newImportance };
         const newTier = this.recomputeTier(prospectiveMem);
         if (newTier !== m.scope) {
-          try {
-            await this.table.update(
-              { importance: String(newImportance), scope: newTier, updated_at: String(Date.now()) },
-              { where: `id = '${m.id.replace(/'/g, "''")}'` }
-            );
-            updated++;
-          } catch {
-          }
+          tierUpdates.push({ id: m.id, scope: newTier, importance: String(newImportance) });
         } else if (Math.abs(newImportance - m.importance) > 1e-3) {
-          try {
-            await this.table.update(
-              { importance: String(newImportance) },
-              { where: `id = '${m.id.replace(/'/g, "''")}'` }
-            );
-            updated++;
-          } catch {
-          }
+          importanceUpdates.push({ id: m.id, importance: String(newImportance) });
         }
       }
     }
+    const allUpdates = [
+      ...importanceUpdates.map(
+        (u) => this.table.update(
+          { importance: u.importance, updated_at: String(now) },
+          { where: `id = '${u.id.replace(/'/g, "''")}'` }
+        ).catch(() => null)
+      ),
+      ...tierUpdates.map(
+        (u) => this.table.update(
+          { importance: u.importance, scope: u.scope, updated_at: String(now) },
+          { where: `id = '${u.id.replace(/'/g, "''")}'` }
+        ).catch(() => null)
+      ),
+      ...toDelete.map(
+        (id) => this.table.delete(`id = '${id.replace(/'/g, "''")}'`).catch(() => null)
+      )
+    ];
+    const results = await Promise.all(allUpdates);
+    updated = [...importanceUpdates, ...tierUpdates].length;
     const purged = await this.purgeForgotten(FORGET_GRACE_DAYS);
     deleted += purged;
     try {
@@ -16088,8 +16174,8 @@ var LanceDBAdapter = class {
       retrieved.push(this._rowToRetrieved(row, score));
       if (retrieved.length >= topK) break;
     }
-    for (const r of retrieved) {
-      await this.incrementAccess(r.id);
+    if (retrieved.length > 0) {
+      await this.incrementAccessBatch(retrieved.map((r) => r.id));
     }
     const reranked = await this.rerankResults(queryText || "", retrieved);
     return reranked;
@@ -16204,7 +16290,8 @@ var LanceDBAdapter = class {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
       return true;
-    } catch {
+    } catch (err) {
+      logger2.warn({ err }, "forget failed");
       return false;
     }
   }
@@ -16230,7 +16317,8 @@ var LanceDBAdapter = class {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
       return true;
-    } catch {
+    } catch (err) {
+      logger2.warn({ err }, "verifyMemory failed");
       return false;
     }
   }
@@ -16340,7 +16428,14 @@ var LanceDBAdapter = class {
     const maxChunks = captureCfg.maxChunks ?? 3;
     const threshold = captureCfg.importanceThreshold ?? 0.5;
     const extractionResults = await Promise.allSettled(
-      items.map((item) => this._extractMemories(item.message, item.response, config))
+      items.map((item) => (async () => {
+        await BATCH_EXTRACT_SEMAPHORE.acquire();
+        try {
+          return await this._extractMemories(item.message, item.response, config);
+        } finally {
+          BATCH_EXTRACT_SEMAPHORE.release();
+        }
+      })())
     );
     let totalStored = 0;
     let totalExtracted = 0;
@@ -16745,6 +16840,8 @@ async function getMemoryStore() {
 }
 
 // src/retriever.ts
+init_embeddings();
+init_logger();
 var HybridRetriever = class {
   db;
   embedder;
@@ -16756,7 +16853,7 @@ var HybridRetriever = class {
   // ---------- Noise Prototype Setup ----------
   async buildNoisePrototypes() {
     if (!hasEmbeddingProvider()) {
-      console.log("[hawk-bridge] No embedding provider, skipping noise prototypes");
+      logger2.info("No embedding provider, skipping noise prototypes");
       return;
     }
     const noiseTexts = [
@@ -16782,7 +16879,7 @@ var HybridRetriever = class {
         this.noisePrototypes = await this.embedder.embed(noiseTexts);
       }
     } catch (e) {
-      console.warn("[hawk-bridge] Noise prototype embedding failed, noise filter disabled:", e.message);
+      logger2.warn({ err: e.message }, "Noise prototype embedding failed, noise filter disabled");
     }
   }
   isNoise(embedding) {
@@ -16824,7 +16921,7 @@ var HybridRetriever = class {
       async () => {
         const apiKey = process.env.JINA_RERANKER_API_KEY;
         if (!apiKey) return null;
-        const resp = await fetch("https://api.jina.ai/v1/rerank", {
+        const resp = await fetchWithRetry("https://api.jina.ai/v1/rerank", {
           method: "POST",
           headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
           body: JSON.stringify({
@@ -16845,7 +16942,7 @@ var HybridRetriever = class {
       async () => {
         const apiKey = process.env.COHERE_API_KEY || process.env.COHERE_RERANK_API_KEY;
         if (!apiKey) return null;
-        const resp = await fetch("https://api.cohere.ai/v1/rerank", {
+        const resp = await fetchWithRetry("https://api.cohere.ai/v1/rerank", {
           method: "POST",
           headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
           body: JSON.stringify({
@@ -16867,7 +16964,7 @@ var HybridRetriever = class {
       async () => {
         const apiKey = process.env.MIXTBREAD_API_KEY || process.env.MIXEDBREAD_API_KEY;
         if (!apiKey) return null;
-        const resp = await fetch("https://api.mixedbread.ai/v1/rerank", {
+        const resp = await fetchWithRetry("https://api.mixedbread.ai/v1/rerank", {
           method: "POST",
           headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
           body: JSON.stringify({
@@ -16944,10 +17041,10 @@ var HybridRetriever = class {
         }
         return results;
       } catch (err) {
-        console.warn("[hawk-bridge] Vector search failed, falling back to FTS-only:", err);
+        logger2.warn({ err }, "Vector search failed, falling back to FTS-only");
       }
     }
-    console.log("[hawk-bridge] Running in FTS-only mode (LanceDB native full-text search)");
+    logger2.info("Running in FTS-only mode (LanceDB native full-text search)");
     try {
       const ftsResults = await this.db.ftsSearch(query, topK * 3, scope, sourceTypes, platform);
       const idToScore = new Map(ftsResults.map((r) => [r.id, r.score]));
@@ -16970,7 +17067,7 @@ var HybridRetriever = class {
       }
       return results;
     } catch (err) {
-      console.error("[hawk-bridge] FTS search failed:", err);
+      logger2.error({ err }, "FTS search failed");
       return [];
     }
   }
@@ -17032,8 +17129,8 @@ async function getRetriever() {
       const config = await getConfig();
       const db2 = getSharedDb();
       await db2.init();
-      const { Embedder: Embedder2 } = await Promise.resolve().then(() => (init_embeddings(), embeddings_exports));
-      const embedder2 = new Embedder2(config.embedding);
+      const { Embedder: Embedder3 } = await Promise.resolve().then(() => (init_embeddings(), embeddings_exports));
+      const embedder2 = new Embedder3(config.embedding);
       const r = new HybridRetriever(db2, embedder2);
       await r.buildNoisePrototypes();
       return r;
@@ -17046,6 +17143,8 @@ async function getRetriever() {
   }
   return retriever;
 }
+var MANIFEST_CACHE_TTL_MS = 3e4;
+var manifestCache = null;
 var SELECT_MEMORIES_SYSTEM_PROMPT = `\u4F60\u662F\u4E00\u4E2A\u8BB0\u5FC6\u7B5B\u9009\u52A9\u624B\uFF0C\u8D1F\u8D23\u4ECE\u7528\u6237\u7684\u8BB0\u5FC6\u5217\u8868\u4E2D\u9009\u51FA\u6700\u76F8\u5173\u7684\u90A3\u51E0\u6761\u3002
 
 \u6211\u7ED9\u4F60\u4E00\u4E2A\u67E5\u8BE2\u8BCD\uFF08query\uFF09\uFF0C\u4EE5\u53CA\u4E00\u6279\u8BB0\u5FC6\u6587\u4EF6\u7684\u540D\u79F0\u3001\u63CF\u8FF0\u548C\u5206\u7C7B\u3002
@@ -17054,14 +17153,21 @@ var SELECT_MEMORIES_SYSTEM_PROMPT = `\u4F60\u662F\u4E00\u4E2A\u8BB0\u5FC6\u7B5B\
 \u4E0D\u8981\u5305\u542B\u90A3\u4E9B"\u53EF\u80FD\u6709\u70B9\u5173\u7CFB"\u6216"\u6A21\u7CCA\u76F8\u5173"\u7684\u8BB0\u5FC6\u3002`;
 async function dualSelect(query, db2, topN = 8) {
   try {
-    const all3 = await db2.getAllMemories();
-    if (!all3.length) return [];
-    const manifest = all3.filter((m) => m.deletedAt === null && m.name).map((m) => ({
-      id: m.id,
-      name: m.name,
-      description: m.description || m.text.slice(0, 200),
-      category: m.category
-    }));
+    const now = Date.now();
+    let manifest;
+    if (manifestCache && now - manifestCache.ts < MANIFEST_CACHE_TTL_MS) {
+      manifest = manifestCache.manifest;
+    } else {
+      const all3 = await db2.getAllMemories();
+      if (!all3.length) return [];
+      manifest = all3.filter((m) => m.deletedAt === null && m.name).map((m) => ({
+        id: m.id,
+        name: m.name,
+        description: m.description || m.text.slice(0, 200),
+        category: m.category
+      }));
+      manifestCache = { manifest, ts: now };
+    }
     if (!manifest.length) return [];
     const config = await getConfig();
     const body = manifest.map((m, i) => `[${i}] id=${m.id} name="${m.name}" category=${m.category} desc="${m.description.slice(0, 150)}"`).join("\n");
@@ -17616,10 +17722,10 @@ ${lines.join("\n")}
         correctionHistory: m2.correctionHistory
       }));
       try {
-        const { writeFileSync: writeFileSync3, mkdirSync: mkdirSync5, existsSync: existsSync7 } = __require("fs");
+        const { writeFileSync: writeFileSync2, mkdirSync: mkdirSync4, existsSync: existsSync7 } = __require("fs");
         const dir = path3.dirname(filepath);
-        if (!existsSync7(dir)) mkdirSync5(dir, { recursive: true });
-        writeFileSync3(filepath, JSON.stringify({ exported_at: (/* @__PURE__ */ new Date()).toISOString(), count: exported.length, memories: exported }, null, 2));
+        if (!existsSync7(dir)) mkdirSync4(dir, { recursive: true });
+        writeFileSync2(filepath, JSON.stringify({ exported_at: (/* @__PURE__ */ new Date()).toISOString(), count: exported.length, memories: exported }, null, 2));
         event.messages.push(`
 ${injectEmoji} \u2705 \u5DF2\u5BFC\u51FA ${exported.length} \u6761\u8BB0\u5FC6\u5230
 ${filepath}
@@ -18352,87 +18458,139 @@ function audit(action, reason, text) {
     logger2.error({ err: err?.message }, "Failed to write audit log");
   }
 }
-function normalizeText(text) {
-  let t = text;
-  t = t.replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u2028-\u202F\uFEFF]/g, "");
-  t = t.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  t = t.replace(/<[^>]+>/g, "");
-  t = t.replace(/!\[([^\]]*)\]\([^)]+\)/g, "[\u56FE\u7247]");
-  t = t.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-  t = t.replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, "$1");
-  t = t.replace(/^#{1,6}\s+/gm, "");
-  t = t.replace(/```[\w*]*\n([\s\S]*?)```/g, (_, code) => code.trim());
-  t = t.replace(/`([^`]+)`/g, "$1");
-  t = t.replace(/^>\s+/gm, "");
-  t = t.replace(/^[\s]*[-*+]\s+/gm, "");
-  t = t.replace(/^[\s]*\d+\.\s+/gm, "");
-  t = t.replace(/\bconsole\s*\.\s*(log|debug|info|warn|error)\s*\([^)]*\)/gi, "[\u65E5\u5FD7]");
-  t = t.replace(/\bprint\s*\([^)]*\)/g, "[\u65E5\u5FD7]");
-  t = t.replace(/\bprint\b(?!\s*=)/g, "[\u65E5\u5FD7]");
-  t = t.replace(/\blogger\s*\.\s*(debug|info|warn|error)\s*\([^)]*\)/gi, "[\u65E5\u5FD7]");
-  t = t.replace(
-    /(^\tat\s+[^\n]+\n)((\tat\s+[^\n]+\n)*)(\bat\s+[^\n]+$)/gm,
+function _stripInvisible(text) {
+  return text.replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u2028-\u202F\uFEFF]/g, "");
+}
+function _normalizeLineEndings(text) {
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+function _stripHtmlTags(text) {
+  return text.replace(/<[^>]+>/g, "");
+}
+function _stripMarkdownImages(text) {
+  return text.replace(/!\[([^\]]*)\]\([^)]+\)/g, "[\u56FE\u7247]");
+}
+function _stripMarkdownLinks(text) {
+  return text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+}
+function _stripMarkdownMarkers(text) {
+  return text.replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, "$1").replace(/^#{1,6}\s+/gm, "").replace(/```[\w*]*\n([\s\S]*?)```/g, (_, code) => code.trim()).replace(/`([^`]+)`/g, "$1").replace(/^>\s+/gm, "").replace(/^[\s]*[-*+]\s+/gm, "").replace(/^[\s]*\d+\.\s+/gm, "");
+}
+function _stripLogStatements(text) {
+  return text.replace(/\bconsole\s*\.\s*(log|debug|info|warn|error)\s*\([^)]*\)/gi, "[\u65E5\u5FD7]").replace(/\bprint\s*\([^)]*\)/g, "[\u65E5\u5FD7]").replace(/\bprint\b(?!\s*=)/g, "[\u65E5\u5FD7]").replace(/\blogger\s*\.\s*(debug|info|warn|error)\s*\([^)]*\)/gi, "[\u65E5\u5FD7]");
+}
+function _collapseStackTraces(text) {
+  return text.replace(
+    /(^	at\s+[^\n]+\n)((\tat\s+[^\n]+\n)*)(\tat\s+[^\n]+$)/gm,
     (_, head, middle, tail) => head + (middle ? "\n  ...\n" : "") + tail
   );
-  t = t.replace(/(https?:\/\/[^\s\n,，]+)[\n-]([^\s,，]+)/g, "$1$2");
-  t = t.replace(
-    /(https?:\/\/[^\s　'"<>】】]+)\/([^\s　'"<>】】]{0,60}[^\s　'"<>】】]*)/g,
-    (_, domain, path5) => {
-      const fullPath = path5.length > 60 ? path5.slice(0, 60) + "..." : path5;
-      return domain + "/" + fullPath;
-    }
+}
+function _mergeBrokenUrls(text) {
+  return text.replace(/(https?:\/\/[^\s\n,，]+)[\n-]([^\s,，]+)/g, "$1$2").replace(
+    /(https?:\/\/[^\s　'\"<>】】]+)\/([^\s　'\"<>】】]{0,60}[^\s　'\"<>】】]*)/g,
+    (_, domain, path5) => domain + "/" + (path5.length > 60 ? path5.slice(0, 60) + "..." : path5)
   );
-  t = t.replace(
+}
+function _stripEmoji(text) {
+  return text.replace(
     /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2300}-\u{23FF}]|[\u{2B50}]|[\u{1FA00}-\u{1FAFF}]|[\u{1F900}-\u{1F9FF}]/gu,
     ""
   );
-  t = t.replace(/。/g, ".").replace(/，/g, ",").replace(/；/g, ";").replace(/：/g, ":").replace(/？/g, "?").replace(/！/g, "!").replace(/"/g, '"').replace(/"/g, '"').replace(/'/g, "'").replace(/'/g, "'").replace(/（/g, "(").replace(/）/g, ")").replace(/【/g, "[").replace(/】/g, "]").replace(/《/g, "<").replace(/》/g, ">").replace(/、/g, ",").replace(/…/g, "...").replace(/～/g, "~");
-  t = t.replace(
+}
+function _normalizePunctuation(text) {
+  return text.replace(/。/g, ".").replace(/，/g, ",").replace(/；/g, ";").replace(/：/g, ":").replace(/？/g, "?").replace(/！/g, "!").replace(/"/g, '"').replace(/"/g, '"').replace(/'/g, "'").replace(/'/g, "'").replace(/（/g, "(").replace(/）/g, ")").replace(/【/g, "[").replace(/】/g, "]").replace(/《/g, "<").replace(/》/g, ">").replace(/、/g, ",").replace(/…/g, "...").replace(/～/g, "~");
+}
+function _normalizeTimestamps(text) {
+  return text.replace(
     /\b(?:\d{4}[-/年]\d{1,2}[-/月]\d{1,2}[日]?\s*(?:[时分]?\s*\d{1,2}[：:]\d{1,2}(?:[：:]\d{1,2})?\s*(?:AM|PM|am|pm)?)?|\d{1,2}[-/月]\d{1,2}[日]?(?:\s*\d{1,2}:\d{2}(?::\d{2})?)?)\b/g,
     "[\u65F6\u95F4]"
   );
-  t = t.replace(/[ \t]{2,}/g, " ");
-  t = t.replace(/\n{3,}/g, "\n\n");
-  t = t.split("\n").map((line) => line.trim()).join("\n");
-  t = t.trim();
-  t = t.replace(/\b(\d{1,3}(?:,\d{3}){2,})(?:\b|[^\d])/g, (match) => {
+}
+function _compactWhitespace(text) {
+  return text.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").split("\n").map((line) => line.trim()).join("\n").trim();
+}
+function _abbreviateNumbers(text) {
+  return text.replace(/\b(\d{1,3}(?:,\d{3}){2,})(?:\b|[^\d])/g, (match) => {
     const num = parseInt(match.replace(/,/g, ""), 10);
     if (num >= 1e9) return (num / 1e9).toFixed(1) + "B";
     if (num >= 1e6) return (num / 1e6).toFixed(1) + "M";
     if (num >= 1e3) return (num / 1e3).toFixed(1) + "K";
     return match;
   });
-  t = t.replace(/\b[A-Za-z0-9+/]{100,}={0,2}\b/g, "[BASE64\u6570\u636E]");
-  t = t.replace(/(\{"[^"]+":\s*"[^"]+"\})/g, (json2) => {
+}
+function _stripBase64(text) {
+  return text.replace(/\b[A-Za-z0-9+/]{100,}={0,2}\b/g, "[BASE64\u6570\u636E]");
+}
+function _compactJson(text) {
+  return text.replace(/(\{\"[^\"]+\":\s*\"[^\"]+\"\})/g, (json2) => {
     try {
       return JSON.stringify(JSON.parse(json2));
     } catch {
       return json2;
     }
   });
-  {
-    const sentences = t.split(/(?<=[.!?])\s+/);
-    const seen = /* @__PURE__ */ new Set();
-    t = sentences.filter((s) => {
-      const normalized = s.toLowerCase().trim();
-      if (seen.has(normalized)) return false;
-      seen.add(normalized);
-      return true;
-    }).join(" ");
-  }
-  {
-    const paras = t.split(/\n\n+/);
-    const seenPara = /* @__PURE__ */ new Set();
-    t = paras.filter((p) => {
-      const normalized = p.trim().toLowerCase();
-      if (seenPara.has(normalized)) return false;
-      seenPara.add(normalized);
-      return true;
-    }).join("\n\n");
-  }
-  t = t.replace(/([\u4e00-\u9fff])([A-Za-z])/g, "$1$2");
-  t = t.replace(/([A-Za-z])([\u4e00-\u9fff])/g, "$1$2");
-  return t;
+}
+function _dedupeSentences(text) {
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const seen = /* @__PURE__ */ new Set();
+  return sentences.filter((s) => {
+    const normalized = s.toLowerCase().trim();
+    if (seen.has(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  }).join(" ");
+}
+function _dedupeParagraphs(text) {
+  const paras = text.split(/\n\n+/);
+  const seen = /* @__PURE__ */ new Set();
+  return paras.filter((p) => {
+    const normalized = p.trim().toLowerCase();
+    if (seen.has(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  }).join("\n\n");
+}
+function _minimizeMixedSpaces(text) {
+  return text.replace(/([\u4e00-\u9fff])([A-Za-z])/g, "$1$2").replace(/([A-Za-z])([\u4e00-\u9fff])/g, "$1$2");
+}
+function normalizeText(text) {
+  return _minimizeMixedSpaces(
+    _dedupeParagraphs(
+      _dedupeSentences(
+        _compactJson(
+          _stripBase64(
+            _abbreviateNumbers(
+              _compactWhitespace(
+                _normalizeTimestamps(
+                  _normalizePunctuation(
+                    _stripEmoji(
+                      _mergeBrokenUrls(
+                        _collapseStackTraces(
+                          _stripLogStatements(
+                            _stripMarkdownMarkers(
+                              _stripMarkdownLinks(
+                                _stripMarkdownImages(
+                                  _stripHtmlTags(
+                                    _normalizeLineEndings(
+                                      _stripInvisible(text)
+                                    )
+                                  )
+                                )
+                              )
+                            )
+                          )
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  );
 }
 function isValidChunk(text) {
   if (!text || typeof text !== "string") return false;
@@ -18958,7 +19116,7 @@ init_logger();
 
 // src/metrics-persist.ts
 init_logger();
-import { existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync3, writeFileSync as writeFileSync2 } from "fs";
+import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync3, writeFileSync } from "fs";
 import { join as join6 } from "path";
 import { homedir as homedir6 } from "os";
 import { register as register3 } from "prom-client";
@@ -18966,7 +19124,7 @@ var METRICS_DIR = process.env.HAWK_METRICS_DIR ?? join6(homedir6(), ".hawk", "me
 var DUMP_FILE = join6(METRICS_DIR, "last.json");
 var DUMP_INTERVAL_MS = parseInt(process.env.HAWK_METRICS_DUMP_INTERVAL ?? "60000", 10);
 function ensureMetricsDir() {
-  if (!existsSync5(METRICS_DIR)) mkdirSync4(METRICS_DIR, { recursive: true });
+  if (!existsSync5(METRICS_DIR)) mkdirSync3(METRICS_DIR, { recursive: true });
 }
 function restoreMetricsCounters() {
   ensureMetricsDir();
@@ -19014,7 +19172,7 @@ function startMetricsDump() {
         timestamp: Date.now(),
         counters
       };
-      writeFileSync2(DUMP_FILE, JSON.stringify(snap), "utf8");
+      writeFileSync(DUMP_FILE, JSON.stringify(snap), "utf8");
       logger2.debug({ counters: Object.keys(counters).length }, "[metrics] dumped");
     } catch (e) {
       logger2.warn({ err: e }, "[metrics] dump failed");
@@ -22956,8 +23114,8 @@ axios.VERSION = VERSION;
 axios.toFormData = toFormData_default;
 axios.AxiosError = AxiosError_default;
 axios.Cancel = axios.CanceledError;
-axios.all = function all(promises) {
-  return Promise.all(promises);
+axios.all = function all(promises2) {
+  return Promise.all(promises2);
 };
 axios.spread = spread;
 axios.isAxiosError = isAxiosError;
@@ -23002,60 +23160,67 @@ var ALERT_WEBHOOK_URL = process.env.HAWK_ALERT_WEBHOOK_URL ?? "";
 var MIN_DISK_FREE_MB = parseInt(process.env.HAWK_MIN_DISK_FREE_MB ?? "100", 10);
 var embeddingBreaker = new CircuitBreaker(5, 3e4);
 async function healthCheck() {
-  const checks = { embedder: false, lancedb: false, disk: false };
-  let error;
-  try {
-    await embeddingBreaker.run(async () => {
-      const config = await getConfig();
-      const embedder2 = new Embedder(config.embedding);
-      await embedder2.embed(["health check probe"]);
-    });
-    checks.embedder = true;
-  } catch (e) {
-    error = `embedder: ${e?.message ?? e}`;
-    logger2.warn({ err: e }, "[health] embedder check failed");
-  }
-  try {
-    const store = await getMemoryStore();
-    if (store instanceof LanceDBAdapter) {
-      const testId = `__hawk_health_check__${Date.now()}`;
-      const testEntry = {
-        id: testId,
-        content: "health check probe",
-        importance: 0.5,
-        reliability: 0.5,
-        created_at: Date.now(),
-        last_used_at: Date.now(),
-        recall_count: 0,
-        usefulness_score: 0.5,
-        scope: "stable"
-      };
-      await store.table?.add?.([testEntry]).catch?.(() => {
-        return Promise.resolve();
+  const HEALTH_CHECK_TIMEOUT_MS = 1e4;
+  const timeoutPromise = new Promise(
+    (_, reject) => setTimeout(() => reject(new Error("health check timeout (10s)")), HEALTH_CHECK_TIMEOUT_MS)
+  );
+  const checkPromise = (async () => {
+    const checks = { embedder: false, lancedb: false, disk: false };
+    let error;
+    try {
+      await embeddingBreaker.run(async () => {
+        const config = await getConfig();
+        const embedder2 = new Embedder(config.embedding);
+        await embedder2.embed(["health check probe"]);
       });
-      checks.lancedb = true;
-    } else {
-      checks.lancedb = true;
+      checks.embedder = true;
+    } catch (e) {
+      error = `embedder: ${e?.message ?? e}`;
+      logger2.warn({ err: e }, "[health] embedder check failed");
     }
-  } catch (e) {
-    error = `lancedb: ${e?.message ?? String(e)}`;
-    logger2.warn({ err: e }, "[health] lancedb check failed");
-  }
-  try {
-    const hawkHome = join7(homedir7(), ".hawk");
-    const fs5 = __require("fs");
-    fs5.accessSync(hawkHome, fs5.constants.W_OK);
-    checks.disk = true;
-  } catch (e) {
-    error = `disk: ${e?.message ?? String(e)}`;
-    logger2.warn({ err: e }, "[health] disk check failed");
-  }
-  const allOk = checks.embedder && checks.lancedb && checks.disk;
-  return {
-    status: allOk ? "ok" : "degraded",
-    checks,
-    error: allOk ? void 0 : error
-  };
+    try {
+      const store = await getMemoryStore();
+      if (store instanceof LanceDBAdapter) {
+        const testId = `__hawk_health_check__${Date.now()}`;
+        const testEntry = {
+          id: testId,
+          content: "health check probe",
+          importance: 0.5,
+          reliability: 0.5,
+          created_at: Date.now(),
+          last_used_at: Date.now(),
+          recall_count: 0,
+          usefulness_score: 0.5,
+          scope: "stable"
+        };
+        await store.table?.add?.([testEntry]).catch?.(() => {
+          return Promise.resolve();
+        });
+        checks.lancedb = true;
+      } else {
+        checks.lancedb = true;
+      }
+    } catch (e) {
+      error = `lancedb: ${e?.message ?? String(e)}`;
+      logger2.warn({ err: e }, "[health] lancedb check failed");
+    }
+    try {
+      const hawkHome = join7(homedir7(), ".hawk");
+      const fs5 = __require("fs");
+      fs5.accessSync(hawkHome, fs5.constants.W_OK);
+      checks.disk = true;
+    } catch (e) {
+      error = `disk: ${e?.message ?? String(e)}`;
+      logger2.warn({ err: e }, "[health] disk check failed");
+    }
+    const allOk = checks.embedder && checks.lancedb && checks.disk;
+    return {
+      status: allOk ? "ok" : "degraded",
+      checks,
+      error: allOk ? void 0 : error
+    };
+  })();
+  return await Promise.race([checkPromise, timeoutPromise]);
 }
 function parseUrl2(pathname) {
   const params = {};
@@ -23089,6 +23254,8 @@ function startMetricsServer() {
     const pathname = url2.pathname;
     const queryParams = parseUrl2(url2.search);
     const start = Date.now();
+    const requestId = req.headers["x-request-id"] || `hawk-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    res.setHeader("X-Request-ID", requestId);
     if (pathname === "/metrics" && METRICS_TOKEN) {
       const token = queryParams["token"] ?? req.headers["x-hawk-token"] ?? "";
       if (token !== METRICS_TOKEN) {
@@ -23134,7 +23301,7 @@ function startMetricsServer() {
     }
   });
   server.listen(METRICS_PORT, "127.0.0.1", () => {
-    logger2.info({ port: METRICS_PORT }, "[hawk-bridge] Metrics server listening on http://127.0.0.1:{port}");
+    logger2.info({ port: METRICS_PORT }, `[hawk-bridge] Metrics server listening on http://127.0.0.1:${METRICS_PORT}`);
     logger2.info("[hawk-bridge]   /health  \u2014 health check (embedder + lancedb + disk)");
     logger2.info("[hawk-bridge]   /metrics \u2014 Prometheus scrape endpoint");
     if (METRICS_TOKEN) logger2.info("[hawk-bridge]   /metrics auth enabled (HAWK_METRICS_TOKEN)");

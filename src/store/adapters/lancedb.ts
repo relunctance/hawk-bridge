@@ -21,7 +21,33 @@ import { logger } from '../../logger.js';
 import { memoryErrors } from '../../metrics.js';
 import { fetchWithRetry } from '../../embeddings.js';
 
+/**
+ * Simple semaphore for concurrency limiting without external dependencies.
+ * Used to cap parallel LLM calls in batchCapture.
+ */
+class Semaphore {
+  private queue: Array<() => void> = [];
+  constructor(private permits: number) {}
+  async acquire(): Promise<void> {
+    if (this.permits > 0) {
+      this.permits--;
+      return;
+    }
+    return new Promise<void>(resolve => this.queue.push(resolve));
+  }
+  release(): void {
+    this.permits++;
+    const next = this.queue.shift();
+    if (next) {
+      this.permits--;
+      next();
+    }
+  }
+}
+
 const TABLE_NAME = 'hawk_memories';
+// Cap parallel LLM calls in batchCapture to avoid overwhelming the LLM API
+const BATCH_EXTRACT_SEMAPHORE = new Semaphore(5);
 
 export class LanceDBAdapter implements MemoryStore {
   private db: any = null;
@@ -89,7 +115,7 @@ export class LanceDBAdapter implements MemoryStore {
           const { Index } = await import('@lancedb/lancedb');
           await this.table.createIndex('text', Index.fts());
         } catch (err: any) {
-          logger.warn({ err: err?.message }, 'FTS index creation failed (non-fatal)');
+          logger.error({ err: err?.message }, 'FTS index creation failed — search will fall back to full-table scan; rebuild with: npx hawk-bridge rebuild-index');
         }
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
@@ -100,11 +126,15 @@ export class LanceDBAdapter implements MemoryStore {
           await this.table.createIndex('text', Index.fts());
           logger.info('FTS index ensured on text column');
         } catch (err: any) {
-          logger.warn({ err: err?.message }, 'FTS index creation failed (non-fatal, index may already exist)');
+          logger.warn({ err: err?.message }, 'FTS index creation warning (index may already exist — search quality unaffected if FTS was previously built)');
         }
 
         try {
-          await this.table.alterAddColumns([
+          // Describe table to find existing columns — only add missing ones
+          const schema = await this.table.describe();
+          const existingCols = new Set((schema ?? []).map((f: any) => f.name));
+
+          const colsToAdd = [
             { name: 'expires_at', type: { type: 'int64' } },
             { name: 'created_at', type: { type: 'int64' } },
             { name: 'source_type', type: { type: 'utf8' } },
@@ -134,9 +164,13 @@ export class LanceDBAdapter implements MemoryStore {
             { name: 'generation_version', type: { type: 'int32' } },
             { name: 'soul_pattern_id', type: { type: 'utf8' } },
             { name: 'soul_verified', type: { type: 'int8' } },
-          ]);
+          ].filter(c => !existingCols.has(c.name));
+
+          if (colsToAdd.length > 0) {
+            await this.table.alterAddColumns(colsToAdd);
+          }
         } catch (_) {
-          // Columns may already exist — ignore
+          // Schema migration may fail on older tables — ignore and continue
         }
       }
     } catch (err) {
@@ -343,7 +377,10 @@ export class LanceDBAdapter implements MemoryStore {
     if (!this.table) await this.init();
 
     const memories = await this.getAllMemories();
-    let updated = 0;
+    const now = Date.now();
+
+    // Collect all updates, then execute in a single batch
+    const updates: Array<{ id: string; scope: string; importance: string; updated_at: string }> = [];
 
     for (const memory of memories) {
       if (memory.locked) continue;
@@ -353,21 +390,30 @@ export class LanceDBAdapter implements MemoryStore {
       const newTier = this.recomputeTier(memory);
 
       if (oldTier !== newTier || Math.abs(memory.importance - newScore) > 0.001) {
-        try {
-          await this.table.update(
-            {
-              scope: newTier,
-              importance: String(newScore),
-              updated_at: String(Date.now()),
-            },
-            { where: `id = '${memory.id.replace(/'/g, "''")}'` }
-          );
-          updated++;
-        } catch { /* ignore */ }
+        updates.push({
+          id: memory.id,
+          scope: newTier,
+          importance: String(newScore),
+          updated_at: String(now),
+        });
       }
     }
 
-    return { updated };
+    // Batch update: single round-trip for all tier changes
+    if (updates.length > 0) {
+      try {
+        await Promise.all(
+          updates.map(u =>
+            this.table.update(
+              { scope: u.scope, importance: u.importance, updated_at: u.updated_at },
+              { where: `id = '${u.id.replace(/'/g, "''")}'` }
+            )
+          )
+        );
+      } catch { /* ignore */ }
+    }
+
+    return { updated: updates.length };
   }
 
   private _rowToMemory(r: any): MemoryEntry {
@@ -587,8 +633,11 @@ export class LanceDBAdapter implements MemoryStore {
   /** Returns DB stats: memory count, total size in MB, directory path */
   async getDBStats(): Promise<{ count: number; sizeMB: number; path: string }> {
     if (!this.table) await this.init();
-    const all = await this.table.query().limit(100000).toArray();
-    const count = all.filter((r: any) => r.deleted_at === null).length;
+    // Use database-layer count to avoid loading all rows
+    const count = await this.table.countRows();
+    // Exclude deleted rows from count (countRows includes them)
+    const all = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
+    const activeCount = all.filter((r: any) => r.deleted_at === null).length;
 
     let sizeMB = 0;
     try {
@@ -596,7 +645,7 @@ export class LanceDBAdapter implements MemoryStore {
       sizeMB = sizeBytes / (1024 * 1024);
     } catch { /* non-critical */ }
 
-    return { count, sizeMB, path: this.dbPath };
+    return { count: activeCount, sizeMB, path: this.dbPath };
   }
 
   private async _dirSize(dirPath: string): Promise<number> {
@@ -619,11 +668,11 @@ export class LanceDBAdapter implements MemoryStore {
 
   async getAllMemories(agentId?: string | null): Promise<MemoryEntry[]> {
     if (!this.table) await this.init();
-    const rows = await this.table.query().limit(BM25_QUERY_LIMIT).toArray();
+    const now = Date.now();
+    // Database-layer filtering: exclude deleted, expired, and superseded rows before loading
+    const predicate = `deleted_at IS NULL AND (expires_at = 0 OR expires_at > ${now}) AND superseded_by IS NULL`;
+    const rows = await this.table.query().where(predicate).limit(BM25_QUERY_LIMIT).toArray();
     return rows
-      .filter((r: any) => r.deleted_at === null)
-      // Filter out superseded memories — only return the latest version
-      .filter((r: any) => !r.superseded_by)
       .filter((r: any) => {
         if (!agentId) return true;
         const owner = (r.metadata?.owner_agent ?? r.metadata?.ownerAgent) ?? null;
@@ -707,16 +756,20 @@ export class LanceDBAdapter implements MemoryStore {
   }
 
   async findSimilarEntity(text: string, threshold: number = ENTITY_DEDUP_THRESHOLD): Promise<MemoryEntry | null> {
-    const all = await this.getAllMemories();
+    // Use FTS search to find candidate entities instead of loading all memories
+    const candidates = await this.ftsSearch(text, 20, 0, undefined, undefined, undefined);
+    if (!candidates.length) return null;
+
     const keywords = this._extractKeywords(text);
     let best: { m: MemoryEntry; score: number } | null = null;
-    for (const m of all) {
-      if (m.category !== 'entity') continue;
-      const memKeywords = this._extractKeywords(m.text);
+    for (const c of candidates) {
+      // ftsSearch already filters deleted/superseded/expired, but category check needed here
+      if (c.category !== 'entity') continue;
+      const memKeywords = this._extractKeywords(c.text);
       const overlap = keywords.filter(k => memKeywords.includes(k)).length;
       const union = new Set([...keywords, ...memKeywords]).size;
       const score = union > 0 ? overlap / union : 0;
-      if (!best || score > best.score) best = { m, score };
+      if (!best || score > best.score) best = { m: c, score };
     }
     return best && best.score >= threshold ? best.m : null;
   }
@@ -776,7 +829,7 @@ export class LanceDBAdapter implements MemoryStore {
         { locked: '1' },
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
-    } catch { /* ignore */ }
+    } catch (err) { logger.warn({ err }, 'lock failed'); }
   }
 
   async unlock(id: string): Promise<void> {
@@ -786,7 +839,7 @@ export class LanceDBAdapter implements MemoryStore {
         { locked: '0' },
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
-    } catch { /* ignore */ }
+    } catch (err) { logger.warn({ err }, 'unlock failed'); }
   }
 
   async flagUnhelpful(id: string, penalty: number = 0.05): Promise<void> {
@@ -800,7 +853,7 @@ export class LanceDBAdapter implements MemoryStore {
         { reliability: String(newRel), verification_count: String(newVerifications), last_verified_at: String(Date.now()) },
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
-    } catch { /* ignore */ }
+    } catch (err) { logger.warn({ err }, 'flagUnhelpful failed'); }
   }
 
   async incrementAccess(id: string): Promise<void> {
@@ -816,6 +869,55 @@ export class LanceDBAdapter implements MemoryStore {
           recall_count: String(current + 1),
         },
         { where: `id = '${id.replace(/'/g, "''")}'` }
+      );
+    } catch { /* ignore */ }
+  }
+
+  /**
+   * Batch version of incrementAccess — updates access counters for multiple memories
+   * in a single round-trip (1 query to fetch all counts + N individual updates).
+   * Used by search() to avoid N+1 query pattern.
+   */
+  private async incrementAccessBatch(ids: string[]): Promise<void> {
+    if (!ids.length) return;
+    try {
+      const now = Date.now();
+      // Fetch all current counts in a single query using OR predicate.
+      // SQL injection mitigation: each id has single-quotes escaped via replace(/'/g, "''").
+      // LanceDB's where() clause does not support parameterized queries, so this
+      // escaping is the recommended approach to handle edge cases (e.g. ids containing
+      // single quotes, unicode quotes, or other special characters).
+      const predicate = ids.map(id => `id = '${id.replace(/'/g, "''")}'`).join(' OR ');
+      const rows = await this.table.query().where(predicate).limit(ids.length).toArray();
+      // Build id → current count map
+      const countMap = new Map<string, number>();
+      for (const r of rows) {
+        countMap.set(r.id, Number(r.access_count ?? 0));
+      }
+      // Update each id with its current count + 1
+      const updates = ids.map(id => {
+        const current = countMap.get(id) ?? 0;
+        return {
+          id,
+          access_count: String(current + 1),
+          last_accessed_at: String(now),
+          last_used_at: String(now),
+          recall_count: String(current + 1),
+        };
+      });
+      // LanceDB update requires separate calls per row with different values
+      await Promise.all(
+        updates.map(u =>
+          this.table.update(
+            {
+              access_count: u.access_count,
+              last_accessed_at: u.last_accessed_at,
+              last_used_at: u.last_used_at,
+              recall_count: u.recall_count,
+            },
+            { where: `id = '${u.id.replace(/'/g, "''")}'` }
+          )
+        )
       );
     } catch { /* ignore */ }
   }
@@ -836,6 +938,11 @@ export class LanceDBAdapter implements MemoryStore {
     let deleted = 0;
     const now = Date.now();
 
+    // Collect updates for batch execution
+    const importanceUpdates: Array<{ id: string; importance: string }> = [];
+    const tierUpdates: Array<{ id: string; scope: string; importance: string }> = [];
+    const toDelete: string[] = [];
+
     for (const m of memories) {
       if (m.locked) continue;
       if (m.coldStartUntil && now < m.coldStartUntil) {
@@ -843,13 +950,7 @@ export class LanceDBAdapter implements MemoryStore {
         if (daysInGrace > 1) {
           const newImportance = m.importance * Math.pow(COLD_START_DECAY_MULTIPLIER, 0.5);
           if (Math.abs(newImportance - m.importance) > 0.001) {
-            try {
-              await this.table.update(
-                { importance: String(newImportance) },
-                { where: `id = '${m.id.replace(/'/g, "''")}'` }
-              );
-              updated++;
-            } catch { /* ignore */ }
+            importanceUpdates.push({ id: m.id, importance: String(newImportance) });
           }
         }
         continue;
@@ -860,10 +961,8 @@ export class LanceDBAdapter implements MemoryStore {
       // Handle both old tier name ('archive') and new ('archived') during migration
       if (m.scope === 'archived' || m.scope === 'archive') {
         if (daysIdle > ARCHIVE_TTL_DAYS) {
-          try {
-            await this.table.delete(`id = '${m.id.replace(/'/g, "''")}'`);
-            deleted++;
-          } catch { /* ignore */ }
+          toDelete.push(m.id);
+          deleted++;
         }
         continue;
       }
@@ -880,24 +979,33 @@ export class LanceDBAdapter implements MemoryStore {
         const newTier = this.recomputeTier(prospectiveMem);
 
         if (newTier !== m.scope) {
-          try {
-            await this.table.update(
-              { importance: String(newImportance), scope: newTier, updated_at: String(Date.now()) },
-              { where: `id = '${m.id.replace(/'/g, "''")}'` }
-            );
-            updated++;
-          } catch { /* ignore */ }
+          tierUpdates.push({ id: m.id, scope: newTier, importance: String(newImportance) });
         } else if (Math.abs(newImportance - m.importance) > 0.001) {
-          try {
-            await this.table.update(
-              { importance: String(newImportance) },
-              { where: `id = '${m.id.replace(/'/g, "''")}'` }
-            );
-            updated++;
-          } catch { /* ignore */ }
+          importanceUpdates.push({ id: m.id, importance: String(newImportance) });
         }
       }
     }
+
+    // Batch execute all updates in parallel
+    const allUpdates = [
+      ...importanceUpdates.map(u =>
+        this.table.update(
+          { importance: u.importance, updated_at: String(now) },
+          { where: `id = '${u.id.replace(/'/g, "''")}'` }
+        ).catch(() => null)
+      ),
+      ...tierUpdates.map(u =>
+        this.table.update(
+          { importance: u.importance, scope: u.scope, updated_at: String(now) },
+          { where: `id = '${u.id.replace(/'/g, "''")}'` }
+        ).catch(() => null)
+      ),
+      ...toDelete.map(id =>
+        this.table.delete(`id = '${id.replace(/'/g, "''")}'`).catch(() => null)
+      ),
+    ];
+    const results = await Promise.all(allUpdates);
+    updated = [...importanceUpdates, ...tierUpdates].length;
 
     const purged = await this.purgeForgotten(FORGET_GRACE_DAYS);
     deleted += purged;
@@ -1024,8 +1132,9 @@ export class LanceDBAdapter implements MemoryStore {
       if (retrieved.length >= topK) break;
     }
 
-    for (const r of retrieved) {
-      await this.incrementAccess(r.id);
+    // Batch-update access counters for all retrieved memories (single IO instead of N queries)
+    if (retrieved.length > 0) {
+      await this.incrementAccessBatch(retrieved.map(r => r.id));
     }
 
     // Apply reranking if configured
@@ -1163,7 +1272,7 @@ export class LanceDBAdapter implements MemoryStore {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
       return true;
-    } catch { return false; }
+    } catch (err) { logger.warn({ err }, 'forget failed'); return false; }
   }
 
   async verifyMemory(id: string, confirmed: boolean, correctedText?: string): Promise<boolean> {
@@ -1192,7 +1301,7 @@ export class LanceDBAdapter implements MemoryStore {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
       return true;
-    } catch { return false; }
+    } catch (err) { logger.warn({ err }, 'verifyMemory failed'); return false; }
   }
 
   async markImportant(id: string, multiplier: number = 2.0): Promise<boolean> {
@@ -1323,9 +1432,16 @@ export class LanceDBAdapter implements MemoryStore {
     const maxChunks = captureCfg.maxChunks ?? 3;
     const threshold = captureCfg.importanceThreshold ?? 0.5;
 
-    // Parallel LLM extraction for all items
+    // Parallel LLM extraction for all items (semaphore capped to avoid API overload)
     const extractionResults = await Promise.allSettled(
-      items.map(item => this._extractMemories(item.message, item.response, config))
+      items.map(item => (async () => {
+        await BATCH_EXTRACT_SEMAPHORE.acquire();
+        try {
+          return await this._extractMemories(item.message, item.response, config);
+        } finally {
+          BATCH_EXTRACT_SEMAPHORE.release();
+        }
+      })())
     );
 
     let totalStored = 0;

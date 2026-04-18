@@ -182,8 +182,10 @@ function loadYamlConfig(): Record<string, any> {
 }
 
 let configPromise: Promise<HawkConfig> | null = null;
+let cachedConfig: HawkConfig | null = null;
 
 export async function getConfig(): Promise<HawkConfig> {
+  if (cachedConfig) return cachedConfig;
   if (!configPromise) {
     configPromise = (async () => {
       // 1. Defaults
@@ -269,7 +271,9 @@ export async function getConfig(): Promise<HawkConfig> {
       return config;
     })();
   }
-  return configPromise;
+  const config = await configPromise;
+  cachedConfig = config;
+  return config;
 }
 
 export function hasEmbeddingProvider(): boolean {
@@ -334,8 +338,8 @@ async function recordConfigHistory(config: HawkConfig): Promise<void> {
     if (entries.length > 100) entries = entries.slice(-100);
 
     const dir = path.dirname(historyPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(historyPath, entries.map(e => JSON.stringify(e)).join('\n') + '\n');
+    await fs.promises.mkdir(dir, { recursive: true });
+    await fs.promises.writeFile(historyPath, entries.map(e => JSON.stringify(e)).join('\n') + '\n');
   } catch {
     // Non-critical — never fail config load due to history write failure
   }

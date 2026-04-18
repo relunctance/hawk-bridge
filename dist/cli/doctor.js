@@ -2660,13 +2660,144 @@ var init_constants = __esm({
   }
 });
 
+// src/logger.ts
+import pino from "pino";
+import fs from "fs";
+import { join, dirname } from "path";
+import { existsSync, mkdirSync, unlinkSync, readdirSync, statSync } from "fs";
+import { homedir } from "os";
+function getTimestamp() {
+  const now = /* @__PURE__ */ new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const h = String(now.getHours()).padStart(2, "0");
+  const min = String(now.getMinutes()).padStart(2, "0");
+  const s = String(now.getSeconds()).padStart(2, "0");
+  return `${y}${m}${d}-${h}${min}${s}`;
+}
+function basename(p) {
+  return p.split("/").pop() ?? p;
+}
+function patchConsole() {
+  if (process.env.NODE_ENV !== "production" && process.env.HAWK_STRICT_LOG !== "1") return;
+  const origError = console.error.bind(console);
+  const origWarn = console.warn.bind(console);
+  const origLog = console.log.bind(console);
+  console.error = (...args) => {
+    logger.error({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.warn = (...args) => {
+    logger.warn({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.log = (...args) => {
+    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.info = (...args) => {
+    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+  console.debug = (...args) => {
+    logger.debug({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+  };
+}
+var LOG_DIR, LOG_FILE_BASE, MAX_FILE_SIZE, MAX_FILES, RotatingFileStream, rotatingStream, logLevel, logger;
+var init_logger = __esm({
+  "src/logger.ts"() {
+    "use strict";
+    LOG_DIR = process.env.HAWK_LOG_DIR ?? join(homedir(), ".hawk", "logs");
+    LOG_FILE_BASE = join(LOG_DIR, "hawk-bridge.log");
+    MAX_FILE_SIZE = parseInt(process.env.HAWK_LOG_MAX_SIZE ?? String(50 * 1024 * 1024), 10);
+    MAX_FILES = parseInt(process.env.HAWK_LOG_MAX_FILES ?? "14", 10);
+    RotatingFileStream = class {
+      stream;
+      size = 0;
+      constructor(filePath) {
+        this.ensureDir(dirname(filePath));
+        this.stream = this.openStream(filePath);
+      }
+      ensureDir(dir) {
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      }
+      openStream(filePath) {
+        const fd = existsSync(filePath) ? void 0 : void 0;
+        const s = fs.createWriteStream(filePath, { flags: "a", highWaterMark: 64 * 1024 });
+        if (existsSync(filePath)) {
+          this.size = statSync(filePath).size;
+        }
+        return s;
+      }
+      rotate() {
+        this.stream.end();
+        const rotatedPath = `${LOG_FILE_BASE}.${getTimestamp()}.log`;
+        try {
+          const dir = dirname(LOG_FILE_BASE);
+          if (existsSync(LOG_FILE_BASE)) {
+            fs.renameSync(LOG_FILE_BASE, rotatedPath);
+          }
+        } catch {
+        }
+        this.stream = this.openStream(LOG_FILE_BASE);
+        this.size = 0;
+        this.cleanupOldRotations();
+      }
+      cleanupOldRotations() {
+        try {
+          const dir = dirname(LOG_FILE_BASE);
+          const base = basename(LOG_FILE_BASE);
+          const files = readdirSync(dir).filter((f) => f.startsWith(base + ".") && f.endsWith(".log")).map((f) => ({
+            name: f,
+            path: join(dir, f),
+            mtime: statSync(join(dir, f)).mtime.getTime()
+          })).sort((a, b) => a.mtime - b.mtime);
+          const excess = files.length - MAX_FILES;
+          if (excess > 0) {
+            for (const f of files.slice(0, excess)) {
+              try {
+                unlinkSync(f.path);
+              } catch {
+              }
+            }
+          }
+        } catch {
+        }
+      }
+      write(chunk, cb) {
+        const len = Buffer.byteLength(chunk, "utf8");
+        if (this.size + len > MAX_FILE_SIZE) {
+          this.rotate();
+        }
+        this.size += len;
+        this.stream.write(chunk, cb);
+      }
+      end(cb) {
+        this.stream.end(cb);
+      }
+      // Expose for pino
+      get fd() {
+        return this.stream.fd ?? -1;
+      }
+    };
+    if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
+    rotatingStream = new RotatingFileStream(LOG_FILE_BASE);
+    logLevel = process.env.HAWK__LOGGING__LEVEL || process.env.HAWK_LOG_LEVEL || "info";
+    logger = pino({
+      level: logLevel,
+      formatters: {
+        level: (label) => ({ level: label })
+      },
+      timestamp: pino.stdTimeFunctions.isoTime
+    }, rotatingStream);
+    patchConsole();
+  }
+});
+
 // src/config/env.ts
 function printDeprecationWarnings() {
   if (deprecationWarningsPrinted) return;
   deprecationWarningsPrinted = true;
   for (const { var: v, message } of DEPRECATED_VARS) {
     if (process.env[v] !== void 0) {
-      console.warn(`[hawk-bridge] DEPRECATED: ${v} is deprecated. ${message}`);
+      logger.warn({ var: v }, `DEPRECATED: ${v} is deprecated. ${message}`);
     }
   }
 }
@@ -2806,6 +2937,7 @@ var DEPRECATED_VARS, deprecationWarningsPrinted;
 var init_env = __esm({
   "src/config/env.ts"() {
     "use strict";
+    init_logger();
     DEPRECATED_VARS = [
       { var: "OLLAMA_BASE_URL", message: "Use HAWK__EMBEDDING__BASE_URL instead" },
       { var: "OLLAMA_EMBED_MODEL", message: "Use HAWK__EMBEDDING__MODEL instead" },
@@ -2836,14 +2968,14 @@ __export(config_exports, {
   hasEmbeddingProvider: () => hasEmbeddingProvider,
   printConfigHistory: () => printConfigHistory
 });
-import * as fs from "fs";
+import * as fs2 from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as crypto from "crypto";
 function loadOpenClawConfig() {
   if (cachedOpenClawConfig) return cachedOpenClawConfig;
   try {
-    const raw = fs.readFileSync(OPENCLAW_CONFIG_PATH, "utf-8");
+    const raw = fs2.readFileSync(OPENCLAW_CONFIG_PATH, "utf-8");
     cachedOpenClawConfig = JSON.parse(raw);
     return cachedOpenClawConfig;
   } catch {
@@ -2853,7 +2985,7 @@ function loadOpenClawConfig() {
 function loadAgentModels() {
   if (cachedAgentModels !== null) return cachedAgentModels;
   try {
-    cachedAgentModels = JSON.parse(fs.readFileSync(OPENCLAW_AGENT_MODELS, "utf-8"));
+    cachedAgentModels = JSON.parse(fs2.readFileSync(OPENCLAW_AGENT_MODELS, "utf-8"));
     return cachedAgentModels;
   } catch {
     cachedAgentModels = null;
@@ -2895,9 +3027,9 @@ function resolveEnvVars(raw) {
 }
 function loadYamlConfig() {
   const yamlPath = path.join(HAWK_CONFIG_DIR, "config.yaml");
-  if (fs.existsSync(yamlPath)) {
+  if (fs2.existsSync(yamlPath)) {
     try {
-      const raw = fs.readFileSync(yamlPath, "utf-8");
+      const raw = fs2.readFileSync(yamlPath, "utf-8");
       const resolved = resolveEnvVars(raw);
       return load(resolved);
     } catch (e) {
@@ -2907,74 +3039,77 @@ function loadYamlConfig() {
   return {};
 }
 async function getConfig() {
+  if (cachedConfig) return cachedConfig;
   if (!configPromise) {
     configPromise = (async () => {
-      let config = { ...DEFAULT_CONFIG };
+      let config2 = { ...DEFAULT_CONFIG };
       const yamlConfig = loadYamlConfig();
       if (Object.keys(yamlConfig).length > 0) {
-        config = deepMerge(DEFAULT_CONFIG, yamlConfig);
+        config2 = deepMerge(DEFAULT_CONFIG, yamlConfig);
       }
       const envOverrides = getEnvOverrides();
       if (Object.keys(envOverrides).length > 0) {
-        config = deepMerge(config, envOverrides);
+        config2 = deepMerge(config2, envOverrides);
       }
-      const hasEmbedding = config.embedding?.provider || config.embedding?.apiKey || config.embedding?.baseURL;
+      const hasEmbedding = config2.embedding?.provider || config2.embedding?.apiKey || config2.embedding?.baseURL;
       if (!hasEmbedding) {
         if (process.env.OLLAMA_BASE_URL) {
-          config.embedding.provider = "ollama";
-          config.embedding.baseURL = process.env.OLLAMA_BASE_URL;
-          config.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
-          config.embedding.dimensions = parseInt(process.env.HAWK_EMBEDDING_DIM || "768", 10);
+          config2.embedding.provider = "ollama";
+          config2.embedding.baseURL = process.env.OLLAMA_BASE_URL;
+          config2.embedding.model = process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text";
+          config2.embedding.dimensions = parseInt(process.env.HAWK_EMBEDDING_DIM || "768", 10);
         } else {
           const openclawkKey = getAgentModelKey("minimax");
           if (openclawkKey?.apiKey) {
-            config.embedding.provider = "minimax";
-            config.embedding.apiKey = openclawkKey.apiKey;
-            config.embedding.baseURL = openclawkKey.baseUrl || "https://api.minimaxi.com/v1";
-            config.embedding.model = "text-embedding-v2";
-            config.embedding.dimensions = 1024;
+            config2.embedding.provider = "minimax";
+            config2.embedding.apiKey = openclawkKey.apiKey;
+            config2.embedding.baseURL = openclawkKey.baseUrl || "https://api.minimaxi.com/v1";
+            config2.embedding.model = "text-embedding-v2";
+            config2.embedding.dimensions = 1024;
           } else if (process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY) {
-            config.embedding.provider = "qianwen";
-            config.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || "";
-            config.embedding.baseURL = "https://dashscope.aliyuncs.com/api/v1";
-            config.embedding.model = "text-embedding-v1";
-            config.embedding.dimensions = 1024;
+            config2.embedding.provider = "qianwen";
+            config2.embedding.apiKey = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || "";
+            config2.embedding.baseURL = "https://dashscope.aliyuncs.com/api/v1";
+            config2.embedding.model = "text-embedding-v1";
+            config2.embedding.dimensions = 1024;
           } else if (process.env.JINA_API_KEY) {
-            config.embedding.provider = "jina";
-            config.embedding.apiKey = process.env.JINA_API_KEY;
-            config.embedding.baseURL = "";
-            config.embedding.model = "jina-embeddings-v5-small";
-            config.embedding.dimensions = 1024;
+            config2.embedding.provider = "jina";
+            config2.embedding.apiKey = process.env.JINA_API_KEY;
+            config2.embedding.baseURL = "";
+            config2.embedding.model = "jina-embeddings-v5-small";
+            config2.embedding.dimensions = 1024;
           } else if (process.env.OPENAI_API_KEY) {
-            config.embedding.provider = "openai";
-            config.embedding.apiKey = process.env.OPENAI_API_KEY;
-            config.embedding.baseURL = "";
-            config.embedding.model = "text-embedding-3-small";
-            config.embedding.dimensions = 1536;
+            config2.embedding.provider = "openai";
+            config2.embedding.apiKey = process.env.OPENAI_API_KEY;
+            config2.embedding.baseURL = "";
+            config2.embedding.model = "text-embedding-3-small";
+            config2.embedding.dimensions = 1536;
           } else if (process.env.COHERE_API_KEY) {
-            config.embedding.provider = "cohere";
-            config.embedding.apiKey = process.env.COHERE_API_KEY;
-            config.embedding.baseURL = "";
-            config.embedding.model = "embed-english-v3.0";
-            config.embedding.dimensions = 1024;
+            config2.embedding.provider = "cohere";
+            config2.embedding.apiKey = process.env.COHERE_API_KEY;
+            config2.embedding.baseURL = "";
+            config2.embedding.model = "embed-english-v3.0";
+            config2.embedding.dimensions = 1024;
           }
         }
       }
-      if (!config.llm.model || !config.llm.apiKey) {
+      if (!config2.llm.model || !config2.llm.apiKey) {
         const openclawkKey = getAgentModelKey("minimax");
         if (openclawkKey?.apiKey) {
-          config.llm = config.llm || {};
-          config.llm.model = config.llm.model || getDefaultModelId();
-          config.llm.apiKey = openclawkKey.apiKey;
-          config.llm.baseURL = config.llm.baseURL || openclawkKey.baseUrl || "";
-          config.llm.provider = config.llm.provider || "minimax";
+          config2.llm = config2.llm || {};
+          config2.llm.model = config2.llm.model || getDefaultModelId();
+          config2.llm.apiKey = openclawkKey.apiKey;
+          config2.llm.baseURL = config2.llm.baseURL || openclawkKey.baseUrl || "";
+          config2.llm.provider = config2.llm.provider || "minimax";
         }
       }
-      await recordConfigHistory(config);
-      return config;
+      await recordConfigHistory(config2);
+      return config2;
     })();
   }
-  return configPromise;
+  const config = await configPromise;
+  cachedConfig = config;
+  return config;
 }
 function hasEmbeddingProvider() {
   return !!(process.env.OLLAMA_BASE_URL || process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.JINA_API_KEY || process.env.OPENAI_API_KEY || process.env.COHERE_API_KEY || (process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_PROVIDER));
@@ -3010,8 +3145,8 @@ async function recordConfigHistory(config) {
       hash: crypto.createHash("md5").update(JSON.stringify(envSnapshot)).digest("hex")
     };
     let entries = [];
-    if (fs.existsSync(historyPath)) {
-      const raw = fs.readFileSync(historyPath, "utf-8");
+    if (fs2.existsSync(historyPath)) {
+      const raw = fs2.readFileSync(historyPath, "utf-8");
       entries = raw.trim().split("\n").filter(Boolean).map((line) => {
         try {
           return JSON.parse(line);
@@ -3023,19 +3158,19 @@ async function recordConfigHistory(config) {
     entries.push(entry);
     if (entries.length > 100) entries = entries.slice(-100);
     const dir = path.dirname(historyPath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(historyPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+    await fs2.promises.mkdir(dir, { recursive: true });
+    await fs2.promises.writeFile(historyPath, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
   } catch {
   }
 }
 function printConfigHistory(limit = 20) {
   const historyPath = path.join(HAWK_CONFIG_DIR, "config-history.jsonl");
-  if (!fs.existsSync(historyPath)) {
+  if (!fs2.existsSync(historyPath)) {
     console.log("No config history found.");
     return;
   }
   try {
-    const raw = fs.readFileSync(historyPath, "utf-8");
+    const raw = fs2.readFileSync(historyPath, "utf-8");
     const entries = raw.trim().split("\n").filter(Boolean).map((line) => {
       try {
         return JSON.parse(line);
@@ -3057,7 +3192,7 @@ function printConfigHistory(limit = 20) {
     console.error("Failed to read config history:", err.message);
   }
 }
-var OPENCLAW_CONFIG_PATH, OPENCLAW_AGENT_MODELS, HAWK_CONFIG_DIR, cachedOpenClawConfig, cachedAgentModels, DEFAULT_CONFIG, configPromise, HAWK_CONFIG_VERSION;
+var OPENCLAW_CONFIG_PATH, OPENCLAW_AGENT_MODELS, HAWK_CONFIG_DIR, cachedOpenClawConfig, cachedAgentModels, DEFAULT_CONFIG, configPromise, cachedConfig, HAWK_CONFIG_VERSION;
 var init_config = __esm({
   "src/config.ts"() {
     "use strict";
@@ -3112,6 +3247,7 @@ var init_config = __esm({
       }
     };
     configPromise = null;
+    cachedConfig = null;
     HAWK_CONFIG_VERSION = process.env.HAWK_CONFIG_VERSION || "1";
   }
 });
@@ -3124,135 +3260,11 @@ import * as os2 from "os";
 import { execSync } from "child_process";
 
 // src/embeddings.ts
+init_logger();
 import http from "http";
 import https from "https";
 import { URL } from "url";
 import { HttpsProxyAgent } from "https-proxy-agent";
-
-// src/logger.ts
-import pino from "pino";
-import fs2 from "fs";
-import { join as join2, dirname as dirname2 } from "path";
-import { existsSync as existsSync2, mkdirSync as mkdirSync2, unlinkSync, readdirSync, statSync } from "fs";
-import { homedir as homedir2 } from "os";
-var LOG_DIR = process.env.HAWK_LOG_DIR ?? join2(homedir2(), ".hawk", "logs");
-var LOG_FILE_BASE = join2(LOG_DIR, "hawk-bridge.log");
-var MAX_FILE_SIZE = parseInt(process.env.HAWK_LOG_MAX_SIZE ?? String(50 * 1024 * 1024), 10);
-var MAX_FILES = parseInt(process.env.HAWK_LOG_MAX_FILES ?? "14", 10);
-function getTimestamp() {
-  const now = /* @__PURE__ */ new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  const h = String(now.getHours()).padStart(2, "0");
-  const min = String(now.getMinutes()).padStart(2, "0");
-  const s = String(now.getSeconds()).padStart(2, "0");
-  return `${y}${m}${d}-${h}${min}${s}`;
-}
-var RotatingFileStream = class {
-  stream;
-  size = 0;
-  constructor(filePath) {
-    this.ensureDir(dirname2(filePath));
-    this.stream = this.openStream(filePath);
-  }
-  ensureDir(dir) {
-    if (!existsSync2(dir)) mkdirSync2(dir, { recursive: true });
-  }
-  openStream(filePath) {
-    const fd = existsSync2(filePath) ? void 0 : void 0;
-    const s = fs2.createWriteStream(filePath, { flags: "a", highWaterMark: 64 * 1024 });
-    if (existsSync2(filePath)) {
-      this.size = statSync(filePath).size;
-    }
-    return s;
-  }
-  rotate() {
-    this.stream.end();
-    const rotatedPath = `${LOG_FILE_BASE}.${getTimestamp()}.log`;
-    try {
-      const dir = dirname2(LOG_FILE_BASE);
-      if (existsSync2(LOG_FILE_BASE)) {
-        fs2.renameSync(LOG_FILE_BASE, rotatedPath);
-      }
-    } catch {
-    }
-    this.stream = this.openStream(LOG_FILE_BASE);
-    this.size = 0;
-    this.cleanupOldRotations();
-  }
-  cleanupOldRotations() {
-    try {
-      const dir = dirname2(LOG_FILE_BASE);
-      const base = basename(LOG_FILE_BASE);
-      const files = readdirSync(dir).filter((f) => f.startsWith(base + ".") && f.endsWith(".log")).map((f) => ({
-        name: f,
-        path: join2(dir, f),
-        mtime: statSync(join2(dir, f)).mtime.getTime()
-      })).sort((a, b) => a.mtime - b.mtime);
-      const excess = files.length - MAX_FILES;
-      if (excess > 0) {
-        for (const f of files.slice(0, excess)) {
-          try {
-            unlinkSync(f.path);
-          } catch {
-          }
-        }
-      }
-    } catch {
-    }
-  }
-  write(chunk, cb) {
-    const len = Buffer.byteLength(chunk, "utf8");
-    if (this.size + len > MAX_FILE_SIZE) {
-      this.rotate();
-    }
-    this.size += len;
-    this.stream.write(chunk, cb);
-  }
-  end(cb) {
-    this.stream.end(cb);
-  }
-  // Expose for pino
-  get fd() {
-    return this.stream.fd ?? -1;
-  }
-};
-function basename(p) {
-  return p.split("/").pop() ?? p;
-}
-if (!existsSync2(LOG_DIR)) mkdirSync2(LOG_DIR, { recursive: true });
-var rotatingStream = new RotatingFileStream(LOG_FILE_BASE);
-var logLevel = process.env.HAWK__LOGGING__LEVEL || process.env.HAWK_LOG_LEVEL || "info";
-var logger = pino({
-  level: logLevel,
-  formatters: {
-    level: (label) => ({ level: label })
-  },
-  timestamp: pino.stdTimeFunctions.isoTime
-}, rotatingStream);
-function patchConsole() {
-  if (process.env.NODE_ENV !== "production" && process.env.HAWK_STRICT_LOG !== "1") return;
-  const origError = console.error.bind(console);
-  const origWarn = console.warn.bind(console);
-  const origLog = console.log.bind(console);
-  console.error = (...args) => {
-    logger.error({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
-  };
-  console.warn = (...args) => {
-    logger.warn({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
-  };
-  console.log = (...args) => {
-    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
-  };
-  console.info = (...args) => {
-    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
-  };
-  console.debug = (...args) => {
-    logger.debug({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
-  };
-}
-patchConsole();
 
 // src/metrics.ts
 import { Registry, Counter, Histogram, Gauge } from "prom-client";
@@ -3706,6 +3718,7 @@ var Embedder = class _Embedder {
 };
 
 // src/cli/doctor.ts
+init_logger();
 var checks = [];
 function check(name, fn) {
   try {

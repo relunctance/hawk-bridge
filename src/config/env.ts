@@ -10,6 +10,7 @@
  */
 
 import type { HawkConfig } from '../types.js';
+import { logger } from '../logger.js';
 
 const DEPRECATED_VARS: Array<{ var: string; message: string }> = [
   { var: 'OLLAMA_BASE_URL', message: 'Use HAWK__EMBEDDING__BASE_URL instead' },
@@ -36,7 +37,7 @@ function printDeprecationWarnings(): void {
   deprecationWarningsPrinted = true;
   for (const { var: v, message } of DEPRECATED_VARS) {
     if (process.env[v] !== undefined) {
-      console.warn(`[hawk-bridge] DEPRECATED: ${v} is deprecated. ${message}`);
+      logger.warn({ var: v }, `DEPRECATED: ${v} is deprecated. ${message}`);
     }
   }
 }

@@ -90,8 +90,15 @@ async function checkDiskSpace(): Promise<boolean> {
 }
 
 async function healthCheck(): Promise<HealthCheckResult> {
-  const checks = { embedder: false, lancedb: false, disk: false };
-  let error: string | undefined;
+  const HEALTH_CHECK_TIMEOUT_MS = 10_000;
+
+  const timeoutPromise = new Promise<HealthCheckResult>((_, reject) =>
+    setTimeout(() => reject(new Error('health check timeout (10s)')), HEALTH_CHECK_TIMEOUT_MS)
+  );
+
+  const checkPromise = (async (): Promise<HealthCheckResult> => {
+    const checks = { embedder: false, lancedb: false, disk: false };
+    let error: string | undefined;
 
   // 1. Embedder (with circuit breaker)
   try {
@@ -148,11 +155,14 @@ async function healthCheck(): Promise<HealthCheckResult> {
   }
 
   const allOk = checks.embedder && checks.lancedb && checks.disk;
-  return {
-    status: allOk ? 'ok' : 'degraded',
-    checks,
-    error: allOk ? undefined : error,
-  };
+    return {
+      status: allOk ? 'ok' : 'degraded',
+      checks,
+      error: allOk ? undefined : error,
+    };
+  })();
+
+  return await Promise.race([checkPromise, timeoutPromise]);
 }
 
 function parseUrl(pathname: string): Record<string, string> {
@@ -189,6 +199,9 @@ function startMetricsServer(): void {
     const pathname = url.pathname;
     const queryParams = parseUrl(url.search);
     const start = Date.now();
+    // Trace request ID: use client-supplied header or generate one
+    const requestId = (req.headers['x-request-id'] as string) || `hawk-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    res.setHeader('X-Request-ID', requestId);
 
     // ─── Auth gate for /metrics ───────────────────────────────────────────────
     if (pathname === '/metrics' && METRICS_TOKEN) {
@@ -244,7 +257,7 @@ function startMetricsServer(): void {
   });
 
   server.listen(METRICS_PORT, '127.0.0.1', () => {
-    logger.info({ port: METRICS_PORT }, '[hawk-bridge] Metrics server listening on http://127.0.0.1:{port}');
+    logger.info({ port: METRICS_PORT }, `[hawk-bridge] Metrics server listening on http://127.0.0.1:${METRICS_PORT}`);
     logger.info('[hawk-bridge]   /health  — health check (embedder + lancedb + disk)');
     logger.info('[hawk-bridge]   /metrics — Prometheus scrape endpoint');
     if (METRICS_TOKEN) logger.info('[hawk-bridge]   /metrics auth enabled (HAWK_METRICS_TOKEN)');

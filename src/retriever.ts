@@ -7,8 +7,9 @@
  */
 
 import { HawkDB } from './lancedb.js';
-import { Embedder } from './embeddings.js';
+import { Embedder, fetchWithRetry } from './embeddings.js';
 import { hasEmbeddingProvider } from './config.js';
+import { logger } from './logger.js';
 import {
   RRF_K, RRF_VECTOR_WEIGHT,
   NOISE_SIMILARITY_THRESHOLD,
@@ -32,7 +33,7 @@ export class HybridRetriever {
 
   async buildNoisePrototypes(): Promise<void> {
     if (!hasEmbeddingProvider()) {
-      console.log('[hawk-bridge] No embedding provider, skipping noise prototypes');
+      logger.info('No embedding provider, skipping noise prototypes');
       return;
     }
 
@@ -47,7 +48,7 @@ export class HybridRetriever {
         this.noisePrototypes = await this.embedder.embed(noiseTexts);
       }
     } catch (e) {
-      console.warn('[hawk-bridge] Noise prototype embedding failed, noise filter disabled:', (e as Error).message);
+      logger.warn({ err: (e as Error).message }, 'Noise prototype embedding failed, noise filter disabled');
     }
   }
 
@@ -105,7 +106,7 @@ export class HybridRetriever {
       async () => {
         const apiKey = process.env.JINA_RERANKER_API_KEY;
         if (!apiKey) return null;
-        const resp = await fetch('https://api.jina.ai/v1/rerank', {
+        const resp = await fetchWithRetry('https://api.jina.ai/v1/rerank', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
           body: JSON.stringify({
@@ -127,7 +128,7 @@ export class HybridRetriever {
       async () => {
         const apiKey = process.env.COHERE_API_KEY || process.env.COHERE_RERANK_API_KEY;
         if (!apiKey) return null;
-        const resp = await fetch('https://api.cohere.ai/v1/rerank', {
+        const resp = await fetchWithRetry('https://api.cohere.ai/v1/rerank', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
           body: JSON.stringify({
@@ -150,7 +151,7 @@ export class HybridRetriever {
       async () => {
         const apiKey = process.env.MIXTBREAD_API_KEY || process.env.MIXEDBREAD_API_KEY;
         if (!apiKey) return null;
-        const resp = await fetch('https://api.mixedbread.ai/v1/rerank', {
+        const resp = await fetchWithRetry('https://api.mixedbread.ai/v1/rerank', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
           body: JSON.stringify({
@@ -257,12 +258,12 @@ export class HybridRetriever {
 
         return results;
       } catch (err) {
-        console.warn('[hawk-bridge] Vector search failed, falling back to FTS-only:', err);
+        logger.warn({ err }, 'Vector search failed, falling back to FTS-only');
       }
     }
 
     // Fallback: pure FTS search via LanceDB (no embedding needed)
-    console.log('[hawk-bridge] Running in FTS-only mode (LanceDB native full-text search)');
+    logger.info('Running in FTS-only mode (LanceDB native full-text search)');
     try {
       const ftsResults = await this.db.ftsSearch(query, topK * 3, scope, sourceTypes, platform);
       const idToScore = new Map(ftsResults.map(r => [r.id, r.score]));
@@ -286,7 +287,7 @@ export class HybridRetriever {
       }
       return results;
     } catch (err) {
-      console.error('[hawk-bridge] FTS search failed:', err);
+      logger.error({ err }, 'FTS search failed');
       return [];
     }
   }
