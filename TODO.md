@@ -910,6 +910,415 @@ interface ProactiveSuggestion {
 
 ---
 
+## 🔌 生态与集成层（Provider 抽象）
+
+> 新增 — 2026-04-19
+> 功能完整后，要成为行业顶级，必须开放生态接入
+
+### [ ] 47. Embedding Provider 抽象层
+**现状**：bge-m3 via xinference 硬编码，换模型要改代码
+
+**问题**：
+- 用户用 OpenAI/Cohere/Vertex AI embedding → 无法切换
+- 新 embedding model 发布 → 需要等 hawk-bridge 官方适配
+- 无法对比不同 embedding 在自己场景的效果
+
+**实现方向**：
+```typescript
+interface EmbeddingProvider {
+  name(): string;
+  embed(texts: string[]): Promise<number[][]>;
+  dimensions(): number;
+  maxBatchSize(): number;
+}
+
+// 内置实现
+class BgeM3Provider implements EmbeddingProvider { ... }  // 当前
+class OpenAIProvider implements EmbeddingProvider { ... }  // 新增
+class CohereProvider implements EmbeddingProvider { ... }  // 新增
+class LocalProvider implements EmbeddingProvider { ... }   // 新增（llama.cpp embeddings）
+```
+
+**配置方式**：
+```yaml
+embedding:
+  provider: "openai"  # 切换 provider
+  model: "text-embedding-3-small"
+  api_key: "${OPENAI_API_KEY}"
+```
+
+**状态**：❌ 未实现
+
+**版本目标**：v2.0
+
+---
+
+### [ ] 48. VectorStore Provider 抽象层
+**现状**：hardcoded LanceDB，换向量库要重写
+
+**问题**：
+- 用户已有 Qdrant/Pinecone/Weaviate → 无法复用
+- LanceDB 适合本地，但云端/分布式场景弱
+- 无法对比不同向量库在自己场景的 recall/speed/cost
+
+**实现方向**：
+```typescript
+interface VectorStore {
+  insert(records: MemoryRecord[]): Promise<void>;
+  search(query: number[], topK: number): Promise<SearchResult[]>;
+  delete(ids: string[]): Promise<void>;
+  update(ids: string[], records: MemoryRecord[]): Promise<void>;
+}
+
+// 内置实现
+class LanceDBStore implements VectorStore { ... }   // 当前
+class QdrantStore implements VectorStore { ... }    // 新增
+class PineconeStore implements VectorStore { ... }  // 新增
+class ChromaStore implements VectorStore { ... }    // 新增
+```
+
+**配置方式**：
+```yaml
+vectorstore:
+  provider: "lancedb"
+  lancedb:
+    path: "~/.hawk/memory.lancedb"
+  qdrant:
+    url: "http://localhost:6333"
+    collection: "hawk-memory"
+```
+
+**前置依赖**：Embedding Provider 抽象 (#47)
+
+**状态**：❌ 未实现
+
+**版本目标**：v2.0
+
+---
+
+### [ ] 49. 多语言 SDK（TypeScript + Go）
+**现状**：只有 HTTP API + Python SDK
+
+**问题**：
+- TypeScript/JS Agent（占 40%+）无法方便接入
+- Go Agent 无法方便接入
+- 没有 SDK → 只能用 raw HTTP，割裂感强
+- 没有 Playground Web UI → 开发者无法可视化调试
+
+**实现方向**：
+```
+hawk-bridge-sdk/
+├── typescript/           # @hawk-bridge/sdk
+│   ├── src/index.ts     # 核心客户端
+│   ├── src/recall.ts
+│   ├── src/capture.ts
+│   └── src/types.ts
+├── go/                  # github.com/hawk-bridge/go-sdk
+│   ├── client.go
+│   ├── recall.go
+│   └── capture.go
+└── playground/          # Web 调试界面
+    ├── index.html       # 单页调试工具
+    └── src/            # React 项目
+```
+
+**状态**：❌ 未实现
+
+**版本目标**：v2.1（TS SDK + Playground）→ v2.2（Go SDK）
+
+---
+
+## 🏗️ 存储与架构层
+
+### [ ] 50. 多租户 Storage Quota + Rate Limit
+**现状**：session_id 字段存在，但没有真正的 tenant 隔离
+
+**问题**：
+- 恶意/错误配置的 tenant 可以写满磁盘
+- 没有 tenant 级别的 rate limit，可以压垮服务
+- 无法给不同 tenant 分配不同的资源配额
+
+**实现方向**：
+```typescript
+interface TenantQuota {
+  tenant_id: string;
+  storage_limit_mb: number;       // 存储限额
+  recall_per_minute: number;      // recall 限流
+  capture_per_minute: number;     // capture 限流
+  storage_used_mb: number;        // 当前使用量
+}
+
+// quota exceeded → 返回 429 + 友好错误
+// 写入时检查 storage_limit_mb，超限拒绝
+// 读取时检查 rate limit，超限排队
+```
+
+**状态**：❌ 未实现
+
+**版本目标**：v2.4
+
+---
+
+### [ ] 51. 跨设备 Sync 同步协议
+**现状**：单实例部署，多设备记忆各自为政
+
+**问题**：
+- 用户在 Laptop + Desktop + Server 多设备工作
+- 三台机器的记忆不同步，割裂感极强
+- 实际场景这是高频需求
+
+**实现方向**：
+```typescript
+// 冲突解决策略：CRDT-like last-write-wins + 版本链
+interface SyncRecord {
+  memory_id: string;
+  device_id: string;
+  local_mtime: number;
+  content_hash: string;
+  operation: "upsert" | "delete";
+}
+
+interface SyncProtocol {
+  // 设备注册
+  registerDevice(device: Device): Promise<DeviceToken>;
+
+  // 拉取远端变更（自上次同步以来）
+  pullChanges(since: number): Promise<SyncRecord[]>;
+
+  // 推送本地变更
+  pushChanges(records: SyncRecord[]): Promise<SyncConflict[]>;
+
+  // 冲突处理：同一 memory_id 在多设备被同时修改
+  // → 保留最新（按 mtime）+ 保留旧版本到 version_history
+  resolveConflict(conflict: SyncConflict): SyncResolution;
+}
+```
+
+**同步传输**：可选 GitHub Gist（免费）/ S3 / 自建 rsync
+
+**状态**：❌ 未实现
+
+**版本目标**：v2.5
+
+---
+
+## 🔒 安全与合规层
+
+### [ ] 52. 记忆加密层 + Right-to-Erasure
+**现状**：记忆明文存储，无加密层
+
+**问题**：
+- GDPR/个人信息保护：用户要求删除某条记忆 → 没有 delete API
+- 敏感记忆（密码/key/个人隐私）无加密
+- 磁盘丢失则记忆泄露
+
+**实现方向**：
+```typescript
+// 加密层：AES-256-GCM per-memory 加密
+interface EncryptedMemory {
+  id: string;
+  ciphertext: Buffer;       // 加密后的内容
+  nonce: Buffer;           // 随机 nonce
+  tenant_key_id: string;   // 租户的密钥 ID
+  // 内容不可读，除非持有对应密钥
+}
+
+// Right-to-Erasure
+// DELETE /api/v1/memories/{id}
+// → 永久删除，包括所有备份和归档
+// → 返回 deletion_certificate（合规用）
+```
+
+**合规支持**：
+- GDPR Article 17：Right to Erasure（被遗忘权）
+- 敏感字段打标签 `privacy: ["sensitive"]`，recall 时自动过滤
+- 删除证书：记录删除时间戳 + 操作者 + 删除范围
+
+**状态**：❌ 未实现
+
+**版本目标**：v2.4
+
+---
+
+### [ ] 53. 商业化基础设施（API Key + Quota + Metering）
+**现状**：纯技术组件，没有商业模式设计
+
+**问题**：
+- 无法给企业客户提供 API Key + Quota 控制
+- 无法追踪 per-customer 使用量
+- 无法提供 SLA
+- hawk-bridge 官方无法提供 cloud-hosted 版本
+
+**实现方向**：
+```typescript
+// API Key Management
+interface ApiKey {
+  key_id: string;           // hawk_live_xxx 前缀（可识别）
+  secret_hash: string;       // bcrypt 哈希存储
+  tenant_id: string;
+  scopes: ("recall" | "capture" | "admin")[];
+  created_at: number;
+  last_used_at: number;
+}
+
+// Usage Metering
+interface UsageRecord {
+  tenant_id: string;
+  api_key_id: string;
+  endpoint: string;        // /recall, /capture 等
+  tokens_used: number;     // 计入 quota
+  timestamp: number;
+}
+
+// Quota 控制
+// → 请求前检查 quota remaining
+// → 超出返回 429 + quota reset date
+// → 管理员可配置 per-key quota
+```
+
+**Status API**：
+```json
+GET /api/v1/status
+{
+  "quota": {
+    "limit": 1000000,
+    "used": 324521,
+    "remaining": 675479,
+    "resets_at": "2026-05-01T00:00:00Z"
+  }
+}
+```
+
+**状态**：❌ 未实现
+
+**版本目标**：v2.6
+
+---
+
+## 🧠 认知架构层（更深层的重构）
+
+### [ ] 54. Event vs Concept 区分（事件与概念分离）
+**现状**：所有记忆都是文本块，事件和概念混在一起
+
+**问题**：
+- recall 返回一锅粥：历史事件 vs 当前事实 vs 永久概念 混在一起
+- 无法区分"历史上发生了什么"和"当前项目架构是什么"
+- 模型无法判断这条记忆是"时态性的"还是"静态的"
+
+**实现方向**：
+```typescript
+type MemoryKind = "event" | "concept" | "fact" | "preference";
+
+// Event（事件）：有时序性的历史记录
+interface EventMemory {
+  kind: "event";
+  what_happened: string;      // "用户把 API 密钥轮换了"
+  participants: string[];      // ["user:ou_xxx", "api_key:id_xxx"]
+  occurred_at: number;        // 事件发生时间
+  outcome: string;            // "新密钥已生成，旧密钥已撤销"
+  superseded_by?: string;     // 被哪个新事件替代
+}
+
+// Concept（概念）：跨越时间存在，可被引用
+interface ConceptMemory {
+  kind: "concept";
+  name: string;               // "hawk-bridge 架构设计"
+  description: string;
+  stability: "stable" | "evolving" | "deprecated";
+  version_history: string[];  // 历次版本的内容 ID
+}
+```
+
+**capture 时的 LLM 推断**：
+- 包含时间词（"when" / "last week" / "轮换"）→ Event
+- 包含定义描述（"is a" / "是指" / "规范"）→ Concept
+- 包含观点表达（"I prefer" / "我喜欢"）→ Preference
+
+**状态**：❌ 未实现
+
+**版本目标**：v2.3
+
+---
+
+### [ ] 55. 记忆版本历史链（Version History）
+**现状**：记忆更新时旧版本丢失，无法追溯
+
+**问题**：
+- 同一记忆被改了 10 次 → 不知道每次改了什么
+- Drift Detector (#30) 发现内容漂移，但无法回滚到旧版本
+- 审计时无法证明"这条记忆在 X 时间点是什么内容"
+
+**实现方向**：
+```typescript
+interface MemoryVersion {
+  version_id: string;
+  memory_id: string;
+  content: string;
+  content_hash: string;       // SHA-256，用于去重
+  created_at: number;
+  created_by: string;        // session_id 或 "user" 或 "drift_correction"
+  change_reason?: string;    // "用户修正" / "LLM 更新" / "drift 修正"
+  superseded: boolean;        // 是否有更新的版本取代了这个
+}
+
+// 版本链
+// current_version_id → 指向当前版本
+// 每个版本知道上一个版本的 version_id
+```
+
+**API**：
+```
+GET /api/v1/memories/{id}/versions     // 查看版本历史
+GET /api/v1/memories/{id}/versions/{vid}  // 获取特定版本内容
+POST /api/v1/memories/{id}/rollback/{vid}  // 回滚到指定版本
+```
+
+**状态**：❌ 未实现
+
+**前置依赖**：Drift Detector (#30)
+
+**版本目标**：v2.4
+
+---
+
+### [ ] 56. 记忆质量反馈闭环（Recall Quality Feedback）
+**现状**：只有 access_count（纯次数），不看"召回后用户觉得有没有用"
+
+**问题**：
+- 系统不知道哪些记忆"召回后真的帮上忙了"
+- 只能按 access_count 排序，但高频访问 ≠ 高价值
+- 无法区分"被访问了但没用"和"被访问了且有用"
+
+**实现方向**：
+```typescript
+// recall 质量反馈
+interface RecallFeedback {
+  memory_id: string;
+  session_id: string;
+  recall_context: string;     // "用户问了什么导致这条被召回"
+  usefulness: "helpful" | "neutral" | "misleading" | "wrong";
+  actual_action?: string;     // "用户基于这条记忆做了什么"
+  feedback_source: "explicit" | "implicit";  // 显式评分 vs 隐式行为推断
+}
+
+// 隐式反馈推断
+// → recall 后用户继续追问同类问题 → helpful
+// → recall 后用户说"不是这个" → misleading
+// → recall 后立刻换 query → neutral/wrong
+
+// recall ranking 调整
+// → 记忆的 usefulness_score = Σ(feedback_weight) / total_recalls
+// → ranking 时综合：vector_similarity * 0.4 + usefulness_score * 0.3 + recency * 0.2 + importance * 0.1
+```
+
+**对 autoself 的价值**：soul-force 分析"哪类记忆最有用"，决定应该多存什么类型的记忆
+
+**状态**：❌ 未实现
+
+**版本目标**：v2.3
+
+---
+
 ## 🟢 低优先级 — 已完成
 
 | 功能 | 版本 | 状态 |
@@ -1056,20 +1465,59 @@ interface ProactiveSuggestion {
 | Skill Auto-Creation（#38） | 同一 pattern ≥3 次自动创建 skill |
 | Skills Hub 兼容（#42） | agentskills.io 标准兼容 |
 
+### v2.8 — 生态与集成
+
+| 功能 | 内容 |
+|------|------|
+| **Embedding Provider 抽象（#47）** | OpenAI/Cohere/Local 可切换 |
+| **VectorStore Provider 抽象（#48）** | LanceDB/Qdrant/Pinecone 可切换 |
+| Event vs Concept 区分（#54） | 事件与概念分离存储 |
+
+### v2.9 — 认知架构
+
+| 功能 | 内容 |
+|------|------|
+| **记忆质量反馈闭环（#56）** | recall 有用性追踪，调整 ranking |
+| 记忆版本历史（#55） | 版本链保留，支持回滚 |
+| 跨设备 Sync（#51） | 多设备记忆同步 |
+
+### v3.0 — 企业级 + 安全合规
+
+| 功能 | 内容 |
+|------|------|
+| 多租户 Quota + Rate Limit（#50） | 存储限额 + per-tenant 限流 |
+| 记忆加密层（#52） | AES-256-GCM + Right-to-Erasure |
+| 商业化基础设施（#53） | API Key + Quota + Metering |
+
+### v3.1 — 多语言生态
+
+| 功能 | 内容 |
+|------|------|
+| **TypeScript SDK + Playground（#49）** | JS/TS Agent 方便接入 |
+| Go SDK（#49） | Go Agent 方便接入 |
+
 ---
 
-## 📊 行业突破功能 vs 竞品对比
+## 📊 完整竞品对比
 
-| 功能 | Mem0 | Notion AI | Copilot | hawk-bridge |
-|------|------|-----------|---------|-------------|
-| 向量+RAG 检索 | ✅ | ✅ | ✅ | ✅（BM25+ANN+RRF） |
-| 多租户隔离 | ✅ | ❌ | ❌ | ❌（规划中 #39） |
-| 记忆验证 | ❌ | ❌ | ❌ | ❌（#44 规划） |
-| 知识图谱关系 | ❌ | ❌ | ❌ | ❌（#45 规划） |
-| 主动推送 | ❌ | ❌ | ❌ | ❌（#46 规划） |
-| 冷存储归档 | ❌ | ❌ | ❌ | ❌（#DARK 规划） |
-| 多 Agent 联邦 | ❌ | ❌ | ❌ | ❌（#Connector 规划） |
+| 功能 | Mem0 | Notion AI | Copilot | hawk-bridge（规划） |
+|------|------|-----------|---------|---------------------|
+| 向量+RAG 检索 | ✅ | ✅ | ✅ | ✅ |
+| 多租户隔离 | ✅ | ❌ | ❌ | ❌（#50 v3.0） |
+| 记忆验证 | ❌ | ❌ | ❌ | ❌（#44 v2.2） |
+| 知识图谱关系 | ❌ | ❌ | ❌ | ❌（#45 v2.0） |
+| 主动推送 | ❌ | ❌ | ❌ | ❌（#46 v2.4） |
+| 冷存储归档 | ❌ | ❌ | ❌ | ❌（v2.1） |
+| 多 Agent 联邦 | ❌ | ❌ | ❌ | ❌（v2.6） |
+| **Event vs Concept 区分** | ❌ | ❌ | ❌ | ❌（#54 v2.8） |
+| **记忆质量反馈闭环** | ❌ | ❌ | ❌ | ❌（#56 v2.8） |
+| **版本历史链** | ❌ | ❌ | ❌ | ❌（#55 v2.9） |
+| **跨设备同步** | ❌ | ❌ | ❌ | ❌（#51 v2.9） |
+| **加密 + 被遗忘权** | ❌ | ❌ | ❌ | ❌（#52 v3.0） |
+| **API Key + Quota** | ❌ | ❌ | ❌ | ❌（#53 v3.0） |
+| **TypeScript SDK** | ❌ | ❌ | ❌ | ❌（#49 v3.1） |
+| **多向量库抽象** | ❌ | ❌ | ❌ | ❌（#48 v2.8） |
 
-**结论**：记忆验证 + 知识图谱 + 主动推送 是行业空白，hawk-bridge 有机会率先建立标准。
+**结论**：记忆验证 + 知识图谱 + 主动推送 + Event/Concept 区分 + 质量反馈 是行业空白，hawk-bridge 有机会率先建立标准。
 
 ---
