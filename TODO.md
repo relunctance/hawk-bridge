@@ -1319,6 +1319,186 @@ interface RecallFeedback {
 
 ---
 
+## 📈 价值评估层（Memory ROI + 元认知）
+
+> 新增 — 2026-04-19
+> 56 项功能全实现后，仍有 3 个根本性架构层面的差距
+
+### [ ] 57. Memory ROI 量化评估体系
+**问题**：我们能追踪 access_count、recall 次数，但无法回答：
+
+> "hawk-bridge 帮我减少了多少 token 消耗？"
+> "记忆让任务完成时间缩短了多少？"
+> "存这条记忆 vs 不存，任务成功率差多少？"
+
+**现状**：没有记忆系统的价值评估体系，无法证明系统本身有价值。
+
+**实现方向**：
+```typescript
+// 记忆对任务的实际价值追踪
+interface MemoryValueMetrics {
+  memory_id: string;
+
+  // 记忆对这个任务有没有帮助？
+  task_id: string;
+  task_outcome: "success" | "partial" | "failure";
+  task_duration_seconds: number;
+  token_saved: number;           // 因为记忆省了多少 token
+  context_hit: boolean;           // 记忆是否真的被用上了
+
+  // 跨任务统计
+  total_recalls: number;         // 累计被召回次数
+  true_positive_rate: number;    // 召回后真的用上的比率
+  false_positive_rate: number;   // 召回了但没用的比率
+  value_score: number;           // 综合价值分数
+}
+
+// API
+GET /api/v1/metrics/roi          // 整体 ROI 报表
+GET /api/v1/metrics/memory/{id}  // 单条记忆的价值数据
+GET /api/v1/metrics/summary      // Token节省/任务改善/使用率统计
+```
+
+**量化指标**：
+- `token_saved`: recall 这条记忆后，省了多少 token（因为不需要重新解释背景）
+- `task_success_delta`: 有这条记忆 vs 没有，任务成功率差多少
+- `time_saved`: 因为记忆，提前了多少时间找到答案
+
+**对 autoself 价值**：量化 soul-force 进化后的实际效果
+
+**状态**：❌ 未实现
+
+**版本目标**：v3.2
+
+---
+
+### [ ] 58. 元认知自我调优（Meta-Cognition Tuning）
+**问题**：所有参数都是人工调的，系统不会从历史数据中学习
+
+**现状**：
+```
+capture → 固定阈值
+recall → 固定 ranking 公式（vector_similarity * 0.7 + importance * 0.3）
+decay → 固定 30 天 TTL
+```
+
+**真正的智能记忆系统应该能自我优化**：
+```
+系统发现：最近 100 次 recall 中，有 30 次用户说"不是这个"
+系统分析：这 30 次的共同特征
+  → embedding model 需要调参？
+  → 关键词权重太低？
+  → 这类记忆应该用什么类别标签？
+系统行动：
+  → 自动调整 recall ranking 权重
+  → 自动给这类记忆打新标签
+  → 自动调整某个 category 的写入阈值
+```
+
+**实现方向**：
+```typescript
+// RL-based Ranking Tuning
+interface TuningFeedback {
+  recall_id: string;
+  query: string;
+  retrieved_memory_ids: string[];
+  user_satisfaction: "helpful" | "neutral" | "misleading";
+  session_id: string;
+}
+
+// 收集反馈数据，训练 lightweight RL model
+// 调整 ranking 权重参数
+// A/B testing 不同配置效果
+
+// Self-Tuning Pipeline
+class MemorySelfTuner {
+  collectFeedback(feedback: TuningFeedback[]): void;
+  analyzePatterns(): TuningRecommendation[];
+  applyTuning(recommendation: TuningRecommendation): void;
+  rollback(): void;  // 效果不好就回滚
+}
+```
+
+**对 autoself 价值**：系统从历史中学习，自动优化自己的记忆策略
+
+**状态**：❌ 未实现
+
+**前置依赖**：Memory ROI (#57)、Memory Quality Feedback (#56)
+
+**版本目标**：v3.3
+
+---
+
+### [ ] 59. Multi-Agent 视角感知记忆（Perspective-Aware Memory）
+**问题**：当前 shared storage 模型强制合并不同观点，丢失了"观点多样性"
+
+**现状**：
+```
+wukong 对"这个API设计"有自己的理解
+bajie 对同一个API有不同的理解（因为看到的是不同代码）
+tangseng-brain 需要知道"两个 Agent 的理解有分歧"
+
+当前 shared storage 模型：
+→ A 和 B 的不同观点被强制合并成一条记忆
+→ 丢失了"观点多样性"这个关键信息
+```
+
+**实现方向**：
+```typescript
+// 而不是当前的"合并"模型
+interface PerspectiveMemory {
+  memory_id: string;
+
+  // 这条记忆是哪个 agent 的视角
+  primary_agent_id: string;      // 主视角 agent
+
+  // 团队中其他 agent 对这条记忆的认同程度
+  agreement_map: Record<string, number>;  // agent_id → agreement_level (0-1)
+
+  // 是否有分歧
+  contested: boolean;             // 是否有 agent 不同意
+  contested_by?: string[];        // 不同意的 agent 列表
+
+  // 合并后的共识版本（供主 agent 参考）
+  consensus_content?: string;      // 共识版本（如果 contested=true）
+}
+
+// capture 时记录视角
+POST /api/v1/capture
+{
+  "content": "这个API设计有问题",
+  "perspective_agent_id": "wukong",
+  "team_id": "hawk-bridge-backend"
+}
+
+// recall 时返回视角信息
+GET /api/v1/recall?query=API设计
+{
+  "memories": [...],
+  "perspectives": {
+    "wukong": { "agreement": 1.0, "content": "..." },
+    "bajie": { "agreement": 0.3, "content": "这个设计没问题" }
+  },
+  "contested": true  // 告知主 agent：这个话题有分歧
+}
+```
+
+**recall 时的额外返回**：
+```json
+{
+  "contested": true,
+  "contestants": ["wukong", "bajie"],
+  "consensus_strength": 0.4,
+  "suggestion": "主 agent 应该在决策前调解这个分歧"
+}
+```
+
+**状态**：❌ 未实现
+
+**版本目标**：v2.6（Multi-Agent 企业级部分）
+
+---
+
 ## 🟢 低优先级 — 已完成
 
 | 功能 | 版本 | 状态 |
@@ -1496,6 +1676,21 @@ interface RecallFeedback {
 | **TypeScript SDK + Playground（#49）** | JS/TS Agent 方便接入 |
 | Go SDK（#49） | Go Agent 方便接入 |
 
+### v3.2 — 价值评估
+
+| 功能 | 内容 |
+|------|------|
+| **Memory ROI 量化评估（#57）** | token节省/任务改善/使用率统计 |
+| 量化指标仪表盘 | 整体 ROI 报表 + 单条记忆价值数据 |
+
+### v3.3 — 元认知智能
+
+| 功能 | 内容 |
+|------|------|
+| **元认知自我调优（#58）** | RL-based ranking 参数自动优化 |
+| A/B Testing 框架 | 不同配置效果对比实验 |
+| 自适应阈值调整 | 系统自动学习最优参数 |
+
 ---
 
 ## 📊 完整竞品对比
@@ -1517,7 +1712,20 @@ interface RecallFeedback {
 | **API Key + Quota** | ❌ | ❌ | ❌ | ❌（#53 v3.0） |
 | **TypeScript SDK** | ❌ | ❌ | ❌ | ❌（#49 v3.1） |
 | **多向量库抽象** | ❌ | ❌ | ❌ | ❌（#48 v2.8） |
+| **Memory ROI 量化** | ❌ | ❌ | ❌ | ❌（#57 v3.2） |
+| **元认知自我调优** | ❌ | ❌ | ❌ | ❌（#58 v3.3） |
+| **Multi-Agent 视角感知** | ❌ | ❌ | ❌ | ❌（#59 v2.6） |
 
-**结论**：记忆验证 + 知识图谱 + 主动推送 + Event/Concept 区分 + 质量反馈 是行业空白，hawk-bridge 有机会率先建立标准。
+**结论**：记忆验证 + 知识图谱 + 主动推送 + Event/Concept 区分 + 质量反馈 + ROI量化 + 元认知调优 + 视角感知 是行业空白，hawk-bridge 有机会率先建立标准。
+
+---
+
+## 🚀 终极愿景
+
+> 即使 59 项全实现，仍有 2 个需要范式转变的根本问题：
+> 1. **形式化理论根基**：需要借鉴认知科学/信息论/因果推理的成熟理论
+> 2. **存储引擎架构**：需要统一的向量+图+时序混合存储引擎
+>
+> 这两个问题超出当前版本规划，需要长期研究投入。
 
 ---
