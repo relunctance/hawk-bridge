@@ -728,6 +728,51 @@ interface MemoryStore {
 
 ---
 
+### [ ] 42. Skills Hub 兼容层
+**来源：Hermes Skills Hub — agentskills.io 兼容技能市场**
+
+Hermes 的 Skills 支持：
+- YAML frontmatter（name/description/platforms/tags）
+- agentskills.io 开放标准
+- `prerequisites.env_vars` / `prerequisites.commands` 依赖声明
+- 平台过滤（`platforms: [linux, macos]`）
+- 安装计数 / 评分
+
+**对 autoself 价值**：hawk-bridge 将来作为 Skill 执行环境，需要兼容 Hermes 的技能格式。
+
+**实现方向**：
+- hawk-bridge 的 skills 目录支持 `SKILL.md` + frontmatter 标准
+- 提供 `hawk skills list` / `hawk skills install` 命令
+
+**前置依赖**：Skill Auto-Creation
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 43. 增强的 Health Alerting（健康告警分级）
+**来源：Hermes system-health-monitor**
+
+**当前**：hawk-bridge health check 返回 `degraded` 但不通知
+
+**Hermes 启示**：system-health-monitor 应该能根据健康状态触发不同动作：
+- P0 告警（服务不可用）
+- P1 巡检（部分降级）
+- P2 记录（日志记录）
+
+**实现方向**：
+```typescript
+interface HealthAlert {
+  severity: "P0" | "P1" | "P2";
+  target: string;
+  action: "notify" | "inspect" | "log";
+}
+```
+
+**状态**：🟢 增强，已有基础
+
+---
+
 ## 🟢 低优先级 — 已完成
 
 | 功能 | 版本 | 状态 |
