@@ -472,6 +472,262 @@ L6 宪法编辑器 Skill。接收 L5 soul-force 的进化建议，
 
 ---
 
+## 🛡️ 幻觉防护体系（Anti-Hallucination）
+
+> 新增 — 2026-04-19（从旧版 commit 45d9304 恢复）
+
+### [ ] 24. Confidence-Gated Recall（置信度过滤召回）
+**问题**：低置信度/高幻觉风险记忆被召回当成真实信息使用
+
+**实现方向**：recall 时默认排除 risk_score > 0.6 的记忆；结果附带风险警告标签（⚠️高风险/🟡中风险/✅低风险），提示 LLM 使用前验证
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 25. LLM Self-Verification Hook（写入前二次验证）
+**问题**：没有机制让 LLM 在写入前验证内容准确性
+
+**实现方向**：高风险记忆（risk_score > 0.5）写入前触发 LLM 二次验证，要求检查事实性错误、数字/日期/名字是否可验证，返回 verified + issues
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 26. Factuality Classification（事实性分类）
+**问题**：事实性内容（必须准确）和观点性内容（可以主观）混在一起，无区别处理
+
+**实现方向**：记忆写入时分类为 factual/inferential/opinion/preference 四类；factual 类要求更高验证标准，opinion 类低风险不做严格校验
+
+**状态**：❌ 未实现
+
+---
+
+## 🛡️ 记忆污染防御体系（Memory Contamination Defense）
+
+> 新增 — 2026-04-19（从旧版 commit d76bed8 恢复）
+
+### 污染分类
+
+| 类型 | 描述 | 根因 |
+|------|------|------|
+| **输入污染** | 脏数据直接写入记忆 | 无写入校验 |
+| **幻觉锚定** | LLM 编造内容写入记忆 | confidence 太低却写入 |
+| **上下文泄漏** | A session 内容进入 B session | session_id 隔离不完整 |
+| **级联覆盖** | 旧/错数据覆盖新/正确数据 | 无版本控制 |
+| **注入攻击** | prompt injection 写入脏数据 | 无输入净化 |
+
+---
+
+### [ ] 27. Audit Log（写入审计）
+**问题**：无写入追溯，污染后无法定位源头
+
+**实现方向**：每次 write/update/delete 都记审计日志到 `~/.hawk/audit.db`，记录 operation/record_id/content_hash/source/session_id/injection_suspected/confidence
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 28. Injection Detector（注入检测）
+**问题**：prompt injection 可以伪装成正常记忆写入
+
+**实现方向**：hawk-capture 写入前扫描 text 内容，检测 ignore previous instructions / you are now / curl $API_KEY / unauthorized_keys 等模式；发现时标记 injection_suspected=true 并触发告警，但不直接拒绝
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 29. Write Confidence Threshold（写入置信度阈值）
+**问题**：hallucination / 低置信内容写入记忆
+
+**实现方向**：记忆条目增加 confidence 字段（0-1），写入时必须 > 阈值（默认 0.7）；低于阈值的内容降级为草稿或拒绝写入
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 30. Drift Detector（漂移检测）
+**问题**：同一记忆被更新时，新旧内容差异大但无告警
+
+**实现方向**：当同一 memory_id 的 text 变化超过阈值时（语义相似度 < 0.5），触发 drift alert 并记录版本链；防止旧/错数据覆盖新/正确数据
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 31. Quarantine Mechanism（隔离机制）
+**问题**：疑似污染的记忆与正常记忆混在一起，持续污染召回结果
+
+**实现方向**：疑似污染记忆（injection_suspected=true 或 confidence < 0.3）自动隔离到 quarantine 区；recall 默认不返回这些记忆；可通过管理接口手动释放或删除
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 32. Consistency Check（一致性巡检）
+**问题**：记忆库长期运行后可能存在内部矛盾（如 A 说 X，B 说 Y）
+
+**实现方向**：每日定时任务扫描所有记忆，检测记忆间的逻辑矛盾（如同一事实两个相反结论）；发现矛盾时告警并标记需要复核
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 33. Session Fencing（会话边界隔离）
+**问题**：session_id 隔离不完整，跨 session 内容泄漏
+
+**实现方向**：recall 时强制 scope 过滤，session_id 不匹配的记忆绝不返回；写入时自动绑定 session_id，不允许跨 session 写入；实现完整的会话边界守卫
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 34. Cross-Reference Verification（交叉验证）
+**问题**：单条记忆的正确性无法独立验证
+
+**实现方向**：当 recall 返回多条相互关联的记忆时，检查它们之间是否有逻辑矛盾（如 A 说项目用 Python，B 说项目用 Go）；有矛盾时返回警告，提示需要验证
+
+**状态**：❌ 未实现
+
+---
+
+## 🟡 中优先级 — Hermes 特有功能补充
+
+> 新增 — 2026-04-19（从旧版 commit 45d9304 恢复）
+
+### [ ] 35. Background Prefetch（异步预取）
+**来源：Hermes `queue_prefetch()` + `prefetch()` 异步预取**
+
+当前 hawk-bridge 的 recall 是同步调用。Hermes 的做法：
+- 每轮对话结束后调用 `queue_prefetch(query)` 预排下一轮需要的记忆
+- 下一轮 API 调用前才执行 `prefetch()`，利用等待时间并行召回
+- 返回结果用 `<memory-context>` 包裹
+
+**收益**：recall 延迟从阻塞变成并行，响应速度提升
+
+**实现方向**：改造 recall API 为 async，支持 queue_prefetch / prefetchRecall 两个阶段
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 36. Session Insights（会话洞察）
+**来源：Hermes `InsightsEngine` — 会话历史分析**
+
+Hermes 分析历史会话数据，产出：
+- token 消耗趋势
+- 工具使用模式
+- 活跃时间规律
+- 模型/平台分布
+
+**对 autoself 价值**：tangseng-brain 做成本收益分析需要知道"这个问题多久出现一次"
+
+**实现方向**：新增 `/api/v1/insights` 端点，返回 top_patterns / token_trend / active_hours 等统计
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 37. MemoryManager 编排层
+**来源：Hermes `MemoryManager` — 多 provider 协调机制**
+
+当前 hawk-bridge 是单一 adapter，没有"编排层"概念。Hermes 的 MemoryManager 同时支持：
+- 一个内置 provider（始终活跃）
+- 一个外部 plugin provider（按配置切换）
+
+**对 autoself 价值**：hawk-bridge 作为 L0 记忆层，需要能同时被 agent-brain 和 soul-force 等多个组件接入
+
+**实现方向**：
+```typescript
+interface MemoryManager {
+  addProvider(provider: MemoryProvider): void;  // 最多1个外部
+  prefetch(query: string): Promise<string>;   // 背景召回
+  sync(turn: Turn): Promise<void>;            // 写后同步
+  buildSystemPrompt(): string;                // 拼接 system prompt block
+}
+```
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 38. Skill Auto-Creation（技能自动创建）
+**来源：Hermes 自主创建 Skills 的能力**
+
+当同一类任务出现 ≥3 次时，自动创建 Skill：
+- tangseng-brain 发现的 pattern → 自动写成 SOUL.md 条目
+- 如果重复多次 → 沉淀成正式 Skill（`~/.hawk/skills/{pattern-name}/SKILL.md`）
+
+**前置依赖**：MemoryManager
+
+**实现方向**：capture 时追踪 pattern 频率，达到阈值时触发 skill 创建流程
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 39. Multi-tenant Namespace（多租户隔离）
+**来源：Hermes profile 隔离机制**
+
+autoself 有多个 agent 并行工作，每个需要独立记忆空间：
+- wukong（后端）/ bajie（前端）/ bailong（测试）
+- 不同项目（hawk-bridge vs 其他）数据隔离
+
+**实现方向**：
+```typescript
+interface MemoryStore {
+  withTenant(tenantId: string): MemoryStore;  // 租户隔离
+}
+```
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 40. Auto-Compression（自动记忆压缩）
+**来源：Hermes `ContextCompressor` — 上下文满时自动压缩**
+
+当对话 token 接近模型上限时：
+- 保护前 N 轮和最后 N 轮（重要上下文不丢失）
+- 对中间部分做 LLM summarization
+- 构建 conversation DAG 保留逻辑依赖
+
+**前置依赖**：Session Insights（需要知道何时触发）
+
+**实现方向**：新增 `/api/v1/summarize` 接口，接收 conversation 返回压缩摘要
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 41. User Modeling（结构化用户画像）
+**来源：Hermes Honcho dialectic user modeling**
+
+通过对话历史持续构建用户模型：
+- 交流偏好（简洁 / 详细）
+- 技术深度（专家 / 入门）
+- 工作节奏（快速迭代 / 深思熟虑）
+
+**对 autoself 价值**：soul-force 更新 USER.md 需要更结构化的用户模型
+
+**实现方向**：
+```json
+{
+  "user_model": {
+    "verbosity": "concise",
+    "tech_depth": "expert",
+    "communication_style": "direct",
+    "preferred_language": "zh"
+  }
+}
+```
+
+**前置依赖**：Session Insights
+
+**状态**：❌ 未实现
+
+---
+
 ## 🟢 低优先级 — 已完成
 
 | 功能 | 版本 | 状态 |
