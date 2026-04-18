@@ -1,96 +1,668 @@
-# TODO — hawk-bridge v1.x+v2.x 待办事项
+# TODO — hawk-bridge v1.2+ Backlog
 
-> Last updated: 2026-04-19
-
----
-
-## 🔴 高优先级（v1.x 内核强化）
-
-### Recall 召回质量（8项）
-
-| # | 任务 | 说明 |
-|---|------|------|
-| 1 | 记忆 Taxonomy 扩展 | 4类 → user/feedback/project/reference + body_structure |
-| 2 | What NOT to Save 指导 | 显式告知 LLM 什么不该存入记忆 |
-| 3 | Trust 验证机制 | 记忆提及文件路径时，要求验证真实性 |
-| 4 | 记忆年龄标签 | 超过7天显示 freshness caveat |
-| 5 | 来源追溯增强 | mtime + category + verification_count |
-| 6 | Recent tools-aware 选择 | 排除正在使用工具的文档记忆 |
-| 7 | 双重选择器 | manifest 扫描 → LLM 选 topN → 读文件 |
-| 8 | Ignore Memory 指令 | 支持"忽略记忆"指令 |
-
-### Capture 写入质量（4项）
-
-| # | 任务 | 说明 |
-|---|------|------|
-| 9 | 相对日期→绝对日期 | normalizeText 管道增加日期转换 |
-| 10 | 写入置信度阈值 | confidence < 0.7 不写入 |
-| 11 | 注入检测器 | 扫描 prompt injection 模式 |
-| 12 | 来源类型标注 | user_input / agent_inference / system |
+> Priority: **🔴阻断 / 🟡重要 / 🟢增强**
+> Last updated: 2026-04-19（参考 Claude Code 源码 + Hermes Agent 对比）
 
 ---
 
-## 🟡 中优先级（autoself 10层支撑）
+## 🔴 高优先级 — Claude Code 源码对比发现的新差距
 
-| # | 任务 | 支撑 autoself 哪层 |
-|---|------|-------------------|
-| 13 | Hook 系统完善（Session/Task 生命周期） | L6 agent-brain |
-| 14 | 子 Agent 上下文注入 API | L3 执行层 |
-| 15 | Learnings 记忆分类 | L1 巡检 + L4 验收 |
-| 16 | Task History 记忆 | L6 task-tracker |
-| 17 | Effect Evaluation 记忆 | L6 effect-evaluator + L5 进化 |
-| 18 | Cron Job 结果自动写入记忆 | L1 定时巡检 |
-| 19 | Multi-Agent Session Isolation 验证 | L3 多 Agent |
-| 20 | Constitution 锚定记忆接口 | L6 qujin-editor |
+### [ ] 1. 记忆 Taxonomy 扩展（4类 → 详细分类体系）
+**来源：Claude Code `memoryTypes.ts` — 4类 taxonomy**
 
----
+Claude Code 的 4 类记忆有极其详细的定义：
+- **user**: 用户角色/目标/职责/知识，`when_to_save` + `how_to_use` + `body_structure`（**Why:** + **How to apply:**）
+- **feedback**: 用户指导（纠正 AND 确认），body_structure 要求先写规则本身，再写 **Why:** 和 **How to apply:**
+- **project**: 项目状态/目标/initiative/deadline，要求相对日期转绝对日期
+- **reference**: 外部系统指针（Linear/Grafana 等），告诉"去哪找"而非"是什么"
 
-## 🔵 架构升级（v2.0-v2.x）
+hawk-bridge 当前只有 `fact/preference/decision/entity`，且没有 body_structure 指导。
 
-### v2.0 统一 Schema
-
-| # | 任务 | 说明 |
-|---|------|------|
-| v2.0-1 | Tier + Scope 双维度 | L0-L4 时间维度 × Personal/Org/System 所有权维度 |
-| v2.0-2 | DARK Archive | 每条记忆一个 JSON 文件，永久存储 |
-| v2.0-3 | 冷存储管道 | GitHub + Gitee + NAS 多副本 |
-| v2.0-4 | 层级晋升引擎 | L3→L2→L1→L0 自动晋升规则 |
-
-### v2.x 连接器生态
-
-| # | 任务 | 说明 |
-|---|------|------|
-| v2.x-1 | knowledg-hub 连接器 | 个人/ToB 数据接入 |
-| v2.x-2 | 企业连接器 | 飞书/Jira/Confluence/SAP |
-| v2.x-3 | Org 记忆层 + ACL | 组织内访问控制 |
-| v2.x-4 | 联邦检索 | 跨 scope 统一搜索 |
+**实现方向**：
+**实现方向**：扩展 memory_category 枚举，支持 user/feedback/project/reference 四类，新增 body_structure 结构（rule/why/how_to_apply）和 scope 字段（private/team）
+**状态**：❌ 未实现
 
 ---
 
-## ✅ 已完成
+### [ ] 2. What NOT to Save 明确排除列表
+**来源：Claude Code `WHAT_NOT_TO_SAVE_SECTION`**
 
-- v1.2: P0/P1/P2 性能修复（20项）
-- v1.1: 9 项改进（retry、backup、pagination、logging、health、reranking、metrics、config）
-- v1.0: LanceDB + Ollama/Xinference 基础支持
-- FTS5 全文索引
-- BM25 + 向量混合搜索
-- 4层衰减（Working/Short/Long/Archive）
+Claude Code 明确列出不应存入记忆的内容：
+- 代码模式/架构/文件路径（可从当前代码库推导）
+- Git 历史（`git log` / `git blame` 是权威来源）
+- 调试方案（fix 在代码里，commit message 有上下文）
+- 已记录在 CLAUDE.md 的内容
+- 临时任务详情
 
----
+hawk-bridge 当前只有预过滤（代码模式/git历史/调试方案），但没有显式的"显式告知 LLM 什么不该存"机制。
 
-## 📊 功能对比总览
-
-| 维度 | Claude Code | Hermes | hawk-bridge |
-|------|-------------|--------|-------------|
-| 记忆分类 | 4类 + body_structure | 简单 | 基础4类 |
-| What NOT to Save | 显式指导 | 无 | 隐式过滤 |
-| Trust 验证 | 有 | 无 | 无 |
-| 记忆年龄 | freshness text | 无 | 无 |
-| Team Memory | 完整+安全 | 无 | 无 |
-| 双重选择器 | scan→LLM→load | 无 | 纯向量 |
-| Hook 系统 | 完整 | 有 | 仅 decay |
-| autoself 支撑 | — | — | 8项待实现 |
+**实现方向**：
+**实现方向**：在 hawk-capture 的 prompt 中增加显式的"不该保存"清单，明确告知 LLM 哪些内容不应存入记忆
+**状态**：❌ 未实现（只有隐式预过滤，没有显式 LLM 指导）
 
 ---
 
-*Last updated: 2026-04-19*
+### [ ] 3. Memory Fence 标签机制（Trust 验证）
+**来源：Claude Code `TRUSTING_RECALL_SECTION`**
+
+Claude Code 在召回记忆后要求主动验证：
+- "记忆说文件 X 存在" ≠ "X 实际存在" — 必须验证
+- 如果记忆命名了文件路径：检查文件是否存在
+- 如果记忆命名了函数/flag：grep 搜索
+- 如果用户要基于记忆行动：先验证
+
+这和 hawk-bridge 当前只返回向量相似结果、不验证内容真实性的做法完全不同。
+
+**实现方向**：
+**实现方向**：hawk-recall 返回时自动附加 trust_verification 提示，当记忆提及文件路径时提醒使用者验证文件是否存在
+**状态**：❌ 未实现
+
+---
+
+### [ ] 4. 记忆年龄标签（Freshness Text）
+**来源：Claude Code `memoryAge.ts` + `memoryFreshnessText()`**
+
+Claude Code 对超过 1 天的记忆显示 staleness caveat：
+```
+This memory is 47 days old. Memories are point-in-time observations...
+Verify against current code before asserting as fact.
+```
+
+hawk-bridge 当前没有记忆年龄标签机制。
+
+**实现方向**：
+**实现方向**：召回结果自动附加 freshness text，超过1天的记忆显示"此记忆是 X 天前写入的...使用前请验证"
+**状态**：❌ 未实现
+
+---
+
+### [ ] 5. Source Tracing（来源 + 验证计数）
+**来源：Claude Code `findRelevantMemories.ts` — manifest 中的 mtime/type/description**
+
+Claude Code recall 结果包含：
+- 文件路径 + mtime（用于显示"什么时候写入的"）
+- type（用于决定如何使用）
+- description（用于判断相关性）
+- verification_count（确认次数）
+- 最近使用工具列表（避免重复注入正在使用的工具文档）
+
+hawk-bridge 当前 recall 结果缺少 mtime、type description、verification_count。
+
+**实现方向**：
+**实现方向**：recall 结果扩展字段，包含 mtimeMs（写入时间）、category（类型）、description（一行描述）、verification_count（确认次数）
+**状态**：❌ 未实现
+
+---
+
+### [ ] 6. Team Memory + Symlink 安全
+**来源：Claude Code `teamMemPaths.ts` — PathTraversalError + realpathDeepestExisting**
+
+Claude Code 有完整的 team memory 架构：
+- `team/` 子目录存放团队共享记忆
+- symlink escape 防护（`realpathDeepestExisting` 检测符号链接穿透）
+- 路径验证（`validateTeamMemWritePath` / `validateTeamMemKey`）
+- 路径规范化和 Unicode 规范化攻击防护
+
+hawk-bridge 当前没有 team memory 概念和路径安全验证。
+
+**实现方向**：
+**实现方向**：新增 team memory 存储区域，支持路径验证（检测 symlink 穿透、null byte、Unicode 规范化攻击等）
+**状态**：❌ 未实现
+
+---
+
+### [ ] 7. Recent Tools-Aware 记忆选择
+**来源：Claude Code `findRelevantMemories.ts` — `recentTools` 参数**
+
+Claude Code 的记忆选择器接收 `recentTools` 列表，主动排除：
+- 正在使用的工具的参考文档（已在线conversation 中）
+- 但保留这些工具的警告/gotcha/已知问题（主动使用才重要）
+
+**实现方向**：[功能说明见上方文字描述]
+**状态**：❌ 未实现（hawk-bridge 不知道调用方正在用什么工具）
+
+---
+
+### [ ] 8. 双重选择器（Manifest 扫描 → LLM 选 topN）
+**来源：Claude Code `findRelevantMemories.ts` — dual-select 模式**
+
+Claude Code 不是直接向量搜索，而是：
+1. **Scan**: `scanMemoryFiles()` 扫描所有 .md 文件的 frontmatter（name + description），返回 MemoryHeader[]（最多 200 个）
+2. **LLM Select**: 用 Sonnet 模型从 manifest 中选 top 5（`selectRelevantMemories`）
+3. **Load**: 只读取被选中的文件的完整内容
+
+这比纯向量搜索更准确（frontmatter 的 description 比压缩后的向量更能判断相关性）。
+
+**实现方向**：
+**实现方向**：改为双重选择器：Step1 扫描所有记忆的 frontmatter（只读头部），Step2 LLM 从 manifest 选 top5，Step3 只读被选中文件的完整内容
+**状态**：❌ 未实现（hawk-bridge 是纯向量搜索，无 frontmatter 扫描预选）
+
+---
+
+## 🟡 中优先级 — autoself 10层架构支撑（新增）
+
+> 2026-04-19 新增
+> 来源：autoself 架构分析 — 10层闭环对 L0 的隐含需求
+
+### [ ] 13. Hook 系统完善（Session/Task 生命周期钩子）
+**来源：autoself L6 + superpowers/ECC 启发**
+
+autoself 各层需要在关键生命周期节点触发记忆操作：
+
+| Hook | 触发时机 | autoself L 层 | hawk-bridge 行为 |
+|------|---------|--------------|-----------------|
+| `session_start` | 新 session 开始 | L6 agent-brain | 加载最近记忆、上下文 |
+| `session_stop` | session 结束 | L5 soul-force | 保存 learnings、清理临时文件 |
+| `before_tool_call` | 工具调用前 | L0（安全） | 记录意图、安全检查 |
+| `after_tool_call` | 工具调用后 | L0（审计） | 记录结果、更新使用计数 |
+| `task_start` | 任务开始 | L6 task-tracker | 记录任务开始、加载相关记忆 |
+| `task_complete` | 任务完成 | L5 soul-force | 记录结论到 hawk-bridge |
+| `decay_trigger` | 衰减触发 | L0 | 批量更新衰减状态 |
+
+**实现方向**：
+**实现方向**：完善 hook 系统，支持 session_start/session_stop/before_tool_call/after_tool_call/task_start/task_complete 生命周期钩子
+
+**autoself 数据流**：
+```
+agent-brain（L6）session start
+        ↓
+hawk-bridge Hook: session_start
+        ↓
+hawk-recall(limit=10) → 加载最近记忆
+        ↓
+注入给主 Agent 的上下文
+```
+**状态**：❌ 未实现（当前只有 decay hook）
+
+---
+
+### [ ] 14. 子 Agent 上下文注入 API（Memory Context Injection）
+**来源：autoself L3 + ARCHITECTURE.md**
+
+autoself L3 的子 agent（悟空/八戒/白龙）需要"记忆注入"：
+- 主 agent 从 hawk-bridge 检索相关记忆
+- 构造精简的上下文注入给子 agent
+- 子 agent 每次全新上下文，由主 agent 注入记忆
+
+**autoself 原文**：
+```
+子 Agent 的"记忆"来自主 Agent 的结构化注入，而非自己携带：
+主 Agent（tangseng-brain）准备上下文
+  1. 从 hawk-bridge 检索相关记忆（只读）
+  2. 提取任务相关的历史结论
+  3. 构造精简的"上下文注入"
+  4. 派发给子 Agent 执行
+```
+
+**实现方向**：
+**实现方向**：新增 /api/v1/inject-context 端点，主 agent 调用后返回 markdown 格式的注入上下文，可选 minimal/standard/full 三种注入深度
+
+**autoself 数据流**：
+```
+tangseng-brain（L2）派发子 agent
+        ↓
+GET /api/v1/inject-context?task_id=xxx&type=standard
+        ↓
+hawk-bridge 返回 markdown 格式的注入上下文
+        ↓
+注入给 wukong/bajie/bailong 的 system prompt
+```
+**状态**：❌ 未实现
+
+---
+
+### [ ] 15. Learnings 记忆分类（巡检验收结果存储）
+**来源：autoself L1 + L4**
+
+auto-evolve（L1 巡检 + L4 验收）输出：
+- `learnings/approvals.json` — 通过的修复
+- `learnings/rejections.json` — 失败的修复
+- learnings pattern — 错误模式识别
+
+这些需要存入 hawk-bridge，供 soul-force 分析。
+
+**autoself 原文**：
+```
+learnings/
+├── approvals.json   # 通过的修复
+└── rejections.json  # 失败的修复
+```
+
+**实现方向**：
+**实现方向**：扩展 memory_category 枚举，支持 user/feedback/project/reference 四类，新增 body_structure 结构（rule/why/how_to_apply）和 scope 字段（private/team）
+
+**autoself 数据流**：
+```
+auto-evolve（L4）验收完成
+        ↓
+写入 learnings/approvals.json
+        ↓
+hawk-bridge Hook: task_complete
+        ↓
+hawk-capture(type=learning, learning_type=approval, ...)
+        ↓
+soul-force（L5）分析 learnings 模式
+```
+**状态**：❌ 未实现
+
+---
+
+### [ ] 16. Task History 记忆（任务追踪历史）
+**来源：autoself L6 task-tracker**
+
+task-tracker 需要：
+- 记录任务历史（谁做的、什么时候、多久完成）
+- 查询某类任务的平均完成时间
+- 发现经常失败或延迟的任务类型
+
+**autoself task-tracker 职责**：
+```
+状态跟踪：pending → in_progress → done/failed/skipped
+超时告警：任务超过阈值未完成则告警
+自动重试：failed 任务自动重新派发（最多3次）
+依赖管理：有依赖的任务必须等前置任务完成
+冲突检测：同一文件被多个任务同时修改时告警
+```
+
+**实现方向**：
+**实现方向**：Task History 记忆类型记录 task_id/task_type/assigned_agent/duration_minutes/status/outcome，支持按 agent/类型/状态查询
+**状态**：❌ 未实现
+
+---
+
+### [ ] 17. Effect Evaluation 记忆（进化效果追踪）
+**来源：autoself L6 effect-evaluator + L5**
+
+soul-force 更新 SOUL.md 后，effect-evaluator 需要：
+- 记录每次进化（evolution）的内容
+- 追踪进化后的行为是否真的改变了
+- 评估进化是否有效
+
+**autoself 进化效果公式**：
+```python
+before = load_pattern_frequency("api_error_inconsistency")
+after = check_current_frequency("api_error_inconsistency")
+
+if after < before:
+    effect = "positive"
+elif after == before:
+    effect = "neutral"
+else:
+    effect = "negative"  # 进化无效，需要调整
+```
+
+**实现方向**：
+**实现方向**：Evolution Record 记忆类型记录进化内容/触发来源/效果评估（positive/neutral/negative），追踪进化前后的 pattern 频率变化
+**状态**：❌ 未实现
+
+---
+
+### [ ] 18. Cron Job 结果自动写入记忆
+**来源：autoself L1 定时巡检 + 当前架构问题**
+
+当前 cron 巡检（auto-evolve）的输出：
+- 写入 `tasks/done/{agent}/` 本地文件
+- **不经过 hawk-bridge，不进 LanceDB**
+
+这导致：
+- 巡检报告无法被 recall 检索
+- 巡检历史无法被 soul-force 分析
+- cron job 的结论无法跨 session 累积
+
+**实现方向**：
+**实现方向**：cron hook 集成，任务完成后自动调用 hawk-capture，将 job_id/output_summary/timestamp 写入记忆
+**状态**：❌ 未实现
+
+---
+
+### [ ] 19. Multi-Agent Session Isolation（多 Agent 隔离）
+**来源：autoself L3 多 Agent 并行 + 当前 session_id 隔离未验证**
+
+autoself 有多个 agent 并行工作：
+- wukong（后端）
+- bajie（前端）
+- bailong（测试）
+- tseng（主 agent）
+
+当前 hawk-bridge 的 `session_id` 字段用于隔离，但：
+- **未验证**是否真的隔离
+- 没有 agent 级别的隔离策略
+- 没有跨 agent 的共享记忆机制
+
+**实现方向**：
+**实现方向**：Agent 级别隔离配置，主 agent 可读所有记忆，子 agent 默认 private，通过 scope_filter 过滤可访问的记忆范围
+**状态**：⚠️ 待验证（session_id 字段存在，但未测试隔离效果）
+
+---
+
+### [ ] 20. Qujin-Constitution 锚定记忆（宪法层接口）
+**来源：autoself L6 qujin-editor + L5 soul-force**
+
+qujin-editor（L6 宪法编辑器）管理 qujin-constitution 文档：
+- constitution 是 autoself 的最高决策依据
+- soul-force 进化后需要更新 constitution
+- constitution 的变更需要记录到 hawk-bridge
+
+**autoself 原文**：
+```
+L6 宪法编辑器 Skill。接收 L5 soul-force 的进化建议，
+决定是否修订 qujin-constitution。
+```
+
+**实现方向**：
+**实现方向**：Constitution 记忆属于 L0 层，记录 version/content_hash/summary/evolution_history，重大决策查询时永远高优先级返回
+**状态**：❌ 未实现（constitution 是 gql-openclaw 的 L6 层概念）
+
+---
+
+## 🟢 低优先级 — 增强功能
+
+### [x] ~~Log file output~~ — pino 已经在 v1.1 解决
+### [x] ~~Prometheus metrics~~ — v1.1 已加
+### [x] ~~Health endpoint~~ — v1.1 已加
+### [x] ~~FTS index~~ — v1.2 已加
+### [x] ~~BM25 + 向量混合搜索~~ — v1.2 已加
+### [x] ~~增量索引~~ — v1.2 已加
+### [x] ~~Batch capture~~ — v1.2 已加
+### [x] ~~normalizeText 管道~~ — v1.2 已拆分为 17 步
+
+### [ ] 21. MEMORY.md 入口索引概念
+**来源：Claude Code `memdir.ts` — `ENTRYPOINT_NAME = 'MEMORY.md'`**
+
+Claude Code 的 MEMORY.md 是所有记忆的索引目录，每行一个：
+```
+- [Title](file.md) — one-line hook
+```
+有 200 行上限和 25KB 字节上限，超出时 truncation 警告。
+
+hawk-bridge 没有入口索引概念，完全依赖向量搜索。
+
+**实现方向**：
+**实现方向**：扩展 memory_category 枚举，支持 user/feedback/project/reference 四类，新增 body_structure 结构（rule/why/how_to_apply）和 scope 字段（private/team）
+**状态**：🟡 规划中
+
+---
+
+### [ ] 10. Ignore Memory 指令支持
+**来源：Claude Code `WHEN_TO_ACCESS_SECTION`**
+
+Claude Code 明确处理"ignore memory"指令：
+> "If the user says to *ignore* or *not use* memory: proceed as if MEMORY.md were empty. Do not apply remembered facts, cite, compare against, or mention memory content."
+
+hawk-bridge 当前没有处理 `ignore` / `not use` memory 的机制。
+
+**实现方向**：
+**实现方向**：hawk-recall 增加 ignoreMemory 参数，为 true 时返回空列表，如同 MEMORY.md 为空
+**状态**：❌ 未实现
+
+---
+
+### [ ] 11. 相对日期转绝对日期自动转换
+**来源：Claude Code `memoryTypes.ts` project 类型**
+
+Claude Code 要求：
+> "Always convert relative dates in user messages to absolute dates when saving (e.g., 'Thursday' → '2026-03-05')"
+
+hawk-bridge 没有这个机制，相对日期记忆过一段时间就不可解读了。
+
+**实现方向**：
+**实现方向**：normalizeText 管道增加相对日期转换步骤，将"下周四"→"2026-04-24"等
+**状态**：❌ 未实现
+
+---
+
+### [ ] 12. Memory Shape Telemetry（记忆形状遥测）
+**来源：Claude Code `memoryShapeTelemetry.ts`**
+
+Claude Code 追踪记忆的"形状"：
+- 每个记忆的大小分布
+- recall 选择率（哪些被选中、哪些未被选中）
+- 类型分布
+- 过时率
+
+**实现方向**：
+**实现方向**：recall 事件上报记忆形状遥测（总数/选中数/选择率/类型分布/平均年龄）
+**状态**：❌ 未实现
+
+---
+
+## 🟢 低优先级 — 已规划
+
+### [x] ~~Log file output~~ — pino 已经在 v1.1 解决
+### [x] ~~Prometheus metrics~~ — v1.1 已加
+### [x] ~~Health endpoint~~ — v1.1 已加
+### [x] ~~FTS index~~ — v1.2 已加
+### [x] ~~BM25 + 向量混合搜索~~ — v1.2 已加
+### [x] ~~增量索引~~ — v1.2 已加
+### [x] ~~Batch capture~~ — v1.2 已加
+### [x] ~~normalizeText 管道~~ — v1.2 已拆分为 17 步
+
+---
+
+## 📊 Claude Code vs hawk-bridge 记忆功能对比
+
+| 功能 | Claude Code | hawk-bridge | 差距 |
+|------|-------------|-------------|------|
+| **存储介质** | .md 文件（文件化） | LanceDB（纯向量） | 🔴 架构差异 |
+| **入口索引** | MEMORY.md（200行限制） | 无 | 🔴 缺失 |
+| **记忆分类** | 4类 + scope + body_structure + 详尽示例 | fact/preference/decision/entity | 🔴 分类体系弱 |
+| **What NOT to Save** | 显式 LLM 指导 | 隐式预过滤 | 🔴 缺失显式指导 |
+| **Trust 验证** | 记忆→验证文件/函数存在 | 无 | 🔴 缺失 |
+| **记忆年龄标签** | freshness text（>1天显示caveat） | 无 | 🔴 缺失 |
+| **来源追溯** | mtime + type + description + verification_count | 部分 | 🟡 不完整 |
+| **Team Memory** | 完整 + symlink 安全 | 无 | 🔴 缺失 |
+| **Recent tools-aware** | 选记忆时排除正在用的工具文档 | 无 | 🔴 缺失 |
+| **双重选择器** | manifest扫描→LLM选topN→读文件 | 纯向量搜索 | 🔴 选优策略弱 |
+| **Ignore 指令** | 完全忽略记忆 | 无 | 🟡 缺失 |
+| **相对日期→绝对日期** | 自动转换 | 无 | 🟡 缺失 |
+| **记忆遥测** | MemoryShapeTelemetry | 无 | 🟢 缺失 |
+| **4层衰减** | 无（文件化+TTL） | Working/Short/Long/Archive | ✅ hawk更强 |
+| **向量搜索** | 无 | BM25 + ANN + RRF | ✅ hawk更强 |
+| **记忆去重** | 文件名去重 | SimHash + 向量相似度 | ✅ hawk更强 |
+
+### Capture 写入质量
+
+| 功能 | Claude Code | Hermes | hawk-bridge v1.x | 状态 |
+|------|-------------|--------|-------------------|------|
+| 相对日期→绝对日期 | ✅ | ❌ | ❌ | Phase 0 |
+| 写入置信度阈值 | 🟡 | ✅ | ❌ | Phase 1 |
+| 注入检测器 | 🟡 | ✅ | ❌ | Phase 1 |
+| 来源类型标注 | ✅ | ✅ | ❌ | Phase 1 |
+| What NOT to Save 指导 | ✅ | ❌ | ❌ | Phase 0 |
+| 4层衰减 (Working/Short/Long/Archive) | ❌ | ✅ | ✅ | ✅ 已实现 |
+
+### autoself 10层架构支撑
+
+| 功能 | autoself L 层需求 | hawk-bridge 现状 | 状态 |
+|------|-----------------|-----------------|------|
+| Hook 系统（Session/Task 生命周期） | L6 superpowers/ECC | 只有 decay hook | ❌ 未实现 |
+| 子 Agent 上下文注入 API | L3 | 无 | ❌ 未实现 |
+| Learnings 记忆分类 | L1 + L4 | 无 | ❌ 未实现 |
+| Task History 记忆 | L6 task-tracker | 无 | ❌ 未实现 |
+| Effect Evaluation 记忆 | L6 + L5 | 无 | ❌ 未实现 |
+| Cron Job 结果自动写入 | L1 定时巡检 | 不过 hawk-bridge | ❌ 未实现 |
+| Multi-Agent Session Isolation | L3 多 Agent | session_id 字段存在 | ⚠️ 待验证 |
+| Constitution 锚定记忆 | L6 qujin-editor | 无 | ❌ 未实现 |
+
+### 架构层（v2.0+）
+
+| 功能 | 现状 | 目标版本 |
+|------|------|---------|
+| 统一 Schema（Tier+Scope） | ❌ | v2.0 |
+| DARK Archive | ❌ | v2.1 |
+| 冷存储管道（GitHub+Gitee+NAS） | ❌ | v2.1 |
+| knowledg-hub 连接器 | ❌ | v2.5 |
+| 企业连接器（飞书/Jira/Confluence） | ❌ | v2.6 |
+| Org 记忆层 + ACL | ❌ | v2.7 |
+| 层级晋升引擎 | ❌ | v2.8 |
+
+---
+
+## 🚀 推荐实现顺序
+
+```
+Phase 0（安全底线）:
+  1. What NOT to Save 显式指导 — 低成本，立即提升写入质量
+  2. Source Tracing — 给 recall 结果加上 category/mtime/verification_count
+  3. 相对日期→绝对日期 — normalizeText 管道增加一步
+
+Phase 1（召回质量 + 写入质量）:
+  4. 记忆年龄标签 — freshness text，超过7天显示caveat
+  5. Trust 验证提示 — 记忆提及文件路径时附加验证建议
+  6. Ignore Memory 指令 — recall 支持 ignore flag
+  7. 写入置信度阈值 — confidence < 0.7 不写入
+  8. 注入检测器 — 扫描 9 种注入模式
+  9. 来源类型标注 — user_input / agent_inference / system
+
+Phase 2（分类体系）:
+  7. 4类 taxonomy 扩展 — user/feedback/project/reference + body_structure
+  8. Scope 分离 — private vs team 记忆
+
+Phase 3（架构升级）:
+  9. 双重选择器 — manifest 扫描 + LLM 预选 topN
+  10. MEMORY.md 入口索引 — 可选的文件化入口
+  11. Recent tools-aware 记忆选择 — 排除正在用工具的文档
+
+Phase 4（团队协作）:
+  12. Team Memory 架构 — 共享记忆区域
+  13. Symlink 安全验证 — PathTraversalError 防护
+
+Phase 5（可观测性）:
+  14. Memory Shape Telemetry — 记忆形状遥测
+
+---
+
+## 🏗️ v2.0 统一记忆架构（5层 × 3维度）
+
+> **来源：README.zh-CN.md 统一记忆架构规划 · Tier = 时间维度，Scope = 所有权维度**
+>
+> hawk-bridge 采用双维度架构，同时解决**个人100年记忆**和**企业ToB**两大场景。
+> README 承诺"详见 TODO.md"，但此前 TODO 中完全缺失此部分。
+
+### Tier × Scope 矩阵
+
+```
+            Scope →
+Tier ↓      Personal      Org           System（外部企业系统）
+─────────────────────────────────────────────────────────────
+L0 宪法     个人价值观     企业宪章        连接器协议、数据契约
+L1 生命     人生里程碑     企业里程碑      组织架构沿革
+L2 周期     十年分桶       项目/财年周期   行业周期
+L3 事件     日常记忆       团队决策        外部系统事件
+L4 工作     会话上下文     项目上下文       实时数据流
+```
+
+### 3大范围（所有权维度）
+
+| 范围 | 说明 | 示例 |
+|------|------|------|
+| **personal** | 属于个人的记忆 | 用户偏好、习惯、工作风格 |
+| **org** | 组织内共享的记忆 | 部门策略、团队决策、OKR |
+| **system** | 外部企业系统（可插拔连接器） | SAP ERP、Confluence、Jira、飞书 |
+
+### 核心设计原则
+
+1. **Tier = 时间，Scope = 所有权** — 两个独立维度，不是单一层级
+2. **宪法层是锚点** — 所有记忆最终成为宪法记忆或逐渐消亡
+3. **DARK 文件格式** — 每条记忆 = 一个独立 JSON 文件（永远不依赖数据库格式）
+4. **只追加不修改** — 不覆盖，不删除，除非用户明确授权
+5. **多副本存储** — GitHub + Gitee + 本地 NAS（无单点故障）
+6. **连接器插件系统** — 企业接入自己的系统作为 `Scope=system`
+7. **可迁移设计** — 格式可以变更，内容必须存活 100 年
+
+---
+
+### v2.0 项详细任务
+
+#### [ ] v2.0：统一 Schema（Tier + Scope 双字段）+ L0/L1/L2 层
+
+**现状**：当前 hawk-bridge 只有 `fact/preference/decision/entity` 四类，无 Tier/Scope 维度
+
+**实现方向**：
+**实现方向**：统一 Schema 增加 tier（时间维度 L0-L4）和 scope（所有权 personal/org/system）双字段，L0/L1/L2 使用 DARK JSON 文件存储
+
+**前置依赖**：无（全新设计）
+**状态**：📋 待设计
+
+---
+
+#### [ ] v2.1：DARK Archive + 冷存储管道（GitHub + Gitee 双推）
+
+**现状**：当前所有记忆存 LanceDB，无文件归档机制
+
+**实现方向**：
+**实现方向**：DARK Archive 格式，每条记忆一个 JSON 文件（含 version/id/text/tier/scope/created_at/content_hash），冷存储推送到 GitHub + Gitee + NAS
+
+**前置依赖**：v2.0（统一 Schema）
+**状态**：📋 规划中
+
+---
+
+#### [ ] v2.2：企业连接器系统 + Scope=system 实现
+
+**现状**：无连接器概念
+
+**实现方向**：
+**实现方向**：统一 Schema 增加 tier（时间维度 L0-L4）和 scope（所有权 personal/org/system）双字段，L0/L1/L2 使用 DARK JSON 文件存储
+
+**前置依赖**：v2.0（统一 Schema）
+**状态**：📋 规划中
+
+---
+
+#### [ ] v2.3：Org 记忆层 + Scope=org + 访问控制
+
+**现状**：无 org/shred 概念，所有记忆不加区分
+
+**实现方向**：
+**实现方向**：统一 Schema 增加 tier（时间维度 L0-L4）和 scope（所有权 personal/org/system）双字段，L0/L1/L2 使用 DARK JSON 文件存储
+
+**前置依赖**：v2.0（统一 Schema）
+**状态**：📋 规划中
+
+---
+
+#### [ ] v2.4：层级晋升引擎（L3 → L2 → L1 → L0）
+
+**现状**：无晋升机制，记忆在 L3 永久衰减
+
+**实现方向**：
+**实现方向**：统一 Schema 增加 tier（时间维度 L0-L4）和 scope（所有权 personal/org/system）双字段，L0/L1/L2 使用 DARK JSON 文件存储
+
+**前置依赖**：v2.0（统一 Schema）+ v2.1（DARK Archive）
+**状态**：📋 规划中
+
+---
+
+#### [ ] v2.5：分层 + 分范围统一检索
+
+**现状**：当前 recall 是单一向量搜索，无 Tier/Scope 过滤能力
+
+**实现方向**：
+**实现方向**：统一检索接口支持 tier/scope/权限过滤，Personal→LanceDB，Org→ACL 过滤，System→连接器查询，跨层加权排序（L0 最优先）
+
+**前置依赖**：v2.0 + v2.2（连接器）+ v2.3（Org）
+**状态**：📋 规划中
+
+---
+
+### v2.0 实施依赖关系
+
+```
+v2.0（统一 Schema）
+  ├── v2.1（DARK Archive）         ← 依赖 v2.0 Schema
+  ├── v2.2（企业连接器）            ← 依赖 v2.0 Schema
+  └── v2.3（Org 记忆层）           ← 依赖 v2.0 Schema
+        │
+        └── v2.4（层级晋升引擎）   ← 依赖 v2.0 + v2.1
+              │
+              └── v2.5（统一检索） ← 依赖 v2.0 + v2.2 + v2.3
+```
+
+---
+
+## ✅ Done ✅
+
+- v1.2: P0/P1/P2 性能修复（getAllMemories DB层过滤、decay批量更新、incrementAccessBatch、reranker重试等20项）
+- v1.1: 9 core improvements (retry, backup, pagination, structured logging, health endpoint, doctor connectivity test, reranking, prometheus metrics, config versioning)
+- v1.0: Initial release with LanceDB + Ollama/Xinference support
