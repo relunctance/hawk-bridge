@@ -255,9 +255,510 @@ async function findRelevantMemories(
 
 ---
 
-## 🟡 中优先级 — 功能增强
+## 🟡 中优先级 — autoself 10层架构支撑（新增）
 
-### [ ] 9. MEMORY.md 入口索引概念
+> 2026-04-19 新增
+> 来源：autoself 架构分析 — 10层闭环对 L0 的隐含需求
+
+### [ ] 13. Hook 系统完善（Session/Task 生命周期钩子）
+**来源：autoself L6 + superpowers/ECC 启发**
+
+autoself 各层需要在关键生命周期节点触发记忆操作：
+
+| Hook | 触发时机 | autoself L 层 | hawk-bridge 行为 |
+|------|---------|--------------|-----------------|
+| `session_start` | 新 session 开始 | L6 agent-brain | 加载最近记忆、上下文 |
+| `session_stop` | session 结束 | L5 soul-force | 保存 learnings、清理临时文件 |
+| `before_tool_call` | 工具调用前 | L0（安全） | 记录意图、安全检查 |
+| `after_tool_call` | 工具调用后 | L0（审计） | 记录结果、更新使用计数 |
+| `task_start` | 任务开始 | L6 task-tracker | 记录任务开始、加载相关记忆 |
+| `task_complete` | 任务完成 | L5 soul-force | 记录结论到 hawk-bridge |
+| `decay_trigger` | 衰减触发 | L0 | 批量更新衰减状态 |
+
+**实现方向**：
+```typescript
+// hook 配置
+interface HawkBridgeHooks {
+  session_start?: HookConfig[];
+  session_stop?: HookConfig[];
+  before_tool_call?: HookConfig[];
+  after_tool_call?: HookConfig[];
+  task_start?: HookConfig[];
+  task_complete?: HookConfig[];
+  decay_trigger?: HookConfig[];
+}
+
+interface HookConfig {
+  name: string;
+  action: 'hawk-capture' | 'hawk-recall' | 'hawk-update' | 'exec';
+  options?: Record<string, unknown>;
+}
+
+// hook 触发时序
+// 1. session_start → hawk-recall(limit=10, recent=true) → 加载最近记忆
+// 2. task_complete → hawk-capture(content=task_conclusion)
+// 3. session_stop → hawk-capture(soul_force_learnings)
+```
+
+**autoself 数据流**：
+```
+agent-brain（L6）session start
+        ↓
+hawk-bridge Hook: session_start
+        ↓
+hawk-recall(limit=10) → 加载最近记忆
+        ↓
+注入给主 Agent 的上下文
+```
+**状态**：❌ 未实现（当前只有 decay hook）
+
+---
+
+### [ ] 14. 子 Agent 上下文注入 API（Memory Context Injection）
+**来源：autoself L3 + ARCHITECTURE.md**
+
+autoself L3 的子 agent（悟空/八戒/白龙）需要"记忆注入"：
+- 主 agent 从 hawk-bridge 检索相关记忆
+- 构造精简的上下文注入给子 agent
+- 子 agent 每次全新上下文，由主 agent 注入记忆
+
+**autoself 原文**：
+```
+子 Agent 的"记忆"来自主 Agent 的结构化注入，而非自己携带：
+主 Agent（tangseng-brain）准备上下文
+  1. 从 hawk-bridge 检索相关记忆（只读）
+  2. 提取任务相关的历史结论
+  3. 构造精简的"上下文注入"
+  4. 派发给子 Agent 执行
+```
+
+**实现方向**：
+```typescript
+// 上下文注入 API
+interface MemoryContextInjection {
+  agent_id: string;           // 子 agent ID
+  task_id: string;            // 当前任务 ID
+  related_memories?: MemoryQuery;  // 检索条件
+  max_memories?: number;       // 最多注入多少条（默认 10）
+}
+
+// /api/v1/inject-context 端点
+// 主 agent 调用 → 返回结构化的注入上下文（markdown 格式）
+// 可直接作为 system prompt 或用户消息注入给子 agent
+
+interface InjectContextResponse {
+  content: string;  // markdown 格式，可直接注入
+  memories_used: number;
+  injection_type: 'minimal' | 'standard' | 'full';
+}
+
+// injection_type 决定注入深度
+// minimal: 只有结论（一句话）
+// standard: 结论 + 来源 + 时间
+// full: 结论 + 来源 + 时间 + 验证状态
+```
+
+**autoself 数据流**：
+```
+tangseng-brain（L2）派发子 agent
+        ↓
+GET /api/v1/inject-context?task_id=xxx&type=standard
+        ↓
+hawk-bridge 返回 markdown 格式的注入上下文
+        ↓
+注入给 wukong/bajie/bailong 的 system prompt
+```
+**状态**：❌ 未实现
+
+---
+
+### [ ] 15. Learnings 记忆分类（巡检验收结果存储）
+**来源：autoself L1 + L4**
+
+auto-evolve（L1 巡检 + L4 验收）输出：
+- `learnings/approvals.json` — 通过的修复
+- `learnings/rejections.json` — 失败的修复
+- learnings pattern — 错误模式识别
+
+这些需要存入 hawk-bridge，供 soul-force 分析。
+
+**autoself 原文**：
+```
+learnings/
+├── approvals.json   # 通过的修复
+└── rejections.json  # 失败的修复
+```
+
+**实现方向**：
+```typescript
+// learnings 记忆类型
+interface LearningMemory {
+  type: 'learning';
+  learning_type: 'approval' | 'rejection' | 'pattern';
+
+  // 来源
+  source_task: string;       // 任务 ID
+  source_agent: string;      // 执行 agent
+  run_id: string;           // 巡检 run ID
+
+  // 内容
+  issue_id?: string;         // 如果是修复
+  pattern_id?: string;       // 如果是 pattern
+  description: string;
+
+  // 效果追踪
+  frequency?: number;        // 出现次数（pattern 用）
+  first_seen?: string;       // ISO 时间
+  last_seen?: string;
+
+  // 关联
+  related_memories?: string[];  // 相关记忆 ID
+}
+
+// capture 时自动分类
+function classifyLearning(learning: LearningMemory): MemoryCategory {
+  if (learning.learning_type === 'pattern') return 'pattern';
+  if (learning.learning_type === 'rejection') return 'error';
+  return 'success';
+}
+```
+
+**autoself 数据流**：
+```
+auto-evolve（L4）验收完成
+        ↓
+写入 learnings/approvals.json
+        ↓
+hawk-bridge Hook: task_complete
+        ↓
+hawk-capture(type=learning, learning_type=approval, ...)
+        ↓
+soul-force（L5）分析 learnings 模式
+```
+**状态**：❌ 未实现
+
+---
+
+### [ ] 16. Task History 记忆（任务追踪历史）
+**来源：autoself L6 task-tracker**
+
+task-tracker 需要：
+- 记录任务历史（谁做的、什么时候、多久完成）
+- 查询某类任务的平均完成时间
+- 发现经常失败或延迟的任务类型
+
+**autoself task-tracker 职责**：
+```
+状态跟踪：pending → in_progress → done/failed/skipped
+超时告警：任务超过阈值未完成则告警
+自动重试：failed 任务自动重新派发（最多3次）
+依赖管理：有依赖的任务必须等前置任务完成
+冲突检测：同一文件被多个任务同时修改时告警
+```
+
+**实现方向**：
+```typescript
+// Task History 记忆类型
+interface TaskHistoryMemory {
+  type: 'task_history';
+  task_id: string;
+  task_type: string;          // 'code_fix' | 'doc_update' | 'test_write' | etc.
+  priority: 'P0' | 'P1' | 'P2' | 'P3';
+
+  // 执行信息
+  assigned_agent: string;     // wukong / bajie / bailong
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+  duration_minutes?: number;
+
+  // 结果
+  status: 'done' | 'failed' | 'skipped';
+  outcome?: 'approved' | 'rejected';
+  retry_count?: number;
+
+  // 关联
+  related_issues?: string[];  // 关联的 issue ID
+}
+
+// recall 时支持任务历史查询
+interface TaskHistoryQuery {
+  agent_id?: string;
+  task_type?: string;
+  status?: 'done' | 'failed' | 'all';
+  date_from?: string;
+  date_to?: string;
+}
+
+// 用例
+// "wukong 最近做的后端任务，成功率是多少？"
+// "P1 任务平均完成时间？"
+// "哪些类型的任务最容易失败？"
+```
+**状态**：❌ 未实现
+
+---
+
+### [ ] 17. Effect Evaluation 记忆（进化效果追踪）
+**来源：autoself L6 effect-evaluator + L5**
+
+soul-force 更新 SOUL.md 后，effect-evaluator 需要：
+- 记录每次进化（evolution）的内容
+- 追踪进化后的行为是否真的改变了
+- 评估进化是否有效
+
+**autoself 进化效果公式**：
+```python
+before = load_pattern_frequency("api_error_inconsistency")
+after = check_current_frequency("api_error_inconsistency")
+
+if after < before:
+    effect = "positive"
+elif after == before:
+    effect = "neutral"
+else:
+    effect = "negative"  # 进化无效，需要调整
+```
+
+**实现方向**：
+```typescript
+// Evolution Record 记忆类型
+interface EvolutionRecord {
+  type: 'evolution';
+  evolution_id: string;
+
+  // 进化内容
+  trigger: 'soul_force' | 'manual' | 'scheduled';
+  target_file: 'SOUL.md' | 'USER.md' | 'IDENTITY.md';
+  changes_summary: string;    // 改了什么
+
+  // 进化前的状态
+  pattern_frequency_before: Record<string, number>;
+
+  // 效果评估
+  effect?: 'positive' | 'neutral' | 'negative';
+  pattern_frequency_after?: Record<string, number>;
+  evaluation_timestamp?: string;
+
+  // 反馈
+  feedback_source: 'auto' | 'user';
+  feedback_note?: string;
+}
+
+// 进化效果追踪
+// soul-force 更新 SOUL.md 后 → 记录 evolution record
+// 等待下一个相关场景出现 → 对比 pattern 频率
+// 如果 positive → 标记为 effective evolution
+// 如果 negative → 反馈给 soul-force 调整策略
+```
+**状态**：❌ 未实现
+
+---
+
+### [ ] 18. Cron Job 结果自动写入记忆
+**来源：autoself L1 定时巡检 + 当前架构问题**
+
+当前 cron 巡检（auto-evolve）的输出：
+- 写入 `tasks/done/{agent}/` 本地文件
+- **不经过 hawk-bridge，不进 LanceDB**
+
+这导致：
+- 巡检报告无法被 recall 检索
+- 巡检历史无法被 soul-force 分析
+- cron job 的结论无法跨 session 累积
+
+**实现方向**：
+```typescript
+// cron hook 集成
+interface CronMemoryConfig {
+  enabled: boolean;
+  auto_capture: boolean;     // cron 完成后自动 capture
+  capture_template: string;   // 捕获模板
+  source_agent: string;       // 'auto-evolve' / 'system-health-monitor'
+}
+
+// cron 任务完成后触发
+async function onCronComplete(
+  jobId: string,
+  output: CronJobOutput,
+  config: CronMemoryConfig
+): Promise<void> {
+  if (!config.auto_capture) return;
+
+  // 构造记忆内容
+  const memoryContent = config.capture_template
+    .replace('{{job_id}}', jobId)
+    .replace('{{output_summary}}', summarizeCronOutput(output))
+    .replace('{{timestamp}}', new Date().toISOString());
+
+  // 写入 hawk-bridge
+  await hawkCapture({
+    content: memoryContent,
+    type: 'cron_result',
+    source: `cron:${jobId}`,
+    metadata: {
+      job_id: jobId,
+      agent: config.source_agent,
+      outcome: output.status,
+    },
+  });
+}
+
+// 使用示例
+// cron job 定义时指定
+// cronjob create --name "auto-evolve-daily" \
+//   --hook "hawk-capture-on-complete" \
+//   --capture-template "auto-evolve 巡检完成：{{output_summary}}"
+```
+**状态**：❌ 未实现
+
+---
+
+### [ ] 19. Multi-Agent Session Isolation（多 Agent 隔离）
+**来源：autoself L3 多 Agent 并行 + 当前 session_id 隔离未验证**
+
+autoself 有多个 agent 并行工作：
+- wukong（后端）
+- bajie（前端）
+- bailong（测试）
+- tseng（主 agent）
+
+当前 hawk-bridge 的 `session_id` 字段用于隔离，但：
+- **未验证**是否真的隔离
+- 没有 agent 级别的隔离策略
+- 没有跨 agent 的共享记忆机制
+
+**实现方向**：
+```typescript
+// Agent 级别隔离
+interface AgentIsolationConfig {
+  default_isolation: 'strict' | 'relaxed';  // strict: 完全隔离，relaxed: 可选共享
+  agents: Record<string, {
+    isolation: 'private' | 'team' | 'shared';
+    can_read?: string[];   // 可以读哪些 agent 的记忆
+    can_write?: string[];  // 可以写哪些记忆池
+  }>;
+}
+
+// 默认配置（autoself 团队）
+const DEFAULT_AGENT_ISOLATION: AgentIsolationConfig = {
+  default_isolation: 'strict',
+  agents: {
+    'tangseng-brain': { isolation: 'shared' },  // 主 agent 可以读所有
+    'wukong': { isolation: 'private' },
+    'bajie': { isolation: 'private' },
+    'bailong': { isolation: 'private' },
+    'maomao': { isolation: 'private' },
+  },
+};
+
+// recall 时注入 agent_id
+interface AgentAwareRecall extends RecallOptions {
+  requester_agent?: string;  // 可选，不填则用默认
+}
+
+// 执行时
+async function agentAwareRecall(
+  query: string,
+  options: AgentAwareRecall
+): Promise<RetrievedMemory[]> {
+  const agentId = options.requester_agent;
+
+  // 获取该 agent 的隔离配置
+  const config = getAgentIsolationConfig(agentId);
+
+  // 构建查询条件
+  let allowedScopes = ['personal'];
+  if (config.isolation === 'team' || config.isolation === 'shared') {
+    allowedScopes.push('team');
+  }
+  if (config.isolation === 'shared') {
+    allowedScopes.push('shared');
+  }
+
+  // 执行 recall 时过滤 scope
+  return hawkRecall(query, {
+    ...options,
+    scope_filter: allowedScopes,
+  });
+}
+```
+**状态**：⚠️ 待验证（session_id 字段存在，但未测试隔离效果）
+
+---
+
+### [ ] 20. Qujin-Constitution 锚定记忆（宪法层接口）
+**来源：autoself L6 qujin-editor + L5 soul-force**
+
+qujin-editor（L6 宪法编辑器）管理 qujin-constitution 文档：
+- constitution 是 autoself 的最高决策依据
+- soul-force 进化后需要更新 constitution
+- constitution 的变更需要记录到 hawk-bridge
+
+**autoself 原文**：
+```
+L6 宪法编辑器 Skill。接收 L5 soul-force 的进化建议，
+决定是否修订 qujin-constitution。
+```
+
+**实现方向**：
+```typescript
+// Constitution 记忆（属于 L0 宪法层）
+interface ConstitutionAnchor {
+  type: 'constitution_anchor';
+  scope: 'L0';  // 最高层
+
+  // constitution 版本
+  version: string;           // 'v1.0' / 'v2.0'
+  last_amended: string;     // ISO 时间
+
+  // 内容摘要
+  content_hash: string;     // SHA256，内容完整性
+  summary: string;          // constitution 要点摘要
+
+  // 进化历史
+  evolution_history?: string[];  // evolution record IDs
+  last_evolution_id?: string;
+
+  // 锚定关系
+  anchored_decisions?: string[];  // 被此 constitution 锚定的 decision IDs
+}
+
+// recall 时，constitution 记忆永远高优先级
+async function recallWithConstitution(
+  query: string,
+  options: RecallOptions
+): Promise<{ constitution?: ConstitutionAnchor; memories: RetrievedMemory[] }> {
+  const memories = await hawkRecall(query, options);
+
+  // 如果是重大决策查询，返回 constitution 锚点
+  if (isHighStakesQuery(query)) {
+    const constitution = await hawkRecall(
+      'qujin constitution core principles',
+      { limit: 1, scope: 'L0' }
+    );
+    return { constitution: constitution[0] as ConstitutionAnchor, memories };
+  }
+
+  return { memories };
+}
+```
+**状态**：❌ 未实现（constitution 是 gql-openclaw 的 L6 层概念）
+
+---
+
+## 🟢 低优先级 — 增强功能
+
+### [x] ~~Log file output~~ — pino 已经在 v1.1 解决
+### [x] ~~Prometheus metrics~~ — v1.1 已加
+### [x] ~~Health endpoint~~ — v1.1 已加
+### [x] ~~FTS index~~ — v1.2 已加
+### [x] ~~BM25 + 向量混合搜索~~ — v1.2 已加
+### [x] ~~增量索引~~ — v1.2 已加
+### [x] ~~Batch capture~~ — v1.2 已加
+### [x] ~~normalizeText 管道~~ — v1.2 已拆分为 17 步
+
+### [ ] 21. MEMORY.md 入口索引概念
 **来源：Claude Code `memdir.ts` — `ENTRYPOINT_NAME = 'MEMORY.md'`**
 
 Claude Code 的 MEMORY.md 是所有记忆的索引目录，每行一个：
@@ -407,6 +908,19 @@ interface MemoryRecallShape {
 | 来源类型标注 | ✅ | ✅ | ❌ | Phase 1 |
 | What NOT to Save 指导 | ✅ | ❌ | ❌ | Phase 0 |
 | 4层衰减 (Working/Short/Long/Archive) | ❌ | ✅ | ✅ | ✅ 已实现 |
+
+### autoself 10层架构支撑
+
+| 功能 | autoself L 层需求 | hawk-bridge 现状 | 状态 |
+|------|-----------------|-----------------|------|
+| Hook 系统（Session/Task 生命周期） | L6 superpowers/ECC | 只有 decay hook | ❌ 未实现 |
+| 子 Agent 上下文注入 API | L3 | 无 | ❌ 未实现 |
+| Learnings 记忆分类 | L1 + L4 | 无 | ❌ 未实现 |
+| Task History 记忆 | L6 task-tracker | 无 | ❌ 未实现 |
+| Effect Evaluation 记忆 | L6 + L5 | 无 | ❌ 未实现 |
+| Cron Job 结果自动写入 | L1 定时巡检 | 不过 hawk-bridge | ❌ 未实现 |
+| Multi-Agent Session Isolation | L3 多 Agent | session_id 字段存在 | ⚠️ 待验证 |
+| Constitution 锚定记忆 | L6 qujin-editor | 无 | ❌ 未实现 |
 
 ### 架构层（v2.0+）
 
