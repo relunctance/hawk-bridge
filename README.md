@@ -195,24 +195,47 @@ hawk解锁 N          # 解锁记忆
 
 ## 核心特性
 
+> 全部 37 项（对比参考：`README.original-en.md` 为原始英文版，`README.zh-CN.md` 为原始中文版）
+
 | # | 特性 | 说明 |
 |---|------|------|
-| 1 | 自动提取 | `message:sent` + `message:received` 自动触发 |
-| 2 | 自动注入 | `agent:bootstrap` 在首次回复前注入 |
-| 3 | 混合检索 | BM25 + 向量搜索 + RRF 融合 |
-| 4 | 零配置启动 | 默认 BM25，无需 API Key |
-| 5 | 本地 Embedding | xinference bge-m3（1024 维），无外部依赖 |
-| 6 | 向后兼容 | API Key 不可用时自动降级到 BM25 |
-| 7 | 自动去重 | SimHash 检测重复记忆再存储 |
-| 8 | 多样性召回 | MMR（最大边际相关性），结果不重复 |
-| 9 | 4 层衰减 | Working → Short → Long → Archive |
-| 10 | 重要性评分 | capture 时 LLM 给出 importance score |
-| 11 | 可靠性追踪 | 确认/否认反馈影响 reliability 分数 |
-| 12 | 敏感信息过滤 | 自动脱敏 API Key、电话、邮箱、身份证 |
-| 13 | 危害内容过滤 | 暴力/欺诈/黑客内容在 capture 阶段拒绝 |
-| 14 | 记忆漂移检测 | 7 天未验证的记忆显示 🕐 标记 |
-| 15 | 多 Agent 隔离 | 通过 `owner_agent` 字段隔离各 Agent 记忆 |
-| 16 | 并发控制 | batchCapture 用信号量限制并行 LLM 调用 |
+| 1 | **自动捕获钩子** | `message:sent` + `message:received` → hawk 自动提取 6 类记忆 |
+| 2 | **自动召回钩子** | `agent:bootstrap` → 新会话前注入相关记忆 |
+| 3 | **混合检索** | BM25 + 向量搜索 + RRF 融合 — 无需 API key 也能用 |
+| 4 | **零配置降级** | 开箱即用，xinference bge-m3 默认启用 |
+| 5 | **多 Embedding 提供者** | xinference / Jina AI / 千问 / OpenAI / Cohere |
+| 6 | **优雅降级** | API key 不可用时自动降级到 BM25 |
+| 7 | **上下文感知注入** | 无 embedder 时直接用 BM25 分数 |
+| 8 | **亚 100ms 召回** | LanceDB ANN 索引，即时检索 |
+| 9 | **跨平台安装** | 一键安装，兼容所有主流 Linux 发行版 |
+| 10 | **自动去重** | 存储前文本相似度去重 — 防止重复记忆 |
+| 11 | **MMR 多样召回** | 最大边际相关性 — 既相关又多样，减少 context 大小 |
+| 12 | **28 条文本规范化** | 清理 markdown、URL、标点、时间戳、emoji、HTML、调试日志 |
+| 13 | **敏感信息脱敏** | 自动清除 API key、电话、邮箱、身份证、银行卡号 |
+| 14 | **TTL / 过期机制** | 记忆可配置过期时间（默认 30 天） |
+| 15 | **召回分数门槛** | 低于相关度阈值的记忆不注入 context |
+| 16 | **审计日志** | 所有捕获/跳过/拒绝/召回事件记录到 `~/.hawk/audit.log` |
+| 17 | **有害内容过滤** | 捕获时拒绝暴力/欺诈/黑客/CSAM 内容 |
+| 18 | **综合分数排序** | score×0.6 + reliability×0.4 — 优先高可靠性记忆 |
+| 19 | **多轮联合抽取** | 合并连续用户消息后再送 LLM 提取 — 更好上下文 |
+| 20 | **代码块 + URL 提取** | 自动将代码块（fact/0.8）和 URL（fact/0.7）捕获为记忆 |
+| 21 | **24h Embedder 缓存** | Embedding 结果缓存 24h — 避免重复 API 调用 |
+| 22 | **增量 BM25 索引** | ≤10 条新记忆 → 懒合并；>10 条 → 全量重建 — 可扩展到 1000+ |
+| 23 | **预过滤** | 数字/单 emoji/少于 30 字的内容在调用 LLM 前跳过 |
+| 24 | **Did-You-Mean** | 召回结果为空 → 按关键词重叠度推荐相似记忆 |
+| 25 | **记忆统计** | `hawk doctor` — 类别/作用域/可靠性分布面板 |
+| 26 | **效果反馈** | `hawk 否认 N` → reliability -5%；`hawk 确认 N` → verification_count +1 |
+| 27 | **多 Agent 内存隔离** | 通过 `owner_agent` 字段实现每 Agent 记忆池 — 个人 + 团队记忆 |
+| 28 | **LanceDB trygc** | Decay 后自动垃圾回收 — 保持数据库精简 |
+| 29 | **结构化 JSON 输出** | 所有 LLM 调用使用 `response_format=json_object` — 可靠解析 |
+| 30 | **Auto-Dream 定期整合** | 后台合并重复记忆、检测过期内容、确认新鲜记忆（每 24 小时或新增 5 条记忆后触发） |
+| 31 | **记忆过期检测** | 🕐 可信记忆 7 天未验证则标记；`hawk 过期` 命令扫描所有记忆 |
+| 32 | **多 Provider 精排** | Jina AI / Cohere / Mixedbread AI / OpenAI 兼容精排器，自动回退到余弦相似度 |
+| 33 | **4 类记忆分类** | fact / preference / decision / entity — 每类独立可靠性追踪和过期感知召回 |
+| 34 | **整合锁机制** | 锁文件防止多进程同时整合记忆；60 分钟或进程死后自动回收 stale lock |
+| 35 | **What NOT to Save** | 预过滤跳过代码模式/git历史/调试方案/临时任务 — 减少噪声 |
+| 36 | **双重选择器** | Header 扫描(name+description) → LLM 选 topN → 向量搜索 — 比纯向量更准 |
+| 37 | **Session Transcript 扫描** | 扫描 `transcripts/*.jsonl` 在整合时提供相关历史上下文 |
 
 ---
 
