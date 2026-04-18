@@ -202,6 +202,27 @@ Session（持久化磁盘）
 
 ---
 
+## 📈 性能数据
+
+> 实测：xinference bge-m3 (CPU) + LanceDB 0.30 + FastAPI 单 worker
+
+| 操作 | 场景 | 延迟 | QPS |
+|------|------|------|-----|
+| **Recall** | 冷启动 | 77ms | — |
+| **Recall** | 5 并发用户 | P50 284ms / P95 419ms | **13** |
+| **Recall** | 20 并发（过载） | P50 1501ms | 12 |
+| **Capture（含 LLM 提取）** | 单次 | ~2900ms | — |
+| **Capture（旁路 LLM）** | 估算 | ~250ms | ~4 |
+| xinference embedding | 单次 | 240ms | — |
+| xinference embedding | 并发 5 | 28ms 总（5.6ms/call） | — |
+
+**说明：**
+- Recall 瓶颈在 xinference embedding（240ms/call），但并发时多核 CPU 收益巨大
+- Capture 瓶颈在外部 LLM（Minimax，约 2.5s），非 LanceDB 本身
+- 5 并发用户内性能稳定，P50 仅 284ms
+
+---
+
 ## 🚀 一键安装
 
 选择最适合你的方式：
@@ -618,21 +639,27 @@ Jina AI 提供**免费额度**，足够个人使用，无需信用卡：
 
 ### ~/.hawk/config.yaml
 
+> 当前生产配置示例（xinference bge-m3 + Minimax LLM）：
+
 ```yaml
-# 复制为 ~/.hawk/config.yaml 即可
 db:
   provider: lancedb
+  path: ~/.hawk/lancedb
 
+# embedding：本地 xinference bge-m3（OpenAI-compatible 协议）
 embedding:
-  provider: jina
-  apiKey: ${JINA_API_KEY}
-  model: jina-embeddings-v5-small
+  provider: openai                    # xinference 是 OpenAI-compatible
+  apiKey: ""                          # 本地服务无认证
+  model: bge-m3
   dimensions: 1024
+  baseURL: http://localhost:9997/v1
 
-llm:
-  provider: groq
-  apiKey: ${GROQ_API_KEY}
-  model: llama-3.3-70b-versatile
+# extraction：LLM 提取（Minimax）
+extraction:
+  provider: openclaw
+  model: MiniMax-M2.7
+  apiKey: ${MINIMAX_API_KEY}
+  baseURL: https://api.minimaxi.com/v1
 
 capture:
   enabled: true
@@ -641,18 +668,18 @@ capture:
 recall:
   topK: 5
   minScore: 0.3
-
-i18n:
-  lang: zh  # zh | en — 界面语言
 ```
 
 | Provider | 环境变量 | 说明 |
 |---------|---------|------|
-| Qianwen | `QWEN_API_KEY` | 阿里云百炼 API Key，免费额度，国内首选 |
+| **xinference（推荐）** | `OLLAMA_BASE_URL` | 本地 GPU/NPU 推理，最快 |
 | Jina | `JINA_API_KEY` | Jina API Key，以 `jina_` 开头 |
+| Qianwen | `QWEN_API_KEY` | 阿里云百炼 API Key，免费额度，国内首选 |
 | Ollama | `OLLAMA_BASE_URL` | 如 `http://localhost:11434` |
 | OpenAI | `OPENAI_API_KEY` | OpenAI API Key |
-| Generic | `base_url` + `apiKey` | 任意 OpenAI 兼容端点 |
+| Generic | `baseURL` + `apiKey` | 任意 OpenAI 兼容端点 |
+
+> ⚠️ **当前生产使用 xinference bge-m3**，xinference 是 OpenAI-compatible，不需要额外的 xinference API Key。
 
 ### openclaw.json
 
@@ -743,9 +770,11 @@ hawk-bridge/
 | | |
 |---|---|
 | **运行时** | Node.js 18+ (ESM)、Python 3.12+ |
-| **向量数据库** | LanceDB（本地、无服务器） |
+| **存储** | LanceDB（本地、无服务器） |
 | **检索方式** | BM25 + ANN 向量搜索 + RRF 融合 |
-| **向量生成** | Ollama / sentence-transformers / Jina AI / OpenAI / Minimax |
+| **向量生成（生产）** | xinference bge-m3（本地，1024 维） |
+| **向量生成（可选）** | Jina AI / Qianwen / Ollama / OpenAI / Cohere |
+| **LLM 提取（生产）** | Minimax MiniMax-M2.7（外部 API） |
 | **Hook 事件** | `agent:bootstrap`（召回）、`message:sent` + `message:received`（捕获） |
 | **依赖** | 零硬依赖 — 全部可选，自动降级 |
 | **持久化** | 本地文件系统，无需外部数据库 |
@@ -782,6 +811,18 @@ hawk-bridge 和 context-hawk 是**两个独立的 GitHub 仓库**，协同工作
 - **迁移无需任何 hawk-bridge 改动** — Python 接口保持兼容即可
 
 **两者协同**：hawk-bridge 决定"*何时*行动"，context-hawk 负责"*如何*执行"。
+
+---
+
+## 🐹 Go 语言集成
+
+详见 [docs/go-integration.md](docs/go-integration.md)，包含：
+
+- **方案 A**：直接调 HTTP API（最简单，5 并发 P50 284ms）
+- **方案 B**：旁路 LLM 提取，高频写入（>1/s）
+- **方案 C**：LanceDB REST Server，极致性能（1000+ QPS）
+- 完整 Go 代码示例（recall/capture/get/forget/health）
+- 性能优化建议（HTTP keep-alive、批量请求）
 
 ---
 
