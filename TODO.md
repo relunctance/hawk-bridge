@@ -427,6 +427,362 @@ Phase 4（团队协作）:
 
 Phase 5（可观测性）:
   14. Memory Shape Telemetry — 记忆形状遥测
+
+---
+
+## 🏗️ v2.0 统一记忆架构（5层 × 3维度）
+
+> **来源：README.zh-CN.md 统一记忆架构规划 · Tier = 时间维度，Scope = 所有权维度**
+>
+> hawk-bridge 采用双维度架构，同时解决**个人100年记忆**和**企业ToB**两大场景。
+> README 承诺"详见 TODO.md"，但此前 TODO 中完全缺失此部分。
+
+### Tier × Scope 矩阵
+
+```
+            Scope →
+Tier ↓      Personal      Org           System（外部企业系统）
+─────────────────────────────────────────────────────────────
+L0 宪法     个人价值观     企业宪章        连接器协议、数据契约
+L1 生命     人生里程碑     企业里程碑      组织架构沿革
+L2 周期     十年分桶       项目/财年周期   行业周期
+L3 事件     日常记忆       团队决策        外部系统事件
+L4 工作     会话上下文     项目上下文       实时数据流
+```
+
+### 3大范围（所有权维度）
+
+| 范围 | 说明 | 示例 |
+|------|------|------|
+| **personal** | 属于个人的记忆 | 用户偏好、习惯、工作风格 |
+| **org** | 组织内共享的记忆 | 部门策略、团队决策、OKR |
+| **system** | 外部企业系统（可插拔连接器） | SAP ERP、Confluence、Jira、飞书 |
+
+### 核心设计原则
+
+1. **Tier = 时间，Scope = 所有权** — 两个独立维度，不是单一层级
+2. **宪法层是锚点** — 所有记忆最终成为宪法记忆或逐渐消亡
+3. **DARK 文件格式** — 每条记忆 = 一个独立 JSON 文件（永远不依赖数据库格式）
+4. **只追加不修改** — 不覆盖，不删除，除非用户明确授权
+5. **多副本存储** — GitHub + Gitee + 本地 NAS（无单点故障）
+6. **连接器插件系统** — 企业接入自己的系统作为 `Scope=system`
+7. **可迁移设计** — 格式可以变更，内容必须存活 100 年
+
+---
+
+### v2.0 项详细任务
+
+#### [ ] v2.0：统一 Schema（Tier + Scope 双字段）+ L0/L1/L2 层
+
+**现状**：当前 hawk-bridge 只有 `fact/preference/decision/entity` 四类，无 Tier/Scope 维度
+
+**实现方向**：
+```typescript
+// 统一记忆 Schema
+interface UnifiedMemoryEntry {
+  id: string;
+  text: string;
+
+  // 双维度字段（v2.0 核心新增）
+  tier: 'L0' | 'L1' | 'L2' | 'L3' | 'L4';  // 时间维度
+  scope: 'personal' | 'org' | 'system';        // 所有权维度
+
+  // 现有字段保留
+  category?: string;   // fact/preference/decision/entity → 映射到 L3/L4
+  event_id?: string;   // 跨版本关联
+
+  // L0/L1/L2 层新增字段
+  lifespan_years?: number;     // 预期存活年限（L0=100+, L1=50+, L2=30+）
+  archival_candidate?: boolean; // 是否可归档到冷存储
+  source_connector?: string;    // system 范围时，来源连接器名称
+}
+
+// 存储层改造
+// L0/L1/L2 → DARK JSON 文件（永久存储，不依赖数据库）
+// L3/L4 → LanceDB（当前架构，自然衰减）
+```
+
+**前置依赖**：无（全新设计）
+**状态**：📋 待设计
+
+---
+
+#### [ ] v2.1：DARK Archive + 冷存储管道（GitHub + Gitee 双推）
+
+**现状**：当前所有记忆存 LanceDB，无文件归档机制
+
+**实现方向**：
+```typescript
+// DARK Archive 格式
+// 每条记忆 = ~/.hawk/archive/{tier}/{year}/{month}/{memory_id}.json
+interface DARKMemoryFile {
+  version: "1.0";
+  id: string;
+  text: string;
+  tier: 'L0' | 'L1' | 'L2';
+  scope: 'personal' | 'org' | 'system';
+  created_at: string;      // ISO 8601
+  created_by: string;     // agent_id 或 user_id
+  source_connector?: string;
+  lifespan_years: number;
+  content_hash: string;    // SHA256，防篡改
+  signature?: string;      // 可选：HMAC 签名（内容完整性）
+}
+
+// 冷存储推送管道
+interface ColdStoragePipeline {
+  trigger: 'manual' | 'scheduled' | 'tier_change';  // 触发时机
+  archival_tier: 'L2';  // 哪些 tier 进入冷存储
+  replicas: ['github', 'gitee', 'local_nas'];  // 多副本
+
+  // GitHub: 使用 Git Data API 或 contents API
+  // Gitee: 同上，镜像推送
+  // Local NAS: 同步到指定挂载路径
+}
+```
+
+**前置依赖**：v2.0（统一 Schema）
+**状态**：📋 规划中
+
+---
+
+#### [ ] v2.2：企业连接器系统 + Scope=system 实现
+
+**现状**：无连接器概念
+
+**实现方向**：
+```typescript
+// 连接器接口
+interface Connector {
+  name: string;                     // 'feishu' | 'confluence' | 'jira' | 'github' | 'sap'
+  scope: 'system';                   // 固定为 system
+
+  // 认证
+  authenticate(): Promise<void>;
+
+  // 拉取（外部系统 → hawk-bridge）
+  pull(options?: PullOptions): Promise<PullResult[]>;
+
+  // 推送（hawk-bridge → 外部系统，可选）
+  push?(memory: UnifiedMemoryEntry): Promise<void>;
+
+  // 健康检查
+  health(): Promise<ConnectorHealth>;
+}
+
+// 连接器注册表
+const CONNECTORS: Map<string, Connector> = new Map();
+
+// FeishuConnector
+// - 拉取：日历事件、文档变更、审批记录
+// - 映射到 memory.scope = 'system', memory.source_connector = 'feishu'
+
+// ConfluenceConnector
+// - 拉取：指定 space 的页面更新
+// - 映射到 memory.scope = 'system', memory.source_connector = 'confluence'
+
+// JiraConnector
+// - 拉取：issue 变更、comment、Sprint 事件
+// - 映射到 memory.scope = 'system', memory.source_connector = 'jira'
+```
+
+**前置依赖**：v2.0（统一 Schema）
+**状态**：📋 规划中
+
+---
+
+#### [ ] v2.3：Org 记忆层 + Scope=org + 访问控制
+
+**现状**：无 org/shred 概念，所有记忆不加区分
+
+**实现方向**：
+```typescript
+// Org 范围记忆特点：
+// - 多用户共享（同一 org 内）
+// - 需要访问控制（谁可以读/写/删除）
+// - 典型的：团队决策、OKR、项目上下文、部门策略
+
+interface OrgMemory extends UnifiedMemoryEntry {
+  scope: 'org';
+  org_id: string;           // 组织 ID
+  shared_with: string[];     // user_id 列表（可选：空=全员可见）
+  write_access: string[];    // 允许写入的 user_id 列表
+  access_level: 'public' | 'restricted' | 'private';
+
+  // org 范围特有字段
+  team_id?: string;          // 子团队（可选）
+  decision_level?: 'team' | 'department' | 'company';
+}
+
+// 访问控制检查
+async function checkOrgAccess(
+  memory: OrgMemory,
+  requester_id: string,
+  operation: 'read' | 'write' | 'delete'
+): Promise<boolean> {
+  if (memory.access_level === 'public') return true;
+  if (!memory.shared_with.includes(requester_id)) return false;
+  if (operation === 'write' && !memory.write_access.includes(requester_id)) return false;
+  return true;
+}
+```
+
+**前置依赖**：v2.0（统一 Schema）
+**状态**：📋 规划中
+
+---
+
+#### [ ] v2.4：层级晋升引擎（L3 → L2 → L1 → L0）
+
+**现状**：无晋升机制，记忆在 L3 永久衰减
+
+**实现方向**：
+```typescript
+// 晋升条件
+interface PromotionRule {
+  from_tier: 'L3' | 'L2' | 'L1';
+  to_tier: 'L2' | 'L1' | 'L0';
+
+  // 晋升条件
+  conditions: {
+    min_access_count: number;     // 被召回次数（≥3 次才晋升）
+    min_age_days: number;         // 最小存活天数（L3→L2: 180天, L2→L1: 365天）
+    max_age_days: number;         // 超时未晋升 → 淘汰（L3: 1825天≈5年）
+    decay_level?: 'expired';       // 衰减到 expired 才可晋升
+  };
+
+  // 晋升触发方式
+  trigger: 'scheduled' | 'event' | 'manual';
+
+  // 晋升后
+  action: {
+    move_to_tier: string;
+    convert_to_dark: boolean;     // L2+ 必须转 DARK 文件
+    notify_user: boolean;
+  };
+}
+
+// 晋升引擎
+class PromotionEngine {
+  async evaluate(memory: UnifiedMemoryEntry): Promise<EvaluationResult> {
+    // 1. 检查是否符合晋升条件
+    // 2. 计算剩余寿命（lifespan_years - current_age）
+    // 3. 决定：晋升 / 维持 / 淘汰
+  }
+
+  async promote(memory_id: string): Promise<void> {
+    // 1. 创建晋升记录（audit log）
+    // 2. 更新 tier 字段
+    // 3. 如果 to_tier >= L2 → 转 DARK 文件
+    // 4. 发送通知（可选）
+  }
+}
+
+// 默认晋升规则
+const PROMOTION_RULES: PromotionRule[] = [
+  {
+    from_tier: 'L3', to_tier: 'L2',
+    conditions: { min_access_count: 3, min_age_days: 180, max_age_days: 1825 },
+    trigger: 'scheduled',
+    action: { move_to_tier: 'L2', convert_to_dark: true, notify_user: false }
+  },
+  {
+    from_tier: 'L2', to_tier: 'L1',
+    conditions: { min_access_count: 5, min_age_days: 365, max_age_days: 3650 },
+    trigger: 'scheduled',
+    action: { move_to_tier: 'L1', convert_to_dark: true, notify_user: true }
+  },
+  {
+    from_tier: 'L1', to_tier: 'L0',
+    conditions: { min_access_count: 10, min_age_days: 730, max_age_days: 18250 },
+    trigger: 'manual',  // L0 宪法层需要用户明确确认
+    action: { move_to_tier: 'L0', convert_to_dark: true, notify_user: true }
+  },
+];
+```
+
+**前置依赖**：v2.0（统一 Schema）+ v2.1（DARK Archive）
+**状态**：📋 规划中
+
+---
+
+#### [ ] v2.5：分层 + 分范围统一检索
+
+**现状**：当前 recall 是单一向量搜索，无 Tier/Scope 过滤能力
+
+**实现方向**：
+```typescript
+// 统一检索接口
+interface UnifiedRecallOptions {
+  query: string;
+
+  // Tier 过滤（可选，空=所有层）
+  tier?: 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L0-L4';
+
+  // Scope 过滤（可选，空=所有范围）
+  scope?: 'personal' | 'org' | 'system' | 'all';
+
+  // 权限过滤（自动注入）
+  requester_id?: string;
+  org_id?: string;
+
+  // 排序策略
+  sort_by?: 'relevance' | 'recency' | 'tier_priority';  // tier_priority: L0 > L1 > L2 > L3 > L4
+
+  // 结果限制
+  limit?: number;
+}
+
+// 检索执行计划
+// 1. Personal scope → LanceDB 向量搜索
+// 2. Org scope → 检查 ACL → 允许则查 LanceDB
+// 3. System scope → 连接器实时查询（或缓存）
+// 4. L0/L1/L2 → DARK 文件全文检索（不经过向量引擎）
+
+// 跨范围联邦搜索
+async function unifiedSearch(options: UnifiedRecallOptions): Promise<SearchResult[]> {
+  const results: SearchResult[] = [];
+
+  if (!options.scope || options.scope === 'personal') {
+    results.push(...await lanceDBRecall({ ...options, scope: 'personal' }));
+  }
+
+  if (!options.scope || options.scope === 'org') {
+    const orgResults = await lanceDBRecall({ ...options, scope: 'org' });
+    // ACL 过滤
+    results.push(...orgResults.filter(r => checkOrgAccess(r, options.requester_id, 'read')));
+  }
+
+  if (!options.scope || options.scope === 'system') {
+    const systemResults = await Promise.all(
+      Array.from(CONNECTORS.values())
+        .filter(c => c.scope === 'system')
+        .map(c => c.query(options.query))
+    );
+    results.push(...systemResults.flat());
+  }
+
+  // 跨层加权排序（L0 最优先）
+  return rerankByTier(results, options.sort_by ?? 'tier_priority');
+}
+```
+
+**前置依赖**：v2.0 + v2.2（连接器）+ v2.3（Org）
+**状态**：📋 规划中
+
+---
+
+### v2.0 实施依赖关系
+
+```
+v2.0（统一 Schema）
+  ├── v2.1（DARK Archive）         ← 依赖 v2.0 Schema
+  ├── v2.2（企业连接器）            ← 依赖 v2.0 Schema
+  └── v2.3（Org 记忆层）           ← 依赖 v2.0 Schema
+        │
+        └── v2.4（层级晋升引擎）   ← 依赖 v2.0 + v2.1
+              │
+              └── v2.5（统一检索） ← 依赖 v2.0 + v2.2 + v2.3
 ```
 
 ---
