@@ -20,6 +20,7 @@
 | ⚙️ Rule Engine（规则引擎） | 规则驱动记忆生命周期 | #item-60, #item-61, #item-62, #item-63, #item-64, #item-65, #item-66, #item-67, #item-68, #item-69, #item-70 |
 | 📊 Observability（可观测性） | 自我监控、系统健康度 | #item-74 |
 | 🧠 知识进化（100年计划） | 分层蒸馏、动态Tier、溯源、合规、经济学 | #item-75, #item-76, #item-77, #item-78, #item-79, #item-80, #item-81, #item-82, #item-83, #item-84, #item-85, #item-86, #item-87, #item-88, #item-89, #item-90, #item-91, #item-92 |
+| 🔺 竞争战略与核心挑战 | 护城河定位、技术攻坚、高频刚需 | #item-93, #item-94, #item-95 |
 
 
 ---
@@ -2688,8 +2689,9 @@ Memory Health Dashboard：
 | 存储与架构 | #50-#59（10项） |
 | 规则引擎 | #60-#70（11项） |
 | 独立判断（新增） | #71-#74（4项） |
-| **知识进化（100年计划新增）** | **#75-#92（18项）** |
-| **总计** | **92 项** |
+| 知识进化（100年计划新增） | #75-#92（18项） |
+| **竞争战略与核心挑战** | **#93-#95（3项）** |
+| **总计** | **95 项** |
 
 ---
 
@@ -3568,6 +3570,185 @@ interface MemoryArchaeology {
 
 **前置依赖**：#77（记忆血缘链）+ #91（Memory Warmth）
 **优先级**：🟢
+
+---
+
+### [ ] 93. 竞争护城河：知识进化分层 + 企业知识治理 {#item-93}
+
+**来源：autoself 100年计划 — 竞争战略视角**
+
+**背景**：当前所有竞品（Mem0/Notion AI/Copilot/Rewind AI）本质都是"更高级的文本向量检索系统"，没有一家在规划**知识的进化和分层**。这是 hawk-bridge 区别于所有竞品的核心战略高地。
+
+**护城河一：知识进化分层（#75-#78 + #87-#89）**
+```
+竞品：存储"说过的话" → 记忆 = 文本块
+hawk-bridge：存储"学到的知识" → 记忆 = Raw→Pattern→Principle→Skill 的进化体
+
+→ 100年后，竞品的记忆是噪音沼泽
+→ hawk-bridge 的记忆是高度蒸馏的知识资产
+```
+
+**护城河二：企业知识治理（#79）**
+```
+竞品：没有企业知识治理
+hawk-bridge：归属/访问控制/保密等级/留存策略/审计追踪
+
+→ 企业愿意付费的核心是"知识资产可控"
+→ 这是 ToB 商业化的基础设施
+```
+
+**竞品对比**：
+| 能力 | Mem0 | Notion AI | Copilot | Rewind AI | hawk-bridge |
+|------|------|-----------|---------|-----------|-------------|
+| 知识蒸馏分层 | ❌ | ❌ | ❌ | ❌ | ✅ #75-78 |
+| 企业知识治理 | ❌ | ⚠️ 部分 | ⚠️ 部分 | ❌ | ✅ #79 |
+| 血缘链追溯 | ❌ | ❌ | ❌ | ❌ | ✅ #77 |
+| 记忆经济学 | ❌ | ❌ | ❌ | ❌ | ✅ #85 |
+| 记忆诺贝尔奖 | ❌ | ❌ | ❌ | ❌ | ✅ #87 |
+| 记忆可证明性 | ❌ | ❌ | ❌ | ❌ | ✅ #83 |
+
+**前置依赖**：#75（知识蒸馏）+ #79（企业知识治理）
+**优先级**：🔴（战略优先级）
+
+---
+
+### [ ] 94. 核心挑战：记忆验证引擎 {#item-94}
+
+**来源：autoself 100年计划 — 技术攻坚视角**
+
+**背景**：记忆验证是行业死穴。记忆说"X文件路径是 /a/b/c"，但文件早就不存在了。系统无法自我判断"这条记忆现在还对不对"。
+
+**问题分解**：
+```
+为什么难？
+├── file_exists：需要实时文件系统访问（跨设备/服务器场景无法保证）
+├── code_grep：文件改名后路径变了，但记忆还指着旧路径
+├── api_check：需要维护 API contract 版本历史
+└── 根本矛盾：记忆是"历史快照"，但世界在持续变化
+```
+
+**打通外部验证源**：
+```typescript
+// 必须和 autoself L1/L4 巡检验证闭环结合
+interface VerificationSource {
+  type: 'filesystem' | 'codebase' | 'api' | 'web' | 'user_confirm';
+
+  // 文件系统验证（本地开发场景）
+  filesystem: {
+    watch_paths: string[];           // 监控的目录
+    verify_on_access: boolean;       // recall 时验证
+    auto_update_on_change: boolean;  // 变化时自动更新记忆
+  };
+
+  // 代码仓库验证（代码相关记忆）
+  codebase: {
+    repo_url: string;
+    git_tracking: boolean;          // 追踪文件移动/重命名
+    verify_on_access: boolean;
+  };
+
+  // Web 验证（公开信息相关）
+  web: {
+    check_broken_links: boolean;    // 定期检查链接有效性
+    scrape_verification: boolean;    // 抓取页面内容验证
+  };
+
+  // 用户确认（无法自动验证时）
+  user_confirm: {
+    prompt_template: string;         // 验证提示词
+    reminder_frequency: 'daily' | 'weekly';
+  };
+}
+```
+
+**验证触发时机**：
+| 时机 | 验证内容 | 自动化程度 |
+|------|---------|-----------|
+| recall 时 | 检查记忆涉及的文件/路径是否存在 | 自动 |
+| 每日巡检 | 全量验证关键记忆 | 自动 |
+| 外部变化时 | 文件变更 → 自动更新相关记忆 | 自动 |
+| 每周提醒 | 用户确认无法自动验证的记忆 | 手动 |
+
+**依赖 autoself 闭环**：
+- L1 巡检层发现文件变化 → 触发 hawk-bridge 更新记忆
+- L4 决策层评估验证结果 → 判断是否需要人工介入
+- hawk-bridge 存储验证结果 → 为 L1 提供验证数据
+
+**前置依赖**：#44（记忆验证引擎已在规划，此条是强化）
+**优先级**：🔴（技术攻坚最高优先级）
+
+---
+
+### [ ] 95. 核心挑战：跨设备 Sync + CRDT 冲突解决 {#item-95}
+
+**来源：autoself 100年计划 — 工程实现视角**
+
+**背景**：用户多设备（Desktop + Laptop + Server）是实际场景的高频刚需。CRDT 看似完美，但实际有坑。
+
+**CRDT 场景分析**：
+```
+场景：A 机删除了记忆 M，B 机同时更新了记忆 M
+
+纯 CRDT last-write-wins 结果：
+→ B 机更新胜出，M 复活
+→ 但用户明确在 A 机删除了 → 用户意图被违背
+
+多设备并发写入：
+→ "最终一致性"在用户体验上是否足够好？
+→ 用户期望的是"我的删除是有意义的"
+```
+
+**Sync 传输层困境**：
+| 方案 | 优点 | 缺点 |
+|------|------|------|
+| GitHub Gist | 免费 | 60 req/hr rate limit，不适合高频 |
+| S3 | 可靠 | 有成本，需要维护 bucket 策略 |
+| rsync | 增量同步 | 需要自建 server，部署复杂 |
+| WebSocket | 实时 | 需要常驻连接，不适合移动 |
+| 自主 P2P | 隐私 | 实现复杂度极高 |
+
+**推荐方案：分层 Sync**
+```
+┌─────────────────────────────────────────────────────┐
+│  HOT/WARM 层：实时 Sync                            │
+│  → WebSocket 推送 or GitHub Gist（提高 rate limit）│
+│  → last-write-wins 冲突解决                       │
+│  → 用户体验优先：跨设备看到基本一致的近期记忆      │
+├─────────────────────────────────────────────────────┤
+│  COLD/ARCHIVE 层：定时批量 Sync                    │
+│  → S3 or rsync 增量备份                           │
+│  → 人工介入冲突解决（重要记忆被误删可恢复）        │
+└─────────────────────────────────────────────────────┘
+```
+
+**CRDT 增强策略**：
+```typescript
+// 删除不是"覆盖"，是"显式删除标记"
+interface DeletionMark {
+  memory_id: string;
+  deleted_at: string;
+  deleted_by_device: string;
+  tombstones: number;  // 多少设备标记删除
+
+  // 如果 tombstones < 50% 设备数 → 复活（多数设备没删）
+  // 如果 tombstones >= 50% → 彻底删除
+}
+
+// 关键记忆（importance > 0.8）删除需要多设备确认
+interface CriticalMemoryDeletion {
+  memory_id: string;
+  deletion_requested_by: string;
+  required_confirmations: number;  // 至少需要 N 个设备确认
+  confirmations_received: string[];
+}
+```
+
+**依赖**：
+- knowledg-hub 的连接器生态（#79 企业知识治理需要）
+- 单一日记忆 Sync 意义有限，需要和企业知识中枢结合
+
+**前置依赖**：#51（跨设备 Sync 协议）
+**优先级**：🔴（高频刚需）
 
 ---
 
