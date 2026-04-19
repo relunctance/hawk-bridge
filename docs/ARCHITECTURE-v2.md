@@ -891,11 +891,53 @@ v3.x ─────────────────────────
 
 | 方案 | 优势 | 劣势 |
 |------|------|------|
-| **In-Memory (Node.js EventEmitter)** | 无额外依赖，低延迟 | 单实例，断电丢失，重启后状态丢失 |
-| **Redis Streams** | 持久化，支持多实例，成熟 | 需要额外部署 |
-| **Kafka** | 企业级，可靠性高 | 过度工程 |
+| **Redis Streams** | 持久化，支持多实例，消费者组，exactly-once，成熟稳定 | 需要额外部署 Redis |
+| **Kafka** | 企业级，可靠性极高 | 过度工程，运维复杂 |
+| **In-Memory** | 无额外依赖，低延迟 | 单实例，断电丢失，无法水平扩展 |
 
-**推荐**：v2.0 初期用 In-Memory + 持久化（定期 checkpoint），v3.0 升级到 Redis Streams
+**决策**：直接采用 **Redis Streams**，原因：
+- Redis 已在团队基础设施中（xinference 等服务已用）
+- 支持消费者组（Consumer Groups），多实例消费无重复
+- 内置持久化，断电不丢
+- 比 Kafka 轻量，比 In-Memory 可靠
+
+```typescript
+// Redis Streams Event Bus 接口设计
+interface MemoryEventBus {
+  // 发布事件
+  publish(channel: string, event: MemoryEvent): Promise<void>;
+
+  // 订阅消费（消费者组模式）
+  subscribe(
+    group: string,
+    consumer: string,
+    handler: (event: MemoryEvent) => Promise<void>
+  ): Promise<void>;
+
+  // 确认已处理
+  ack(channel: string, group: string, id: string): Promise<void>;
+}
+
+// MemoryEvent 类型
+type MemoryEventType =
+  | 'memory.captured'
+  | 'memory.recalled'
+  | 'memory.contested'
+  | 'memory.verified'
+  | 'memory.corrected'
+  | 'memory.decayed'
+  | 'memory.archived'
+  | 'memory.deleted';
+
+interface MemoryEvent {
+  id: string;           // Redis Stream message ID
+  trace_id: string;      // 分布式追踪 ID
+  type: MemoryEventType;
+  memory_id: string;
+  payload: Record<string, unknown>;
+  timestamp: number;
+}
+```
 
 ### 8.3 向量 Embedding 抽象
 
