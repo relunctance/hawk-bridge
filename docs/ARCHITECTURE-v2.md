@@ -193,12 +193,15 @@
                    │     Storage Engine       │
                    │  (LanceDB / Pg / S3)    │
                    └──────────────────────────┘
-
+                   │
+                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│                     独立进程 / Service                            │
+│                    独立进程 / 独立仓库                             │
 │  ┌──────────────────┐    ┌───────────────────────────────────┐  │
-│  │  Decay Worker    │    │    hawk-memory-api (Python)       │  │
-│  │  (Cron 定时任务) │    │    LLM 提取 / 矛盾检测 / 蒸馏     │  │
+│  │  Decay Worker    │    │    hawk-memory-api (Python)      │  │
+│  │  (hawk-bridge    │    │    独立仓库（已是独立项目）       │  │
+│  │   同仓库，systemd │    │    LLM 提取 / 矛盾检测 / 蒸馏   │  │
+│  │   timer 触发)    │    │                                   │  │
 │  └──────────────────┘    └───────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -215,8 +218,8 @@
 | **Memory Core** | 主进程 | Schema 管理、版本控制、一致性 | `MemoryCore` |
 | **Storage Engine** | 主进程 | 多引擎适配器（ LanceDB / Pg / S3） | `StorageEngine` |
 | **Pipeline Observer** | 主进程 | Stage 级 tracing + metrics | `PipelineObserver` |
-| **Decay Worker** | **独立进程** | 定时 decay/归档/GC | `DecayWorker` |
-| **LLM Service** | **独立进程** | LLM 提取、矛盾检测、质量评估 | `HawkMemoryAPI` |
+| **Decay Worker** | 独立进程（非独立仓库） | 定时 decay/归档/GC | `DecayWorker` |
+| **LLM Service** | 独立仓库（hawk-memory-api） | LLM 提取、矛盾检测、质量评估 | `HawkMemoryAPI` |
 
 ---
 
@@ -935,9 +938,10 @@ class PipelineFactory {
 ## 6. 组件拆分与边界
 
 > **核心原则**：
-> - ❌ Pipeline Stage 不要拆分进程（接口调用即可）
-> - ✅ Decay Worker 应该拆分独立进程（定时任务不需要常驻内存）
-> - ✅ LLM Service 应该拆分独立进程（hawk-memory-api 已是独立项目）
+> - ❌ Pipeline Stage 不要拆分进程（接口调用即可，IPC 开销大）
+> - ❌ Decay Worker 不要拆分仓库（技术栈相同，共享代码多）
+> - ✅ Decay Worker 应该独立进程部署（定时任务不需要常驻内存）
+> - ✅ hawk-memory-api 应该拆分仓库（Python 技术栈不同，已是独立项目）
 > - ❌ Storage Engine 不要拆分进程（存储引擎本身是独立服务）
 
 ### 6.1 拆分决策矩阵
@@ -948,7 +952,7 @@ class PipelineFactory {
 | **Pipeline Observer** | ❌ 否 | 必须内联在 Pipeline 执行流中 | 主进程 |
 | **Embedder** | ❌ 否 | 纯计算，调用频率高，IPC 开销大 | 主进程 |
 | **Storage Engine** | ❌ 否 | LanceDB/Pg/S3 本身是独立服务，通过接口调用 | 主进程 |
-| **Decay Worker** | ✅ **是** | 定时任务，不需要常驻内存，可以独立部署/扩展 | **缺失，需新建** |
+| **Decay Worker** | ✅ 独立进程（不是独立仓库） | 定时任务，不需要常驻内存，可以独立部署/扩展 | **缺失，需新建，但不放独立仓库** |
 | **LLM Service** | ✅ 是 | Python 运行时独立，GPU 资源独立，已拆分 | **hawk-memory-api** |
 | **Event Bus** | ❌ 否 | 抽象层，默认 in-memory，可选 Redis | 主进程 |
 
