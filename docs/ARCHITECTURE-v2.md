@@ -13,11 +13,14 @@
 3. [目标架构](#2-目标架构)
 4. [核心模块设计](#3-核心模块设计)
 5. [存储层设计](#4-存储层设计)
-6. [Pipeline 设计](#5-pipeline-设计)
-7. [跨领域功能架构](#6-跨领域功能架构)
-8. [实施路线图](#7-实施路线图)
-9. [关键技术决策](#8-关键技术决策)
-10. [架构缺口与未来方向](#9-架构缺口与未来方向)
+6. [Pipeline 架构](#5-pipeline-架构)
+7. [组件拆分与边界](#6-组件拆分与边界)
+8. [LLM 服务集成层](#7-llm-服务集成层)
+9. [跨领域功能架构](#8-跨领域功能架构)
+10. [实施路线图](#9-实施路线图)
+11. [关键技术决策](#10-关键技术决策)
+12. [架构缺口与未来方向](#11-架构缺口与未来方向)
+13. [落地施工指南](#12-落地施工指南)
 
 ---
 
@@ -130,8 +133,9 @@
 | **存储引擎锁定** | LanceDB 是唯一的存储选择，无法切 MySQL/Pg |
 | **无 Pipeline 抽象** | capture/recall/decay 是独立 hook，没有统一调度 |
 | **无 Event Bus** | 子系统间通过直接调用耦合，无法异步 |
-| **无跨语言支持** | Python LLM 提取是 subprocess，无法暴露内部 API |
-| **无 Tracing 基础设施** | 每条记忆的生命周期不可追溯 |
+| **Python LLM 原始交互** | subprocess execSync，无 resilience、无 retry、无 queue |
+| **Decay 耦合在 hook** | OpenClaw 启动才检查，无法定时执行 |
+| **无 Pipeline Observer** | 每个 stage 的输入输出无法追踪 |
 
 ---
 
@@ -141,10 +145,11 @@
 
 ```
 1. 分层解耦：存储层 / 计算层 / 接口层分离
-2. Pipeline 化：所有记忆操作通过统一 Pipeline
-3. 插件化存储：支持多种存储引擎按场景切换
-4. 可观测优先：tracing + metrics + logging 全面内置
-5. 向后兼容：v1.x 的 API 和 Hook 机制完全兼容
+2. Pipeline 化：所有记忆操作通过统一 Pipeline，每个 Stage 可插拔
+3. 组件拆分：Decay Worker 和 LLM 服务独立进程，其余保持单进程
+4. 插件化存储：支持多种存储引擎按场景切换
+5. 可观测优先：tracing + metrics + logging 全面内置
+6. 向后兼容：v1.x 的 API 和 Hook 机制完全兼容
 ```
 
 ### 2.2 目标架构总览
@@ -164,8 +169,8 @@
                   └───────────────┬───────────────────┘
                                   ▼
                    ┌──────────────────────────────┐
-                   │        Event Bus            │
-                   │   (In-Memory + Redis)       │
+                   │        Event Bus             │
+                   │   (In-Memory + Redis)        │
                    └──────────────┬───────────────┘
                                   │
           ┌───────────────────────┼───────────────────────┐
@@ -174,43 +179,44 @@
 ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
 │   Capture        │  │   Recall        │  │   Decay         │
 │   Pipeline       │  │   Pipeline      │  │   Pipeline      │
+│   (Node.js)      │  │   (Node.js)     │  │   (Node.js)     │
 └────────┬─────────┘  └────────┬─────────┘  └────────┬─────────┘
+         │                     │                     │
+         │    ┌────────────────┴────────────────┐    │
+         │    │         Memory Core              │    │
+         │    │  (Schema / Indexing / Rerank)   │    │
+         │    └────────────────┬────────────────┘    │
          │                     │                     │
          └─────────────────────┼─────────────────────┘
                                ▼
                    ┌──────────────────────────┐
-                   │      Memory Core         │
-                   │  (Schema / Indexing /    │
-                   │   Deduplication / Rerank)│
-                   └──────────────┬───────────┘
-                                  │
-          ┌───────────────────────┼───────────────────────┐
-          │                       │                       │
-          ▼                       ▼                       ▼
-┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
-│   LanceDB       │  │   PostgreSQL     │  │   S3 / Object   │
-│   (Hot Storage) │  │   (Metadata)    │  │   (Archives)   │
-└──────────────────┘  └──────────────────┘  └──────────────────┘
+                   │     Storage Engine       │
+                   │  (LanceDB / Pg / S3)    │
+                   └──────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────────┐
-│                    Observability Layer                            │
-│  Tracing / Metrics / Logging / Self-Awareness Dashboard         │
+│                     独立进程 / Service                            │
+│  ┌──────────────────┐    ┌───────────────────────────────────┐  │
+│  │  Decay Worker    │    │    hawk-memory-api (Python)       │  │
+│  │  (Cron 定时任务) │    │    LLM 提取 / 矛盾检测 / 蒸馏     │  │
+│  └──────────────────┘    └───────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 ### 2.3 核心模块职责
 
-| 模块 | 职责 | 关键类 |
-|------|------|--------|
-| **Gateway API** | OpenClaw Hook 协议，接收 capture/recall 事件 | `HawkGateway` |
-| **HTTP API** | 外部 REST API，SDK 接入 | `HawkHTTPAPI` |
-| **Event Bus** | 异步事件分发，支持 Redis 持久化 | `MemoryEventBus` |
-| **Capture Pipeline** | 提取 → 分类 → 去重 → 存储 | `CapturePipeline` |
-| **Recall Pipeline** | 查询 → 检索 → 重排 → 过滤 → 返回 | `RecallPipeline` |
-| **Decay Pipeline** | 定时扫描 → 衰减 → 淘汰 | `DecayPipeline` |
-| **Memory Core** | Schema 管理、版本控制、一致性 | `MemoryCore` |
-| **Storage Engine** | 多引擎适配器（ LanceDB / Pg / S3） | `StorageEngine` |
-| **Observability** | Tracing / Metrics / Self-Awareness | `MemoryObservability` |
+| 模块 | 进程 | 职责 | 关键类 |
+|------|------|------|--------|
+| **Gateway API** | 主进程 | OpenClaw Hook 协议 | `HawkGateway` |
+| **HTTP API** | 主进程 | 外部 REST API，SDK 接入 | `HawkHTTPAPI` |
+| **Event Bus** | 主进程 | 异步事件分发，支持 Redis | `MemoryEventBus` |
+| **Capture Pipeline** | 主进程 | 提取 → 分类 → 去重 → 存储 | `CapturePipeline` |
+| **Recall Pipeline** | 主进程 | 查询 → 检索 → 重排 → 过滤 → 返回 | `RecallPipeline` |
+| **Memory Core** | 主进程 | Schema 管理、版本控制、一致性 | `MemoryCore` |
+| **Storage Engine** | 主进程 | 多引擎适配器（ LanceDB / Pg / S3） | `StorageEngine` |
+| **Pipeline Observer** | 主进程 | Stage 级 tracing + metrics | `PipelineObserver` |
+| **Decay Worker** | **独立进程** | 定时 decay/归档/GC | `DecayWorker` |
+| **LLM Service** | **独立进程** | LLM 提取、矛盾检测、质量评估 | `HawkMemoryAPI` |
 
 ---
 
@@ -492,144 +498,953 @@ interface VersionEntry {
 
 ---
 
-## 5. Pipeline 设计
+## 5. Pipeline 架构
 
-### 5.1 Capture Pipeline
+> 这是 v2.0 最重要的架构改进之一。核心改变：
+> 1. **Stage 接口化**：每个 Pipeline 阶段是可独立运行和替换的单元
+> 2. **Observer 可注入**：每个 Stage 的输入/输出/耗时可被观察和追踪
+> 3. **可配置**：Pipeline 在运行时组装，不硬编码调用链
 
-```
-User Conversation
-      │
-      ▼
-┌─────────────────────────────────────────────────────────────┐
-│  ┌──────────────┐                                           │
-│  │  Input       │  原始对话文本                             │
-│  │  Normalizer  │  清理格式、规范化                         │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  Segmenter   │  按语义分段（过滤噪音）                    │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  LLM         │  并行调用 LLM 提取                        │
-│  │  Extractor   │  category / importance / description      │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  Shelf Life  │  推断保鲜期类型                           │
-│  │  Detector    │  permanent / session / project / ephem   │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  Dedupe      │  SimHash 去重 + 版本链检查                │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  Embedder    │  向量化（多 provider 支持）               │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  Storage     │  写入 Storage Engine + trace              │
-│  └──────────────┘                                           │
-└─────────────────────────────────────────────────────────────┘
-```
+### 5.1 Pipeline Stage 接口
 
-### 5.2 Recall Pipeline
+```typescript
+/**
+ * Pipeline Stage — 所有 Pipeline 阶段的统一接口
+ * 每个 Stage 都是一个独立可测试的单元
+ */
+interface PipelineStage<I = unknown, O = unknown> {
+  /** 阶段名称（用于日志和 tracing） */
+  name: string;
 
-```
-User Query
-      │
-      ▼
-┌─────────────────────────────────────────────────────────────┐
-│  ┌──────────────┐                                           │
-│  │  Query       │  解析 query，提取时间意图（"之前"/"之后"）│
-│  │  Parser      │                                           │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  Temporal    │  时序推理（如果 query 包含时序）           │
-│  │  Reasoner    │                                           │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  Embedder    │  向量化 query                             │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐   ┌──────────────┐                       │
-│  │  Vector      │   │  FTS         │  并行执行              │
-│  │  Search       │   │  Search      │                       │
-│  └──────┬───────┘   └──────┬───────┘                       │
-│         └──────────┬─────────┘                               │
-│                    ▼                                         │
-│  ┌──────────────┐                                           │
-│  │  RRF         │  Reciprocal Rank Fusion                   │
-│  │  Fusion      │  合并向量 + FTS 结果                       │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  Contested   │  过滤 contested 记忆                      │
-│  │  Filter      │                                           │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  Version     │  确保返回最新版本                          │
-│  │  Resolver    │  跟随 superseded_by 链                    │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  Cross       │  Cross Encoder 重排                       │
-│  │  Encoder     │  增加 relevance_breakdown                 │
-│  │  Rerank      │                                           │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  Result      │  返回结果 + recall_reason + trace         │
-│  │  Builder     │                                           │
-│  └──────────────┘                                           │
-└─────────────────────────────────────────────────────────────┘
+  /** 描述该阶段的输入输出类型 */
+  describe(): { input: string; output: string; };
+
+  /** 执行阶段逻辑 */
+  process(input: I, context: PipelineContext): Promise<O>;
+
+  /**
+   * 可选：验证输入是否有效
+   * 如果返回 false，该阶段会被跳过（而不是报错）
+   */
+  canProcess?(input: I, context: PipelineContext): boolean | Promise<boolean>;
+
+  /**
+   * 可选：获取该阶段的自定义配置
+   * 通过 context.config 传递
+   */
+  getConfig?(): Record<string, unknown>;
+}
+
+/** Pipeline 执行上下文 — 所有 Stage 共享 */
+interface PipelineContext {
+  traceId: string;           // 分布式追踪 ID
+  pipelineName: string;      // "capture" | "recall" | "decay"
+  sessionId?: string;
+  agentId?: string;
+  config: PipelineConfig;    // 可注入的自定义配置
+  storage: StorageEngine;    // 存储引擎（注入）
+  eventBus: EventBus;        // 事件总线（注入）
+  observer: PipelineObserver; // 可观测性（注入）
+}
+
+/** Pipeline 配置 */
+interface PipelineConfig {
+  maxConcurrency?: number;   // 最大并发 Stage 数
+  timeoutMs?: number;       // 全局超时
+  stages?: string[];        // 明确指定运行的 Stage 顺序
+  skipStages?: string[];   // 跳过的 Stage
+}
 ```
 
-### 5.3 Decay Pipeline
+### 5.2 Pipeline Observer — 可观测性基础设施
 
+```typescript
+/**
+ * Pipeline Observer — 观察所有 Stage 的执行过程
+ * 可注入多个实现（logging / tracing / metrics / custom）
+ */
+interface PipelineObserver {
+  /** Stage 开始 */
+  onStageStart(
+    pipeline: string,
+    stage: string,
+    input: unknown,
+    context: PipelineContext
+  ): void;
+
+  /** Stage 完成 */
+  onStageComplete(
+    pipeline: string,
+    stage: string,
+    input: unknown,
+    output: unknown,
+    context: PipelineContext,
+    durationMs: number
+  ): void;
+
+  /** Stage 失败 */
+  onStageError(
+    pipeline: string,
+    stage: string,
+    input: unknown,
+    error: Error,
+    context: PipelineContext,
+    durationMs: number
+  ): void;
+
+  /** Pipeline 完成 */
+  onPipelineComplete(
+    pipeline: string,
+    context: PipelineContext,
+    durationMs: number
+  ): void;
+
+  /** Pipeline 失败 */
+  onPipelineError(
+    pipeline: string,
+    error: Error,
+    context: PipelineContext,
+    durationMs: number
+  ): void;
+}
+
+/** 内置 Observer 实现 */
+class LoggingObserver implements PipelineObserver {
+  onStageComplete(pipeline, stage, input, output, context, durationMs) {
+    logger.info({ pipeline, stage, durationMs }, `Stage complete`);
+  }
+
+  onStageError(pipeline, stage, input, error, context, durationMs) {
+    logger.error({ pipeline, stage, error: error.message, durationMs }, `Stage error`);
+  }
+}
+
+class TracingObserver implements PipelineObserver {
+  onStageComplete(pipeline, stage, input, output, context, durationMs) {
+    tracer.recordSpan({
+      name: `${pipeline}.${stage}`,
+      duration: durationMs,
+      inputSize: JSON.stringify(input).length,
+      outputSize: JSON.stringify(output).length,
+      traceId: context.traceId,
+    });
+  }
+}
+
+class MetricsObserver implements PipelineObserver {
+  onStageComplete(pipeline, stage, input, output, context, durationMs) {
+    stageDurationHistogram.observe(
+      { pipeline, stage },
+      durationMs / 1000
+    );
+    stageCount.inc({ pipeline, stage, status: 'success' });
+  }
+
+  onStageError(pipeline, stage, input, error, context, durationMs) {
+    stageCount.inc({ pipeline, stage, status: 'error' });
+  }
+}
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  ┌──────────────┐                                           │
-│  │  Tier        │  重新计算 tier                            │
-│  │  Maintenance │  permanent / stable / decay / archived    │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  Decay      │  按 TTL + shelf_life 衰减                 │
-│  │  Calculator │  permanent 不过期                         │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  Orphan      │  识别零访问记忆                           │
-│  │  Detector   │  30天零访问 → candidate                    │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  Contested   │  contested 记忆降权                      │
-│  │  Handler    │  3次否定 → quarantine                      │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  Archive     │  移动到 Archive Tier                      │
-│  │  Migrator   │  批量写入 S3                              │
-│  └──────┬───────┘                                           │
-│         ▼                                                   │
-│  ┌──────────────┐                                           │
-│  │  Garbage    │  真正删除                                 │
-│  │  Collector  │  Archive 后 90 天无访问 → 删除             │
-│  └──────────────┘                                           │
-└─────────────────────────────────────────────────────────────┘
+
+### 5.3 Pipeline Runner — 执行引擎
+
+```typescript
+/**
+ * Pipeline Runner — 负责执行整个 Pipeline
+ * 1. 按顺序执行每个 Stage
+ * 2. 每个 Stage 的输入/输出由 Runner 传递给 Observer
+ * 3. 支持条件跳过、并发控制、超时
+ */
+class PipelineRunner<I = unknown, O = unknown> {
+  constructor(
+    private name: string,
+    private stages: PipelineStage[],
+    private observers: PipelineObserver[] = []
+  ) {}
+
+  async run(
+    initialInput: I,
+    contextOverrides?: Partial<PipelineContext>
+  ): Promise<O> {
+    const context = this.buildContext(contextOverrides);
+    const startTime = Date.now();
+
+    try {
+      let currentInput: unknown = initialInput;
+
+      for (const stage of this.stages) {
+        const stageStart = Date.now();
+
+        // 1. 检查是否可以处理
+        if (stage.canProcess && !(await stage.canProcess(currentInput as any, context))) {
+          this.notify('skip', stage, currentInput, context);
+          continue;
+        }
+
+        // 2. 通知开始
+        this.notify('start', stage, currentInput, context);
+
+        try {
+          // 3. 执行
+          const output = await this.withTimeout(
+            stage.process(currentInput as any, context),
+            context.config.timeoutMs ?? 30_000,
+            `Stage ${stage.name} timed out`
+          );
+
+          // 4. 通知完成
+          const duration = Date.now() - stageStart;
+          for (const obs of this.observers) {
+            obs.onStageComplete(this.name, stage.name, currentInput, output, context, duration);
+          }
+
+          currentInput = output;
+        } catch (err) {
+          // 5. 通知错误
+          const duration = Date.now() - stageStart;
+          for (const obs of this.observers) {
+            obs.onStageError(this.name, stage.name, currentInput, err as Error, context, duration);
+          }
+          throw err;
+        }
+      }
+
+      const totalDuration = Date.now() - startTime;
+      for (const obs of this.observers) {
+        obs.onPipelineComplete(this.name, context, totalDuration);
+      }
+
+      return currentInput as O;
+    } catch (err) {
+      const totalDuration = Date.now() - startTime;
+      for (const obs of this.observers) {
+        obs.onPipelineError(this.name, err as Error, context, totalDuration);
+      }
+      throw err;
+    }
+  }
+
+  private notify(
+    event: 'start' | 'complete' | 'error' | 'skip',
+    stage: PipelineStage,
+    input: unknown,
+    context: PipelineContext
+  ) {
+    for (const obs of this.observers) {
+      if (event === 'start') obs.onStageStart(this.name, stage.name, input, context);
+    }
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, ms: number, msg: string): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, reject) =>
+        setTimeout(() => reject(new Error(msg)), ms)
+      ),
+    ]);
+  }
+}
+```
+
+### 5.4 Capture Pipeline — 完整 Stage 列表
+
+```typescript
+// Capture Pipeline Stage 定义（完整列表）
+class CapturePipeline {
+  readonly stages: PipelineStage[] = [
+    new InputNormalizerStage(),     // 清理格式、规范化
+    new TextSegmenterStage(),        // 按语义分段（过滤噪音）
+    new LLMExtractionStage(),        // LLM 提取 category/importance/description
+    new ShelfLifeDetectionStage(),   // 推断保鲜期类型
+    new DeduplicationStage(),        // SimHash 去重 + 版本链检查
+    new EmbeddingStage(),            // 向量化（多 provider 支持）
+    new StorageWriteStage(),         // 写入 Storage Engine + trace
+  ];
+}
+
+// ========== Stage 实现示例 ==========
+
+class InputNormalizerStage implements PipelineStage<string, string> {
+  name = 'input_normalizer';
+
+  describe() {
+    return { input: 'raw_conversation_text', output: 'normalized_text' };
+  }
+
+  async process(input: string, ctx: PipelineContext): Promise<string> {
+    // 移除格式标记、统一换行符、trim
+    return input
+      .replace(/\r\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+}
+
+class TextSegmenterStage implements PipelineStage<string, ConversationSegment[]> {
+  name = 'text_segmenter';
+
+  async process(input: string, ctx: PipelineContext): Promise<ConversationSegment[]> {
+    // 按语义分段：检测话题边界，过滤噪音（如 "好的"、"收到"）
+    return segmentConversation(input);
+  }
+}
+
+class LLMExtractionStage implements PipelineStage<ConversationSegment[], MemoryCandidate[]> {
+  name = 'llm_extraction';
+
+  constructor(private llmService: LLMService) {}
+
+  async process(
+    input: ConversationSegment[],
+    ctx: PipelineContext
+  ): Promise<MemoryCandidate[]> {
+    // 调用 hawk-memory-api（HTTP）进行 LLM 提取
+    const result = await this.llmService.extract({
+      segments: input,
+      sessionId: ctx.sessionId,
+      traceId: ctx.traceId,
+    });
+    return result.candidates;
+  }
+}
+
+class DeduplicationStage implements PipelineStage<MemoryCandidate[], MemoryCandidate[]> {
+  name = 'deduplication';
+
+  async process(input: MemoryCandidate[], ctx: PipelineContext): Promise<MemoryCandidate[]> {
+    const deduped: MemoryCandidate[] = [];
+    const seen = new Map<string, MemoryCandidate>();
+
+    for (const candidate of input) {
+      const hash = sha256(candidate.canonical_text);
+      const existing = seen.get(hash);
+
+      if (!existing) {
+        seen.set(hash, candidate);
+        deduped.push(candidate);
+      } else {
+        // 已存在 → 合并 metadata，保留最高 importance
+        if (candidate.importance > existing.importance) {
+          seen.set(hash, candidate);
+          deduped[deduped.indexOf(existing)] = candidate;
+        }
+      }
+    }
+
+    return deduped;
+  }
+}
+
+class EmbeddingStage implements PipelineStage<MemoryCandidate[], MemoryCandidate[]> {
+  name = 'embedding';
+
+  constructor(private embedder: Embedder) {}
+
+  async process(input: MemoryCandidate[], ctx: PipelineContext): Promise<MemoryCandidate[]> {
+    const texts = input.map(c => c.canonical_text);
+    const vectors = await this.embedder.embed(texts);
+
+    return input.map((c, i) => ({
+      ...c,
+      vector: vectors[i],
+      vectorProvider: this.embedder.provider(),
+      vectorDimensions: this.embedder.dimensions(),
+    }));
+  }
+}
+```
+
+### 5.5 Recall Pipeline — 完整 Stage 列表
+
+```typescript
+class RecallPipeline {
+  readonly stages: PipelineStage[] = [
+    new QueryParserStage(),           // 解析 query，提取时间意图
+    new TemporalReasoningStage(),     // 时序推理（如果 query 包含时序）
+    new EmbeddingQueryStage(),         // 向量化 query
+    new HybridSearchStage(),           // 向量 + FTS 并行搜索
+    new RRFusionStage(),              // Reciprocal Rank Fusion 合并
+    new ContestedFilterStage(),        // 过滤 contested 记忆
+    new VersionResolverStage(),        // 确保返回最新版本
+    new CrossEncoderRerankStage(),     // Cross Encoder 重排
+    new ResultBuilderStage(),          // 返回结果 + recall_reason
+  ];
+}
+```
+
+### 5.6 Pipeline 组装 — 依赖注入
+
+```typescript
+/**
+ * Pipeline 工厂 — 负责组装 Pipeline 实例
+ * 这是唯一的组装点，所有依赖通过 constructor 注入
+ */
+class PipelineFactory {
+  constructor(
+    private storage: StorageEngine,
+    private embedder: Embedder,
+    private llmService: LLMService,
+    private eventBus: EventBus,
+    private config: HawkConfig
+  ) {}
+
+  createCapturePipeline(): PipelineRunner<string, string> {
+    const stages: PipelineStage[] = [
+      new InputNormalizerStage(),
+      new TextSegmenterStage(),
+      new LLMExtractionStage(this.llmService),
+      new ShelfLifeDetectionStage(),
+      new DeduplicationStage(),
+      new EmbeddingStage(this.embedder),
+      new StorageWriteStage(),
+    ];
+
+    const observers: PipelineObserver[] = [
+      new LoggingObserver(this.config.logging),
+      new TracingObserver(this.config.tracing),
+      new MetricsObserver(this.config.metrics),
+    ];
+
+    return new PipelineRunner('capture', stages, observers);
+  }
+
+  createRecallPipeline(): PipelineRunner<string, RecallResult> {
+    const stages: PipelineStage[] = [
+      new QueryParserStage(),
+      new TemporalReasoningStage(),
+      new EmbeddingQueryStage(this.embedder),
+      new HybridSearchStage(this.storage),
+      new RRFusionStage(),
+      new ContestedFilterStage(),
+      new VersionResolverStage(),
+      new CrossEncoderRerankStage(),
+      new ResultBuilderStage(),
+    ];
+
+    return new PipelineRunner('recall', stages, [
+      new LoggingObserver(this.config.logging),
+      new TracingObserver(this.config.tracing),
+      new MetricsObserver(this.config.metrics),
+    ]);
+  }
+}
 ```
 
 ---
 
-## 6. 跨领域功能架构
+## 6. 组件拆分与边界
 
-### 6.1 记忆验证引擎
+> **核心原则**：
+> - ❌ Pipeline Stage 不要拆分进程（接口调用即可）
+> - ✅ Decay Worker 应该拆分独立进程（定时任务不需要常驻内存）
+> - ✅ LLM Service 应该拆分独立进程（hawk-memory-api 已是独立项目）
+> - ❌ Storage Engine 不要拆分进程（存储引擎本身是独立服务）
+
+### 6.1 拆分决策矩阵
+
+| 组件 | 进程分离？ | 理由 | 当前状态 |
+|------|----------|------|---------|
+| **Capture/Recall Pipeline** | ❌ 否 | Stage 之间高频调用，IPC 开销大 | 主进程 |
+| **Pipeline Observer** | ❌ 否 | 必须内联在 Pipeline 执行流中 | 主进程 |
+| **Embedder** | ❌ 否 | 纯计算，调用频率高，IPC 开销大 | 主进程 |
+| **Storage Engine** | ❌ 否 | LanceDB/Pg/S3 本身是独立服务，通过接口调用 | 主进程 |
+| **Decay Worker** | ✅ **是** | 定时任务，不需要常驻内存，可以独立部署/扩展 | **缺失，需新建** |
+| **LLM Service** | ✅ 是 | Python 运行时独立，GPU 资源独立，已拆分 | **hawk-memory-api** |
+| **Event Bus** | ❌ 否 | 抽象层，默认 in-memory，可选 Redis | 主进程 |
+
+### 6.2 Decay Worker — 独立进程设计
+
+**为什么必须拆分**：
+
+```
+当前问题：
+OpenClaw 启动 → hawk-decay hook → 检查 decay → 关闭
+
+问题：
+1. OpenClaw 不常启动 → Decay 不及时（可能几周才触发一次）
+2. Decay 检查和主服务抢资源
+3. 无法控制 decay 的并发/资源使用
+4. OpenClaw 重启时 decay 会干扰启动速度
+```
+
+**Decay Worker 架构**：
+
+```typescript
+/**
+ * Decay Worker — 独立进程，定时运行 decay pipeline
+ *
+ * 部署方式（任选其一）：
+ * 1. systemd timer:每小时运行一次 decay-worker
+ * 2. cron: 0 * * * * /path/to/decay-worker
+ * 3. 独立常驻进程 + 内部定时器（适合需要快速响应的场景）
+ */
+
+// src/workers/decay-worker.ts
+class DecayWorker {
+  private storage: StorageEngine;
+  private eventBus: EventBus;
+  private observer: PipelineObserver;
+
+  constructor(config: HawkConfig) {
+    this.storage = StorageFactory.create(config.storage);
+    this.eventBus = EventBusFactory.create(config.eventbus);
+    this.observer = new CompositeObserver([
+      new LoggingObserver(),
+      new MetricsObserver(),
+    ]);
+  }
+
+  async run(): Promise<DecayReport> {
+    const traceId = generateTraceId();
+    const startTime = Date.now();
+    const report: DecayReport = {
+      traceId,
+      startedAt: startTime,
+      tiers: [],
+      archived: 0,
+      deleted: 0,
+      errors: [],
+    };
+
+    const context: PipelineContext = {
+      traceId,
+      pipelineName: 'decay',
+      config: {},
+      storage: this.storage,
+      eventBus: this.eventBus,
+      observer: this.observer,
+    };
+
+    try {
+      // Stage 1: Tier Maintenance
+      report.tiers.push(await this.tierMaintenance(context));
+
+      // Stage 2: Decay Calculation
+      report.tiers.push(await this.calculateDecay(context));
+
+      // Stage 3: Orphan Detection
+      report.tiers.push(await this.detectOrphans(context));
+
+      // Stage 4: Archive Migration
+      report.archived = await this.archiveMigrate(context);
+
+      // Stage 5: Garbage Collection
+      report.deleted = await this.garbageCollect(context);
+
+      report.completedAt = Date.now();
+      report.durationMs = report.completedAt - startTime;
+
+      // 发送完成事件
+      await this.eventBus.publish('decay:completed', {
+        type: 'decay:completed',
+        ...report,
+      });
+    } catch (err) {
+      report.errors.push({ stage: 'unknown', error: (err as Error).message });
+      report.completedAt = Date.now();
+    }
+
+    return report;
+  }
+
+  // 每个 Stage 可以单独测试
+  private async tierMaintenance(ctx: PipelineContext): Promise<TierReport> {
+    const stage = new TierMaintenanceStage(this.storage);
+    const start = Date.now();
+    try {
+      const result = await stage.process(null, ctx);
+      this.observer.onStageComplete('decay', 'tier_maintenance', null, result, ctx, Date.now() - start);
+      return result;
+    } catch (err) {
+      this.observer.onStageError('decay', 'tier_maintenance', null, err as Error, ctx, Date.now() - start);
+      throw err;
+    }
+  }
+}
+
+interface DecayReport {
+  traceId: string;
+  startedAt: number;
+  completedAt?: number;
+  durationMs?: number;
+  tiers: TierReport[];
+  archived: number;
+  deleted: number;
+  errors: Array<{ stage: string; error: string }>;
+}
+
+// 入口点
+async function main() {
+  const config = loadConfig();
+  const worker = new DecayWorker(config);
+
+  const report = await worker.run();
+
+  // 输出报告
+  console.log(JSON.stringify(report, null, 2));
+
+  // 根据配置决定是否发送告警
+  if (report.errors.length > 0 || report.deleted > 1000) {
+    await sendAlert(report);
+  }
+
+  process.exit(report.errors.length > 0 ? 1 : 0);
+}
+
+main().catch(console.error);
+```
+
+**systemd timer 配置**（推荐生产环境）：
+
+```ini
+# ~/.config/systemd/user/decay-worker.service
+[Unit]
+Description=Hawk Bridge Decay Worker
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/hawk-bridge/dist/decay-worker.js
+Environment=NODE_ENV=production
+Restart=on-failure
+RestartSec=60
+
+# ~/.config/systemd/user/decay-worker.timer
+[Unit]
+Description=Hawk Bridge Decay Worker Timer
+After=network.target
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+# 启用定时器
+systemctl --user daemon-reload
+systemctl --user enable --now decay-worker.timer
+
+# 查看下次运行时间
+systemctl --user list-timers decay-worker.timer
+```
+
+### 6.3 各进程间的通信协议
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     主进程（hawk-bridge）                        │
+│   Gateway Hooks / HTTP API / Pipeline Runner                   │
+└───────────────────────────────┬─────────────────────────────────┘
+                                │ HTTP / Event Bus
+            ┌───────────────────┼───────────────────┐
+            ▼                   ▼                   ▼
+┌───────────────────┐  ┌───────────────────┐  ┌───────────────────┐
+│   Decay Worker    │  │ hawk-memory-api   │  │   External        │
+│   (定时触发)       │  │   (Python)        │  │   Clients         │
+│                   │  │                   │  │                   │
+│ - Cron/Timer      │  │ - /extract        │  │ - REST API       │
+│ - Event Bus 订阅   │  │ - /consolidate    │  │ - Webhook        │
+│ - 独立资源控制     │  │ - /quality-score  │  │                   │
+└───────────────────┘  └───────────────────┘  └───────────────────┘
+```
+
+---
+
+## 7. LLM 服务集成层
+
+> **核心改进**：Python LLM 提取从 subprocess execSync 升级为 HTTP Service。
+> hawk-memory-api 从「被 Python 脚本调用的工具」变成「正式的微服务」。
+
+### 7.1 当前问题 vs 目标状态
+
+| 维度 | 当前（subprocess） | 目标（HTTP Service） |
+|------|------------------|---------------------|
+| **错误处理** | 无重试，失败直接抛异常 | 重试 + backoff + circuit breaker |
+| **并发控制** | 无限制，可能打爆 LLM API | 请求队列 + rate limit |
+| **Timeout** | 无 | 可配置超时 |
+| **连接复用** | 每次 exec 重新建连 | HTTP keep-alive |
+| **结果缓存** | 无 | LRU 缓存相同文本的提取结果 |
+| **健康检查** | 无 | /health 端点 |
+| **指标** | 无 | 请求量/延迟/错误率 metrics |
+
+### 7.2 LLM Service 客户端接口
+
+```typescript
+/**
+ * LLM Service 客户端 — 封装与 hawk-memory-api 的 HTTP 通信
+ * 替代当前的 subprocess execSync 调用
+ */
+interface LLMService {
+  /**
+   * 从对话文本提取记忆
+   * POST /extract
+   */
+  extract(params: ExtractParams): Promise<ExtractResult>;
+
+  /**
+   * 矛盾检测
+   * POST /consolidate
+   */
+  consolidate(params: ConsolidateParams): Promise<ConsolidateResult>;
+
+  /**
+   * 质量评估
+   * POST /quality-score
+   */
+  qualityScore(params: QualityScoreParams): Promise<QualityScoreResult>;
+
+  /**
+   * 重要性预测
+   * POST /import-predict
+   */
+  importPredict(text: string): Promise<ImportPredictResult>;
+
+  /**
+   * 健康检查
+   * GET /health
+   */
+  health(): Promise<boolean>;
+}
+
+interface ExtractParams {
+  segments: ConversationSegment[];
+  sessionId?: string;
+  traceId?: string;
+  /** 期望的 category 列表（过滤用） */
+  categories?: string[];
+}
+
+interface ExtractResult {
+  candidates: MemoryCandidate[];
+  traceId: string;
+  processingTimeMs: number;
+  cached: boolean;  // 是否命中缓存
+}
+
+/**
+ * LLM Service 客户端实现 — 带 resilience
+ */
+class HawkMemoryAPIClient implements LLMService {
+  private baseUrl: string;
+  private httpClient: fetch;  // 原生 fetch 或 ky/axios
+  private retryConfig: RetryConfig;
+  private circuitBreaker: CircuitBreaker;
+  private cache: LRUCache<string, ExtractResult>;
+
+  constructor(config: LLMServiceConfig) {
+    this.baseUrl = config.baseUrl ?? 'http://localhost:8080';
+    this.retryConfig = config.retry ?? { attempts: 3, backoff: 'exponential', retryOn: [429, 503] };
+    this.circuitBreaker = new CircuitBreaker(5, 30_000);  // 5次失败后断路30s
+    this.cache = new LRUCache({ max: 1000, ttl: 60_000 }); // 1分钟缓存
+  }
+
+  async extract(params: ExtractParams): Promise<ExtractResult> {
+    const cacheKey = this.getCacheKey(params);
+
+    // 1. 尝试缓存命中
+    const cached = this.cache.get(cacheKey);
+    if (cached) {
+      return { ...cached, cached: true };
+    }
+
+    // 2. 断路器检查
+    if (this.circuitBreaker.isOpen()) {
+      throw new ServiceUnavailableError('hawk-memory-api circuit breaker open');
+    }
+
+    // 3. 带重试的 HTTP 请求
+    const result = await this.withRetry(async () => {
+      const response = await this.httpClient.post(`${this.baseUrl}/extract`, {
+        json: params,
+        timeout: 30_000,
+        headers: {
+          'X-Trace-ID': params.traceId ?? '',
+          'X-Session-ID': params.sessionId ?? '',
+        },
+      });
+
+      if (!response.ok) {
+        throw new HTTPError(response.status, await response.text());
+      }
+
+      return response.json() as ExtractResult;
+    });
+
+    // 4. 写入缓存
+    this.cache.set(cacheKey, result);
+
+    return { ...result, cached: false };
+  }
+
+  private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
+    let lastError: Error;
+
+    for (let attempt = 0; attempt < this.retryConfig.attempts; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastError = err as Error;
+
+        if (!this.shouldRetry(err as Error)) {
+          throw err;
+        }
+
+        // 指数退避
+        const delay = Math.min(
+          this.retryConfig.backoff === 'exponential'
+            ? 2 ** attempt * 1000
+            : this.retryConfig.backoff === 'linear'
+            ? attempt * 1000
+            : 0,
+          30_000  // 最多等 30s
+        );
+
+        await sleep(delay);
+      }
+    }
+
+    // 所有重试都失败 → 打开断路器
+    this.circuitBreaker.recordFailure();
+    throw lastError!;
+  }
+
+  private shouldRetry(err: Error): boolean {
+    if (err instanceof HTTPError) {
+      return this.retryConfig.retryOn?.includes(err.status) ?? false;
+    }
+    return true; // 网络错误重试
+  }
+
+  private getCacheKey(params: ExtractParams): string {
+    return sha256(JSON.stringify(params.segments.map(s => s.text)));
+  }
+
+  async health(): Promise<boolean> {
+    try {
+      const res = await this.httpClient.get(`${this.baseUrl}/health`, { timeout: 5000 });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+}
+```
+
+### 7.3 hawk-memory-api HTTP 接口定义
+
+```typescript
+/**
+ * hawk-memory-api HTTP 接口（FastAPI）
+ * 路径前缀：/api/v1
+ */
+
+// POST /api/v1/extract
+interface ExtractEndpoint {
+  body: {
+    segments: Array<{ text: string; speaker?: string; timestamp?: number }>;
+    session_id?: string;
+    categories?: string[];
+  };
+  response: {
+    candidates: Array<{
+      id: string;
+      canonical_text: string;
+      category: string;
+      importance: number;
+      confidence: number;
+      shelf_life: string;
+      name: string;
+      description: string;
+    }>;
+    trace_id: string;
+    processing_time_ms: number;
+  };
+}
+
+// POST /api/v1/consolidate
+interface ConsolidateEndpoint {
+  body: {
+    new_memories: Array<{ id: string; text: string; category: string }>;
+    related_memories: Array<{ id: string; text: string; category: string; created_at: number }>;
+  };
+  response: {
+    contradiction_detected: boolean;
+    contradiction_type: 'preference_change' | 'fact_conflict' | 'outdated' | null;
+    analysis: string;
+    resolution: string;
+    confidence: number;
+  };
+}
+
+// POST /api/v1/quality-score
+interface QualityScoreEndpoint {
+  body: {
+    query: string;
+    recall_results: Array<{ id: string; text: string; relevance: number }>;
+    context?: { conversation_history?: string[] };
+  };
+  response: {
+    quality_score: number;
+    analysis: string;
+    suggestion: string;
+  };
+}
+
+// GET /health
+interface HealthEndpoint {
+  response: {
+    status: 'ok' | 'degraded';
+    model_loaded: boolean;
+    gpu_available: boolean;
+    uptime_seconds: number;
+  };
+}
+```
+
+### 7.4 LLM Service 配置
+
+```yaml
+# hawk-bridge/config.yaml
+llm_service:
+  # hawk-memory-api 服务地址
+  base_url: "http://localhost:8080"
+
+  # HTTP 超时（毫秒）
+  timeout_ms: 30_000
+
+  # 重试配置
+  retry:
+    attempts: 3
+    backoff: "exponential"  # "exponential" | "linear" | "none"
+    retry_on: [429, 503]   # 状态码触发重试
+
+  # 断路器配置
+  circuit_breaker:
+    failure_threshold: 5    # 5 次失败后打开
+    reset_timeout_ms: 30_000
+
+  # 缓存配置
+  cache:
+    enabled: true
+    max_size: 1000          # 缓存条目数
+    ttl_ms: 60_000          # 1 分钟 TTL
+
+  # 健康检查
+  health_check:
+    enabled: true
+    interval_ms: 30_000
+    failure_threshold: 3    # 3 次失败后标记为不健康
+```
+
+---
+
+## 8. 跨领域功能架构
+
+### 8.1 记忆验证引擎
 
 ```typescript
 /**
@@ -658,7 +1473,7 @@ const verificationTriggers = {
 };
 ```
 
-### 6.2 多 Agent 隔离
+### 8.2 多 Agent 隔离
 
 ```typescript
 /**
@@ -690,31 +1505,24 @@ class AgentMemoryRouter {
 }
 ```
 
-### 6.3 自我认知系统
+### 8.3 自我认知系统
 
 ```typescript
 /**
  * Self-Awareness - hawk-bridge 对自己的记忆质量进行评估
  */
 interface SelfAwareness {
-  // Capture 质量
   captureSuccessRate: number;
   captureNoiseRate: number;
   captureAvgImportance: number;
   captureContestRate: number;
-
-  // Recall 质量
   recallHitRate: number;
   recallMissRate: number;
   recallSilenceRate: number;
-
-  // 系统健康
   memoryGrowthRate: number;
   noiseRatio: number;
   orphanMemoryRate: number;
   contestedMemoryRate: number;
-
-  // 衰减有效性
   decayEffectiveness: number;
   archiveHitRate: number;
 }
@@ -741,12 +1549,9 @@ class SelfAwarenessCollector {
 }
 ```
 
-### 6.4 商业化基础设施
+### 8.4 商业化基础设施
 
 ```typescript
-/**
- * Multi-Tenant + Metering
- */
 interface Tenant {
   id: string;
   plan: 'free' | 'pro' | 'enterprise';
@@ -773,9 +1578,9 @@ class QuotaManager {
 
 ---
 
-## 7. 实施路线图
+## 9. 实施路线图
 
-### 7.1 阶段划分
+### 9.1 阶段划分
 
 ```
 v1.x (当前) ────────────────────────────────────────────▶
@@ -800,20 +1605,24 @@ v3.x ─────────────────────────
      │  长期：记忆产品化, Sync, 理论根基
 ```
 
-### 7.2 v2.0 架构改造优先级
+### 9.2 v2.0 架构改造优先级
 
 | 优先级 | 改造项 | 原因 | 风险 |
 |--------|--------|------|------|
-| P0 | Storage Engine 抽象 | 其他所有功能依赖 | 中 |
-| P0 | Event Bus | Pipeline 间解耦 | 低 |
-| P1 | Schema v2（拆分表） | 解决单表字段爆炸 | 中 |
-| P1 | Capture Pipeline 重构 | 提升提取质量 | 低 |
-| P2 | Recall Pipeline + Rerank | 召回质量提升 | 低 |
-| P2 | Tracing基础设施 | 可观测性基础 | 低 |
-| P3 | Decay Pipeline v2 | 遗忘机制 | 中 |
-| P3 | Self-Awareness | 系统健康诊断 | 低 |
+| **P0** | Embedder 接口统一化 | 所有 Pipeline 依赖 | 低 |
+| **P0** | LLM Service HTTP 客户端 | 替代 subprocess | 低 |
+| **P0** | Decay Worker 独立进程 | 解除 OpenClaw 耦合 | 中 |
+| **P1** | Pipeline Stage 接口 | 其他所有功能依赖 | 低 |
+| **P1** | Pipeline Observer | 可观测性基础 | 低 |
+| **P1** | Storage Engine 抽象 | 其他所有功能依赖 | 中 |
+| **P2** | Event Bus | Pipeline 间解耦 | 低 |
+| **P2** | Schema v2（拆分表） | 解决单表字段爆炸 | 中 |
+| **P2** | Capture Pipeline 重构 | 提升提取质量 | 低 |
+| **P3** | Recall Pipeline + Rerank | 召回质量提升 | 低 |
+| **P3** | Tracing 基础设施 | 可观测性 | 低 |
+| **P3** | Self-Awareness | 系统健康诊断 | 低 |
 
-### 7.3 向后兼容策略
+### 9.3 向后兼容策略
 
 ```typescript
 // v1.x API 完全兼容
@@ -828,9 +1637,9 @@ v3.x ─────────────────────────
 
 ---
 
-## 8. 关键技术决策
+## 10. 关键技术决策
 
-### 8.1 存储引擎选型
+### 10.1 存储引擎选型
 
 | 方案 | 优势 | 劣势 | 适用场景 |
 |------|------|------|---------|
@@ -841,7 +1650,7 @@ v3.x ─────────────────────────
 
 **推荐**：v2.0 采用 LanceDB（热）+ PostgreSQL（metadata + 时序图）+ S3（冷）的三层架构
 
-### 8.2 Event Bus 选型
+### 10.2 Event Bus 选型
 
 > **架构原则**：简单场景零门槛，复杂场景可升级。
 
@@ -852,7 +1661,6 @@ v3.x ─────────────────────────
 | **Kafka** | 企业级，可靠性极高 | 过度工程，运维极复杂 | 超大规模（>1000 QPS） |
 
 ```typescript
-/** EventBus 接口 — Local 和 Redis 共用同一接口 */
 interface EventBus {
   publish(channel: string, event: MemoryEvent): Promise<void>;
   subscribe(group: string, consumer: string, handler: (event: MemoryEvent) => Promise<void>): Promise<void>;
@@ -860,47 +1668,18 @@ interface EventBus {
   close(): Promise<void>;
 }
 
-/** LocalEventBus — 默认实现（v1.x） */
 class LocalEventBus implements EventBus {
-  private queue: Map<string, MemoryEvent[]> = new Map();
-  private handlers: Map<string, Set<(event: MemoryEvent) => Promise<void>>> = new Map();
-  private walPath: string;
-
-  constructor(walPath: string = './data/events.wal') {
-    this.walPath = walPath;
-    this.recoverFromWAL();
-  }
-
   async publish(channel: string, event: MemoryEvent): Promise<void> {
     if (!this.queue.has(channel)) this.queue.set(channel, []);
     this.queue.get(channel)!.push(event);
-    // 同步写 WAL
     fs.appendFileSync(this.walPath, JSON.stringify({ channel, event }) + '\n');
-    // 触发 handlers
     const handlers = this.handlers.get(channel);
     if (handlers) await Promise.all([...handlers].map(h => h(event)));
   }
 }
-
-/** RedisStreamsBus — 可选升级（v2.x） */
-class RedisStreamsBus implements EventBus {
-  async subscribe(group: string, consumer: string, handler: (event: MemoryEvent) => Promise<void>): Promise<void> {
-    // 持续消费 Redis Streams
-    while (true) {
-      const events = await this.redis.xreadgroup('GROUP', group, consumer, 'COUNT', 100, 'BLOCK', 1000, 'STREAMS', group, '>');
-      for (const [stream, messages] of events) {
-        for (const [id, fields] of messages) {
-          const event = JSON.parse(fields[1]);
-          await handler(event);
-          await this.redis.xack(group, consumer, id);
-        }
-      }
-    }
-  }
-}
 ```
 
-### 8.3 向量 Embedding 抽象
+### 10.3 向量 Embedding 抽象
 
 ```typescript
 interface Embedder {
@@ -916,95 +1695,70 @@ class EmbedderFactory {
       case 'openai': return new OpenAIEmbedder(config);
       case 'jina':   return new JinaEmbedder(config);
       case 'ollama': return new OllamaEmbedder(config);
-      // ... 其他 provider
+      case 'minimax': return new MiniMaxEmbedder(config);
     }
   }
 }
 ```
 
-### 8.4 Schema 迁移策略
+### 10.4 Schema 迁移策略
 
 ```typescript
 // 零停机迁移：在线 schema 变更
 class SchemaMigrator {
   // v1.5: 添加新字段（允许 null）
-  async phase1(): Promise<void> {
-    // ALTER TABLE memory ADD COLUMN shelf_life
-  }
+  async phase1(): Promise<void> {}
 
   // v2.0: 迁移数据（后台执行）
-  async phase2(): Promise<void> {
-    // 后台 job：读取 v1 数据 → 填充 shelf_life
-  }
+  async phase2(): Promise<void> {}
 
   // v2.5: 清理旧字段（可选）
-  async phase3(): Promise<void> {
-    // 删除不再使用的字段
-  }
+  async phase3(): Promise<void> {}
 }
 ```
 
 ---
 
-## 9. 架构缺口与未来方向
+## 11. 架构缺口与未来方向
 
 > 以下 7 大架构缺口、5 个根本性盲区、2 个 LLM 专属护城河，是 v2.x 之后需要持续迭代的方向。
-> 其中 **#107/#108 需要 LLM 团队配合**，属于竞品无法复制的护城河。
 
-### 9.1 七大架构缺口详解
+### 11.1 七大架构缺口详解
 
-#### 缺口一：Semantic Index（语义索引层）
+| 缺口 | 核心问题 | 版本规划 |
+|------|---------|---------|
+| **Semantic Index** | 无法按「主题/实体/人」查询 | v2.3→v2.8 |
+| **Working Memory** | 每次 recall 冷启动 | v2.2→v2.6 |
+| **Memory Compiler** | recall 返回列表而非答案 | v2.3→v2.7 |
+| **Adaptive Decay** | 纯时间衰减，不考虑访问模式 | v2.3→v2.8 |
+| **Recall Suppression** | 无细粒度可见性控制 | v2.2→v2.6 |
+| **Lifecycle State Machine** | 状态转换无约束 | v2.2→v2.6 |
+| **Memory Exchange** | 无导入/导出/增量同步 | v2.2→v2.6 |
 
-**问题**：当前只有时间线索引，记忆之间是孤立的文本块。
+详细设计见第 5 章（Pipeline）和第 6 章（组件拆分）。
+
+#### Semantic Index
 
 ```typescript
-/**
- * 语义索引 — 三维语义组织（Topic × Entity × Person）
- */
 interface SemanticIndex {
-  topics: Map<string, TopicNode>;      // Topic Tree
-  entities: Map<string, EntityProfile>; // Entity Profile
-  persons: Map<string, PersonMemoryModel>; // Person Model
+  topics: Map<string, TopicNode>;
+  entities: Map<string, EntityProfile>;
+  persons: Map<string, PersonMemoryModel>;
 
   indexMemory(memoryId: string, topic: string, entities: string[], persons: string[]): void;
   queryByTopic(topic: string, recursive?: boolean): string[];
   queryByEntity(entityId: string): string[];
   queryByPerson(personId: string): string[];
 }
-
-interface TopicNode {
-  id: string;
-  name: string;
-  parent: string | null;
-  children: string[];
-  memoryIds: string[];
-  metadata: { totalMemories: number; stability: 'stable' | 'evolving' | 'volatile'; };
-}
-
-interface EntityProfile {
-  id: string;
-  type: 'project' | 'file' | 'system' | 'person' | 'api' | 'concept';
-  name: string;
-  description: string;
-  relatedMemories: string[];
-  currentState: string;
-}
 ```
 
-**版本规划**：v2.3（基础语义索引）→ v2.5（Entity Profile 自动抽取）→ v2.8（Topic Tree 自动构建）
-
-#### 缺口二：Working Memory（工作记忆组件）
-
-**问题**：当前只有 LTM（Long-Term Memory），没有 Working Memory。Agent 每次对话都要重新 recall。
+#### Working Memory
 
 ```typescript
-/**
- * Working Memory — 当前会话的工作记忆池（7±2 槽位）
- */
 interface WorkingMemory {
   sessionId: string;
   activeSlots: Array<WorkingSlot | null>;  // 最多 7 个槽位
-  contextStack: string[];  // ["API 设计", "REST 方案", "认证方式"]
+  contextStack: string[];
 
   promote(memory: MemoryEntry): void;
   demote(memoryId: string): void;
@@ -1012,36 +1766,22 @@ interface WorkingMemory {
   getActive(): MemoryEntry[];
 }
 
-interface WorkingSlot {
-  memoryId: string;
-  enteredAt: number;
-  relevanceScore: number;
-  consolidatedFrom: string[];
-}
-
 class WorkingMemoryManager {
   getOrCreate(sessionId: string): WorkingMemory;
-  沉淀ToLTM(memoryId: string): Promise<void>;  // 多次访问 → 自动写入 LTM
-  preload(sessionId: string, context: string): Promise<void>;  // session 启动时预加载
+  沉淀ToLTM(memoryId: string): Promise<void>;
+  preload(sessionId: string, context: string): Promise<void>;
 }
 ```
 
-**版本规划**：v2.2（基础 Working Memory）→ v2.4（自动沉淀机制）→ v2.6（LTM ↔ WM 双向同步）
-
-#### 缺口三：Memory Compiler（记忆编译器）
-
-**问题**：recall 返回的是「历史记忆列表」，不是「当前需要的最优答案」。
+#### Memory Compiler
 
 ```typescript
-/**
- * Memory Compiler — 将多条相关记忆编译为单一答案
- */
 interface MemoryCompiler {
   compile(memories: RetrievedMemory[], query: string): CompiledOutput;
 }
 
 interface CompiledOutput {
-  primary: string;  // 编译后的答案
+  primary: string;
   compileType: 'merged' | 'conflict' | 'timeline' | 'summary' | 'single';
   sources: Array<{ memoryId: string; text: string; relevance: number; }>;
   supplementary?: {
@@ -1053,219 +1793,28 @@ interface CompiledOutput {
 }
 ```
 
-**版本规划**：v2.3（基础 Compiler）→ v2.5（冲突检测+时间折叠）→ v2.7（行动建议生成）
+### 11.2 五个根本性盲区
 
-#### 缺口四：Adaptive Decay（自适应衰减）
+| 盲区 | 根因 | 突破方向 |
+|------|------|---------|
+| 记忆定义仍是文本块 | 假设「记忆 = 文本 + 向量」 | 四平面模型（v3.x） |
+| 记忆是存储单位非学习单位 | 存储「说过的话」非「学到的东西」 | Learning Unit + Skill |
+| recall 是 query 驱动非任务驱动 | recall = 「找相关的」非「任务需要」 | Task-Aware Recall |
+| 遗忘是删除非替代 | 假设「旧=错，新=对」 | Deprecation 语义 |
+| 系统没有自我监控 | 监控使用数据非认知状态 | Self-Awareness Memory |
 
-**问题**：当前 decay 是纯时间触发的，没有考虑访问模式。
+### 11.3 LLM 团队专属护城河（#107/#108）
 
-```typescript
-interface DecayConfig {
-  decayRate: number;   // 每天衰减百分比
-  ttlDays: number;     // 0=永不过期
-  mode: 'stable' | 'gradual' | 'accelerated' | 'candidate' | 'protected';
-  nextReviewAt: number;
-}
-
-interface AccessPattern {
-  type: 'stable' | 'declining' | 'zero' | 'single' | 'burst';
-  totalAccesses: number;
-  recentTrend: number;  // -1 到 1
-  suggestedDecayRate: number;
-  suggestedTTL: number;
-}
-```
-
-**版本规划**：v2.3（Adaptive Decay 核心）→ v2.5（趋势预测）→ v2.8（RL-based 衰减参数调优）
-
-#### 缺口五：Recall Suppression（召回抑制机制）
-
-**问题**：只能全开/全关，无细粒度可见性控制。
+#### #107 记忆原生 Attention
 
 ```typescript
-interface RecallSuppression {
-  suppressTemporarily(memoryId: string, sessionId: string, reason: string, expiresAt?: number): Promise<void>;
-  suppressForAgent(memoryId: string, agentId: string, reason: string): Promise<void>;
-  isSuppressed(memoryId: string, sessionId: string, agentId: string): Promise<SuppressionRecord | null>;
-  unsuppress(memoryId: string, level: string, targetId: string): Promise<void>;
-}
-
-interface SuppressionRecord {
-  memoryId: string;
-  level: 'agent' | 'session' | 'global';
-  targetId: string;
-  reason: string;
-  suppressedAt: number;
-  expiresAt: number | null;
-}
-```
-
-**版本规划**：v2.2（基础 Suppression）→ v2.4（自动触发器）→ v2.6（分层抑制策略）
-
-#### 缺口六：Memory Lifecycle State Machine
-
-**问题**：状态转换无约束，decay/verify/delete 逻辑耦合。
-
-```typescript
-type MemoryState = 'draft' | 'candidate' | 'active' | 'stable' | 'contested' | 'suppressed' | 'drifting' | 'archived' | 'forgotten';
-
-type LifecycleEvent = 'submit' | 'approve' | 'reject' | 'verify' | 'contest' | 'correct' | 'suppress' | 'unsuppress' | 'drift_detected' | 'archive' | 'restore' | 'forget';
-
-const STATE_TRANSITIONS: Record<MemoryState, Record<LifecycleEvent, MemoryState | null>> = {
-  'draft':        { 'approve': 'active', 'reject': 'forgotten' },
-  'candidate':    { 'verify': 'active', 'contest': 'contested', 'reject': 'forgotten' },
-  'active':       { 'verify': 'stable', 'contest': 'contested', 'suppress': 'suppressed', 'drift_detected': 'drifting', 'archive': 'archived' },
-  'stable':       { 'contest': 'contested', 'suppress': 'suppressed', 'archive': 'archived', 'drift_detected': 'drifting' },
-  'contested':    { 'verify': 'active', 'archive': 'archived' },
-  'suppressed':   { 'unsuppress': 'active', 'archive': 'archived' },
-  'drifting':     { 'correct_drift': 'active', 'archive': 'archived' },
-  'archived':     { 'restore': 'active', 'forget': 'forgotten' },
-  'forgotten':    {},
-};
-```
-
-**版本规划**：v2.2（State Machine 核心）→ v2.4（副作用自动化）→ v2.6（状态历史追溯）
-
-#### 缺口七：Memory Exchange（记忆双向通道）
-
-**问题**：无导入/导出/增量同步能力。
-
-```typescript
-interface MemoryExchange {
-  export(options: ExportOptions): Promise<ExportResult>;
-  import(items: ImportItem[], options: ImportOptions): Promise<ImportReport>;
-  deltaExport(since: number): Promise<SyncDelta>;
-  deltaImport(delta: SyncDelta): Promise<ImportReport>;
-  detectFormat(content: string): ExportFormat;
-}
-
-type ExportFormat = 'jsonl' | 'markdown' | 'obsidian' | 'csv' | 'notion' | 'mem0';
-
-interface MemoryExportItem {
-  text: string;
-  category: 'fact' | 'preference' | 'decision' | 'entity' | 'other';
-  name: string;
-  importance: number;
-  created_at: string;
-  occurred_at?: string;
-  topic?: string;
-  entities?: string[];
-  relations?: Array<{ type: string; target_text: string; }>;
-  lifecycle_state: MemoryState;
-  vector?: number[];
-}
-```
-
-**版本规划**：v2.2（JSONL 导入/导出）→ v2.4（Obsidian/Mem0 兼容）→ v2.6（增量同步协议）
-
----
-
-### 9.2 五个根本性盲区
-
-#### 盲区一：记忆的定义仍是「文本块」
-
-**问题**：整个系统建立在 `Memory { id, text, vector, category, metadata }` 的隐喻上，没有区分观察/判断/期望/约束。
-
-**⚠️ v2.x 务实路径**：四平面模型是长期研究方向。v2.x 只做简化版：
-
-```typescript
-// v2.x 实际可做到的
-interface MemoryV2 {
-  semanticType: 'direct' | 'inferred';  // 不是 7 种，是 2 种
-  confidenceBasis: 'explicit' | 'implicit';  // 不是 5 种，是 2 种
-}
-```
-
-**版本规划**：v3.0（语义类型推断）→ v3.1（置信平面）→ v3.2（意图平面）
-
-#### 盲区二：记忆是「存储单位」而非「学习单位」
-
-**问题**：系统存储「X」，但不存储「从 X 学到的 Y」。
-
-```typescript
-interface LearningUnit {
-  sourceMemoryIds: string[];
-  abstraction: {
-    whatHappened: string;      // 原始事件
-    whatWasLearned: string;     // 学到的
-    whyItMatters: string;       // 为什么重要
-    applicableContext: string;  // 适用场景
-  };
-  reusability: {
-    timesApplied: number;
-    successRate: number;
-    generalizationLevel: 'specific' | 'pattern' | 'principle';
-  };
-}
-```
-
-#### 盲区三：recall 是 query 驱动非任务驱动
-
-**问题**：假设 recall = 「找相关的」，而不是「当前任务需要什么」。
-
-```typescript
-// 理想：Task-Aware Recall
-interface TaskAwareRecall {
-  // 输入不仅有 query，还有当前任务上下文
-  // 系统主动推断「这个任务需要什么类型的记忆」
-  recallWithContext(query: string, task: TaskContext): Promise<RetrievedMemory[]>;
-}
-```
-
-#### 盲区四：遗忘是删除非替代
-
-**问题**：假设「旧的是错的，新的对」，没有「降级」语义。
-
-```typescript
-// 理想：Deprecation 语义
-interface DeprecatedMemory {
-  memory_id: string;
-  superseded_by: string;
-  deprecation_reason: 'outdated' | 'incorrect' | 'superseded';
-  deprecated_at: number;
-  // 旧记忆不删除，降级为「历史参考」
-}
-```
-
-#### 盲区五：系统没有自我监控
-
-**问题**：监控的是使用数据（访问次数），不是认知状态。
-
-```typescript
-// 理想：Self-Awareness Memory
-interface CognitiveState {
-  known_topics: string[];      // 系统认为自己熟悉什么
-  uncertain_topics: string[];  // 系统认为自己不确定什么
-  confidence_level: number;    // 系统对当前记忆整体质量的自信度
-}
-```
-
----
-
-### 9.3 LLM 团队专属护城河（#107/#108）
-
-> 这是**竞品无法复制**的架构层差异，但需要 LLM 团队在模型架构层面的持续投入。
-
-#### #107 记忆原生 Attention 机制
-
-**问题**：LLM 的 attention 是无差别的，所有 token 一视同仁。记忆的 metadata 无法影响推理权重。
-
-```typescript
-/**
- * Memory Attention Router（LLM 团队在模型架构层面实现）
- * 不是 prompt，是 weight
- */
 interface MemoryAttentionRouter {
   // 输入：每条记忆的 metadata
   // 输出：每条记忆的 attention weight
-
-  /**
-   * 示例行为：
-   * - contested记忆 → 自动降权 50%
-   * - importance=0.9 → 权重 × 1.5
-   * - fresh=true → 权重 × 1.2
-   * - lineage_depth>2 → 权重 × 0.7
-   */
+  // contested记忆 → 自动降权 50%
+  // importance=0.9 → 权重 × 1.5
+  // fresh=true → 权重 × 1.2
+  // lineage_depth>2 → 权重 × 0.7
 }
 
 const MEMORY_ATTENTION_CONFIG = {
@@ -1279,116 +1828,335 @@ const MEMORY_ATTENTION_CONFIG = {
 };
 ```
 
-**给 LLM 团队的需求**：
+#### #108 专用小模型矩阵
 
-```json
-{
-  "memory_metadata": {
-    "mem_001": {"importance": 0.9, "contested": false, "fresh": true, "lineage_depth": 1},
-    "mem_002": {"importance": 0.3, "contested": true, "fresh": false, "lineage_depth": 3}
-  }
-}
+| 模型 | 大小 | 用途 | 延迟目标 |
+|------|------|------|---------|
+| **Consolidation-Mini** | 7B | 矛盾检测、记忆整合 | <5s |
+| **Distillation-Mini** | 7B | Raw→Pattern 蒸馏 | <5s |
+| **Quality-Score** | 3B | 评估 recall 质量 | <100ms |
+| **ImportPredict** | 1B | 预测新记忆重要性 | <50ms |
+| **TimeReasoner** | 3B | 时序因果推理 | <200ms |
+
+---
+
+## 12. 落地施工指南
+
+> **目标**：将架构设计转化为可操作的施工任务。
+> 每个任务都有明确的输入、输出、验收标准。
+
+### 12.1 v1.5 阶段 — 架构基础设施（最高 ROI）
+
+#### Task A: Embedder 接口统一化（P0）
+
+**当前问题**：`embeddings.ts` 里 switch-case 硬编码 provider。
+
+**施工内容**：
+```
+输入：src/embeddings.ts
+输出：src/embeddings/（新目录）
+├── index.ts          — 导出 Embedder 接口 + Factory
+├── types.ts          — Embedder 接口定义
+├── providers/
+│   ├── openai.ts
+│   ├── jina.ts
+│   ├── ollama.ts
+│   └── minimax.ts
 ```
 
-```
-期望行为：mem_001 的 attention weight 是 mem_002 的 ~4.5 倍
-
-训练数据：hawk-bridge 的 recall feedback（标记哪些记忆「应该权重高」）
-```
-
-#### #108 记忆专用小模型矩阵
-
-**问题**：用大模型做记忆蒸馏/矛盾检测/质量评估，成本高、延迟高。
-
-**解决方案**：训 5 个专用小模型，比大模型便宜 100 倍，专门做记忆操作。
-
-| 模型 | 大小 | 用途 | 运行时 | 延迟目标 |
-|------|------|------|--------|---------|
-| **Consolidation-Mini** | 7B | 矛盾检测、记忆整合 | 闲时 | <5s |
-| **Distillation-Mini** | 7B | Raw→Pattern 蒸馏 | 闲时 | <5s |
-| **Quality-Score** | 3B | 评估 recall 质量 | 实时 | <100ms |
-| **ImportPredict** | 1B | 预测新记忆重要性 | 写入时 | <50ms |
-| **TimeReasoner** | 3B | 时序因果推理 | 实时查询 | <200ms |
-
-```
-总成本：约 21B 参数 ≈ 大模型的 1/5
-推理速度：是大模型的 10 倍
-```
-
-**Consolidation-Mini（7B）— 矛盾检测**
-
+**验收标准**：
 ```typescript
-interface ConsolidationInput {
-  newMemories: Memory[];      // 今天的新记忆
-  relatedMemories: Memory[];    // 相关的历史记忆
-}
-
-interface ConsolidationOutput {
-  contradiction_detected: boolean;
-  contradiction_type: 'preference_change' | 'fact_conflict' | 'outdated';
-  analysis: string;
-  resolution: string;
-  confidence: number;
-}
-
-// 示例
-const input = {
-  newMemory: "用户说微服务架构更好",
-  relatedMemory: "用户之前偏好单体架构，因为团队小",
-};
-// 输出：{ contradiction_type: 'preference_change', analysis: '团队规模扩大后，用户自然调整了偏好' }
-```
-
-**Quality-Score（3B）— 评估 recall 质量**
-
-```typescript
-interface QualityScoreInput {
-  query: string;
-  recall_results: Memory[];
-  context: ConversationContext;
-}
-
-interface QualityScoreOutput {
-  quality_score: number;  // 0-100
-  analysis: string;
-  suggestion: string;
-}
-```
-
-**ImportPredict（1B）— 预测记忆重要性**
-
-```typescript
-interface ImportPredictInput {
-  memory_text: string;
-}
-
-interface ImportPredictOutput {
-  predicted_importance: number;  // 0.0-1.0
-  reasoning: string;
-  suggested_tier: 'raw' | 'pattern' | 'principle' | 'skill';
-  watch_for_followup: boolean;
-}
-```
-
-**Flywheel 效应**
-
-```
-Consolidation-Mini 发现矛盾 → 产生新的 distilled 记忆
-       ↓
-这些新记忆进入 recall pool
-       ↓
-Quality-Score 评估 recall 质量提升
-       ↓
-ImportPredict 预测新记忆重要性更准
-       ↓
-TimeReasoner 建立更完整的时序图
-       ↓
-回到 Consolidation-Mini，形成正向循环
+// 任意 provider 可以无缝切换
+const embedder = EmbedderFactory.create(config.embedding);
+const vectors = await embedder.embed(['text']);  // provider 透明
+const dims = embedder.dimensions();              // 接口方法可用
 ```
 
 ---
 
-## 附录：架构缺口汇总表
+#### Task B: LLM Service HTTP 客户端（P0）
+
+**当前问题**：`subprocess execSync` 调用 Python 脚本，无 resilience。
+
+**施工内容**：
+```
+输入：src/hooks/hawk-capture/handler.ts（当前 execSync 调用点）
+输出：src/services/llm-service.ts（新建）
+├── HawkMemoryAPIClient   — HTTP 客户端，带 retry/circuit breaker/cache
+├── types.ts              — ExtractParams / ExtractResult 等接口
+├── errors.ts             — ServiceUnavailableError / HTTPError
+```
+
+**验收标准**：
+```typescript
+const client = new HawkMemoryAPIClient({ baseUrl: 'http://localhost:8080' });
+const result = await client.extract({ segments: [...] });
+
+// 1. HTTP 500 → 自动重试 3 次
+// 2. 连续 5 次失败 → 断路器打开，30s 内不调用
+// 3. 相同文本 1 分钟内不重复调用（缓存）
+// 4. traceId 透传到 hawk-memory-api
+```
+
+---
+
+#### Task C: Decay Worker 独立进程（P0）
+
+**当前问题**：Decay 耦合在 OpenClaw hook 里，不定时执行。
+
+**施工内容**：
+```
+输入：src/hooks/hawk-decay/handler.ts
+输出：src/workers/decay-worker/
+├── index.ts              — 入口，CLI
+├── DecayWorker.ts        — 主类
+├── stages/
+│   ├── TierMaintenanceStage.ts
+│   ├── DecayCalculatorStage.ts
+│   ├── OrphanDetectorStage.ts
+│   ├── ArchiveMigratorStage.ts
+│   └── GarbageCollectorStage.ts
+├── systemd/
+│   ├── decay-worker.service
+│   └── decay-worker.timer
+```
+
+**验收标准**：
+```bash
+# 手动运行
+node dist/decay-worker.js
+# 输出 JSON 格式报告
+{
+  "traceId": "xxx",
+  "tiers": [...],
+  "archived": 42,
+  "deleted": 3,
+  "errors": [],
+  "durationMs": 1234
+}
+
+# systemd timer 每小时自动运行
+systemctl --user list-timers | grep decay-worker
+# NEXT                            | LEFT          | UNIT
+# Wed 2026-04-22 15:00:00 CST    | 42min left    | decay-worker.timer
+```
+
+---
+
+#### Task D: Pipeline Stage 接口（P1）
+
+**当前问题**：Capture/Recall 逻辑是硬编码调用链，无法单独测试/替换。
+
+**施工内容**：
+```
+输入：src/hooks/hawk-capture/handler.ts（硬编码逻辑）
+输出：
+src/pipeline/
+├── core/
+│   ├── PipelineRunner.ts       — 执行引擎
+│   ├── PipelineContext.ts      — 上下文
+│   └── types.ts                — Stage 接口
+├── observers/
+│   ├── PipelineObserver.ts     — 接口定义
+│   ├── LoggingObserver.ts
+│   ├── TracingObserver.ts
+│   └── MetricsObserver.ts
+├── capture/
+│   ├── stages/
+│   │   ├── InputNormalizerStage.ts
+│   │   ├── TextSegmenterStage.ts
+│   │   ├── LLMExtractionStage.ts
+│   │   ├── ShelfLifeDetectionStage.ts
+│   │   ├── DeduplicationStage.ts
+│   │   ├── EmbeddingStage.ts
+│   │   └── StorageWriteStage.ts
+│   └── CapturePipelineFactory.ts
+├── recall/
+│   └── ...（类似结构）
+```
+
+**验收标准**：
+```typescript
+// Stage 可单独测试
+const stage = new DeduplicationStage();
+const output = await stage.process(inputCandidates, mockContext);
+assert(output.length < inputCandidates.length);  // 有去重效果
+
+// Observer 可注入
+const pipeline = new PipelineRunner('capture', stages, [
+  new LoggingObserver(),
+  new MetricsObserver(),  // 可以加/减 observer
+]);
+
+// Stage 可替换
+const pipeline = new PipelineRunner('capture', [
+  new InputNormalizerStage(),
+  new MyCustomSegmenterStage(),  // 替换默认实现
+  new LLMExtractionStage(llmService),
+  ...
+]);
+```
+
+---
+
+#### Task E: Pipeline Observer（P1）
+
+**当前问题**：每个 Stage 的输入/输出/耗时没有记录，出问题无法定位。
+
+**施工内容**：
+- 实现 `LoggingObserver`（所有 Stage 日志）
+- 实现 `TracingObserver`（分布式 trace）
+- 实现 `MetricsObserver`（Prometheus metrics）
+- 集成到 `PipelineFactory`
+
+**验收标准**：
+```typescript
+// 日志输出示例
+{
+  "level": "info",
+  "msg": "Stage complete",
+  "pipeline": "capture",
+  "stage": "llm_extraction",
+  "durationMs": 234,
+  "inputSize": 1523,
+  "outputSize": 892
+}
+
+// Prometheus metrics 示例
+# HELP hawk_pipeline_stage_duration_seconds Duration of pipeline stage execution
+# TYPE hawk_pipeline_stage_duration_seconds histogram
+hawk_pipeline_stage_duration_seconds_bucket{pipeline="capture",stage="llm_extraction",le="0.1"} 12
+hawk_pipeline_stage_duration_seconds_bucket{pipeline="capture",stage="llm_extraction",le="0.5"} 45
+hawk_pipeline_stage_duration_seconds_sum{pipeline="capture",stage="llm_extraction"} 123.45
+hawk_pipeline_stage_duration_seconds_count{pipeline="capture",stage="llm_extraction"} 67
+
+# HELP hawk_pipeline_stage_count_total Number of stage executions
+# TYPE hawk_pipeline_stage_count_total counter
+hawk_pipeline_stage_count_total{pipeline="capture",stage="llm_extraction",status="success"} 65
+hawk_pipeline_stage_count_total{pipeline="capture",stage="llm_extraction",status="error"} 2
+```
+
+---
+
+### 12.2 v2.0 阶段 — 核心功能
+
+| 任务 | 输入 | 输出 | 验收标准 |
+|------|------|------|---------|
+| Storage Engine 抽象 | src/store/interface.ts | src/storage/（新目录）+ LanceDB/Pg/S3 adapter | 切换存储引擎只需改配置 |
+| Event Bus 实现 | - | src/event-bus/（Local + Redis Streams） | 切换 Event Bus 只需改配置 |
+| Schema v2 迁移 | src/types.ts | 4 张新表（Core/Metadata/Score/Trace） | 零停机迁移脚本 |
+| Capture Pipeline 重构 | handler.ts | Pipeline Stage 实现 | 全量通过现有测试 |
+| Recall Pipeline + Rerank | retriever.ts | RecallPipeline Stage 实现 | 全量通过现有测试 |
+| Tracing 基础设施 | - | OpenTelemetry 集成 | traceId 透传整个调用链 |
+| Self-Awareness | - | 健康度报告 + 告警 | 噪音率/召回错误率可查 |
+
+---
+
+### 12.3 验收测试清单
+
+每个任务完成后，必须通过以下测试：
+
+```bash
+# 1. 现有测试全量通过
+pnpm test
+
+# 2. 类型检查通过
+pnpm typecheck
+
+# 3. Lint 通过
+pnpm lint
+
+# 4. Benchmark（如果涉及性能）
+pnpm benchmark
+
+# 5. 集成测试（如果涉及新组件）
+pnpm test:integration
+
+# 6. Decay Worker 手动运行
+node dist/decay-worker.js  # 输出 JSON 报告，无报错
+```
+
+---
+
+### 12.4 文件结构（v2.0 目标）
+
+```
+hawk-bridge/
+├── src/
+│   ├── index.ts                    # 主入口（Gateway Hook 注册）
+│   ├── config.ts                   # 配置加载
+│   │
+│   ├── pipeline/                   # ★ 新增：Pipeline 架构
+│   │   ├── core/
+│   │   │   ├── PipelineRunner.ts
+│   │   │   ├── PipelineContext.ts
+│   │   │   └── types.ts
+│   │   ├── observers/
+│   │   │   ├── PipelineObserver.ts
+│   │   │   ├── LoggingObserver.ts
+│   │   │   ├── TracingObserver.ts
+│   │   │   └── MetricsObserver.ts
+│   │   ├── capture/
+│   │   │   └── CapturePipelineFactory.ts
+│   │   └── recall/
+│   │       └── RecallPipelineFactory.ts
+│   │
+│   ├── services/                   # ★ 新增：服务层
+│   │   ├── llm-service.ts          # HTTP 客户端（替代 subprocess）
+│   │   └── types.ts
+│   │
+│   ├── storage/                    # ★ 重构：存储引擎
+│   │   ├── StorageEngine.ts        # 接口
+│   │   ├── LanceDBEngine.ts
+│   │   ├── PostgreSQLEngine.ts
+│   │   └── S3ArchiveEngine.ts
+│   │
+│   ├── event-bus/                  # ★ 新增：Event Bus
+│   │   ├── EventBus.ts             # 接口
+│   │   ├── LocalEventBus.ts         # 默认实现
+│   │   └── RedisStreamsBus.ts       # 可选升级
+│   │
+│   ├── workers/                    # ★ 新增：独立进程
+│   │   └── decay-worker/
+│   │       ├── index.ts
+│   │       ├── DecayWorker.ts
+│   │       └── stages/
+│   │
+│   ├── embeddings/                 # ★ 重构：Embedder
+│   │   ├── types.ts
+│   │   ├── index.ts
+│   │   └── providers/
+│   │       ├── openai.ts
+│   │       ├── jina.ts
+│   │       └── ollama.ts
+│   │
+│   ├── hooks/                      # OpenClaw Hook（保持不变）
+│   │   ├── hawk-recall/
+│   │   ├── hawk-capture/
+│   │   └── hawk-decay/             # Decay hook 降级为触发器
+│   │
+│   ├── store/                      # 兼容层（旧接口，逐步迁移）
+│   │   └── adapters/
+│   │
+│   ├── retriever.ts                # 迁移到 Pipeline/recall/
+│   ├── embeddings.ts                # 迁移到 embeddings/
+│   └── ...
+│
+├── scripts/
+│   └── migrate-schema-v2.ts        # Schema 迁移脚本
+│
+├── systemd/
+│   ├── decay-worker.service
+│   └── decay-worker.timer
+│
+└── config.yaml
+```
+
+---
+
+## 附录
+
+### 附录 A：架构缺口汇总表
 
 | 缺口 | 类型 | 核心问题 | 版本规划 |
 |------|------|---------|---------|
