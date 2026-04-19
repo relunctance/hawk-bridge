@@ -3089,6 +3089,580 @@ interface SelfKnowledgeStore {
 
 ---
 
+## 8.7 纯工程层面的 4 个遗漏问题
+
+> 即使 59 项 TODO + 7 大架构缺口 + 5 个根本性盲区全部覆盖，仍有 4 个纯工程层面的问题需要回答。
+> 这些不是「功能」或「架构」缺陷，而是**工程落地时必须解决的现实问题**。
+
+### 8.7.1 问题一：测试策略（记忆系统的 QA 难题）
+
+**现状**：传统测试范式是 `输入 X → 验证输出 Y`，但记忆系统的核心价值无法用传统方式验证。
+
+```
+传统测试：
+assert add(2, 3) == 5  // 确定性的
+
+记忆系统测试：
+// 「用户说过 X」→ recall → 「应该返回相关记忆」
+// 但「相关」是主观的，LLM 判断可能不一致
+// 如何 regression test？mock memory store？
+
+行业现状：
+- Rewind AI：没有公开的测试方案
+- Mem0：只有基础的单元测试
+- 记忆系统的 QA 是整个行业的难题
+```
+
+**核心挑战**：
+
+| 测试类型 | 传统软件 | 记忆系统 |
+|---------|---------|---------|
+| 单元测试 | 确定性的输入/输出 | recall 质量无法精确定义 |
+| 集成测试 | API 契约明确 | 记忆质量依赖 LLM，难以断言 |
+| 回归测试 | diff 可见 | recall 效果变化难以量化 |
+| 性能测试 | 延迟可测量 | 「记忆是否有帮助」无法测量 |
+
+**解决方向**：
+
+```typescript
+/**
+ * Memory System Testing Strategy — 三层测试体系
+ */
+
+/**
+ * Layer 1: 基础设施测试（确定性）
+ * 测试存储、索引、Event Bus 等基础设施
+ */
+describe('MemoryStore', () => {
+  it('should store and retrieve memory', async () => {
+    const id = await store.put({ text: 'test', ... });
+    const memory = await store.get(id);
+    expect(memory.text).toBe('test');
+  });
+
+  it('should handle concurrent writes', async () => {
+    // 测试并发写入不会丢失数据
+    await Promise.all(times(100, i => store.put({ text: `mem-${i}` })));
+    const all = await store.all();
+    expect(all.length).toBe(100);
+  });
+});
+
+/**
+ * Layer 2: 行为测试（半确定性）
+ * 测试 capture/recall/decay 等核心行为
+ */
+describe('Recall Behavior', () => {
+  it('should return empty for unknown query', async () => {
+    await capture('user:purchased_book: The Great Gatsby');
+    const results = await recall('what did I have for breakfast');
+    expect(results.length).toBe(0);
+  });
+
+  it('should find relevant memory', async () => {
+    await capture('user:loves: vintage jazz records');
+    const results = await recall('what music does user like');
+    expect(results[0].text).toContain('jazz');
+  });
+
+  // Regression test：用已知记忆集构建 golden dataset
+  it('recall quality should not degrade (regression)', async () => {
+    const goldenSet = buildGoldenDataset();  // 人工标注的 QA 集
+    const scores = goldenSet.map(({ query, expected }) => {
+      const results = await recall(query);
+      return evaluateRecallQuality(results, expected);
+    });
+    const avgScore = mean(scores);
+    // 不允许 recall 质量下降到某个阈值以下
+    expect(avgScore).toBeGreaterThan(0.75);
+  });
+});
+
+/**
+ * Layer 3: 端到端测试（人工评估）
+ * 用真实场景评估系统是否有帮助
+ */
+describe('E2E: User Benefit', () => {
+  it('should help agent complete task faster with memory', async () => {
+    // 场景：agent 在有记忆 vs 无记忆的情况下完成任务
+    const taskDurationWithoutMemory = measureTask('code_review', { useMemory: false });
+    const taskDurationWithMemory = measureTask('code_review', { useMemory: true });
+
+    // 有记忆时应该更快
+    expect(taskDurationWithMemory).toBeLessThan(taskDurationWithoutMemory);
+  });
+});
+
+/**
+ * Golden Dataset — 记忆系统的 QA 基础
+ * 需要人工构建，覆盖各类典型场景
+ */
+interface GoldenDatasetEntry {
+  id: string;
+  category: 'fact' | 'preference' | 'decision' | 'entity' | 'goal' | 'constraint';
+  conversationHistory: string[];
+  query: string;
+  expectedMemoryIds: string[];
+  mustContain: string[];     // 召回结果中必须包含的关键词
+  mustNotContain: string[];  // 召回结果中不能包含的关键词
+  difficulty: 'easy' | 'medium' | 'hard';
+  notes: string;
+}
+
+class GoldenDataset {
+  private entries: GoldenDatasetEntry[] = [];
+
+  add(entry: GoldenDatasetEntry) { ... }
+  filter(category: string): GoldenDatasetEntry[] { ... }
+  shuffle(): GoldenDatasetEntry[] { ... }
+
+  // 定期人工更新，持续扩充覆盖场景
+  async refresh(): Promise<void> {
+    const newEntries = await this.collectFromProduction();
+    this.entries.push(...newEntries);
+  }
+}
+```
+
+**为什么是工程难题**：「记忆是否有帮助」是一个主观的、长期的、难以量化的指标。没有 ground truth，只有用户感知。
+
+**版本规划**：v2.4（基础设施测试）→ v2.6（行为测试）→ v2.8（E2E 评估体系）
+
+---
+
+### 8.7.2 问题二：规模边界（当前架构能撑到多大？）
+
+**现状**：架构设计时没有明确「这套系统能支撑多大的规模」，上线后可能遇到意外瓶颈。
+
+```
+当前架构的瓶颈估算：
+
+向量搜索瓶颈：
+- LanceDB 单表 100 万条时，FTS 性能下降 70%
+- Embedding 单机 20 QPS，batch 可优化但有限
+- 召回延迟：1000 条时 200ms → 100 万条时预估 3s+
+
+LLM Extraction 瓶颈：
+- Capture（含 LLM）~2.9s/call，恒定瓶颈，无法通过 scale 解决
+- 用户量增加 → capture 请求线性增加 → LLM 成本线性增加
+
+存储瓶颈：
+- LanceDB 100 万条预估 5-10 GB
+- PostgreSQL 历史表轻松超过 1000 万条
+- S3 归档成本：$0.023/GB/月
+
+并发瓶颈：
+- 单 worker：20 并发时 P50 升至 1501ms
+- 多 worker 共享状态：redis/DB 连接池限制
+```
+
+**规模分级**：
+
+| 规模 | 用户数 | 记忆数 | 并发 | 架构需求 |
+|------|-------|--------|------|---------|
+| **个人** | 1 | <10K | <1 QPS | 单机，无需优化 |
+| **小团队** | 10 | <100K | <10 QPS | 单机，PostgreSQL |
+| **中型** | 100 | <1M | <50 QPS | 多机，Redis Streams |
+| **大型** | 1000 | <10M | <200 QPS | 分布式，向量分片 |
+| **企业级** | 10000+ | 100M+ | 1000+ QPS | 多区域，定制优化 |
+
+**架构改造方向**：
+
+```typescript
+/**
+ * 规模适配层 — 根据规模自动选择架构
+ */
+class ScalabilityAdaptor {
+  // 评估当前规模
+  assessScale(): ScaleTier {
+    const memoryCount = await this.store.count();
+    const concurrentUsers = this.metrics.getConcurrentUsers();
+    const avgQPS = this.metrics.getAvgQPS();
+
+    if (memoryCount < 10000 && avgQPS < 1) return 'personal';
+    if (memoryCount < 100000 && avgQPS < 10) return 'small_team';
+    if (memoryCount < 1000000 && avgQPS < 50) return 'medium';
+    if (memoryCount < 10000000 && avgQPS < 200) return 'large';
+    return 'enterprise';
+  }
+
+  // 根据规模选择配置
+  getConfig(tier: ScaleTier): HawkConfig {
+    switch (tier) {
+      case 'personal':
+        return { embedder: 'local', storage: 'sqlite', eventBus: 'local' };
+      case 'small_team':
+        return { embedder: 'api', storage: 'postgresql', eventBus: 'local' };
+      case 'medium':
+        return { embedder: 'api', storage: 'lancedb', eventBus: 'redis' };
+      case 'large':
+        return { embedder: 'api', storage: 'lancedb_sharded', eventBus: 'redis' };
+      case 'enterprise':
+        return { /* 定制方案 */ };
+    }
+  }
+}
+
+/**
+ * 向量分片 — 解决大规模向量搜索问题
+ */
+class VectorSharding {
+  // 按主题/用户分片，减少搜索范围
+  shardKey(memory: MemoryEntry): string {
+    return hash(memory.userId + memory.topic);
+  }
+
+  // 查询时只扫相关分片
+  async recall(query: string, options: RecallOptions): Promise<MemoryEntry[]> {
+    const candidateShards = this.selectShards(options);
+    const results = await Promise.all(
+      candidateShards.map(shard => this.recallFromShard(shard, query))
+    );
+    return this.mergeResults(results);
+  }
+}
+```
+
+**为什么是工程难题**：架构设计时假设「向量搜索可以 scale」，但实际在 100 万条时会有显著性能下降。需要提前规划分片策略。
+
+**版本规划**：v2.4（规模评估工具）→ v2.6（向量分片）→ v2.8（自动扩缩容）
+
+---
+
+### 8.7.3 问题三：多租户隔离（私有化部署场景）
+
+**现状**：当前设计是单用户模式，没有考虑「用户 A 的记忆能否被用户 B 看到」的问题。
+
+```
+当前设计：
+- 所有记忆存在同一个表/实例
+- 没有 user_id 隔离的概念
+- 无法支持「团队记忆 vs 个人记忆」的分离
+
+私有化部署场景：
+- 企业 A 和企业 B 共用同一个 hawk-bridge 实例
+- 企业 A 的管理员能否看到所有用户的记忆？
+- 企业 A 的用户能否看到企业 B 的记忆？
+- 如何证明「用户确实删除了记忆」？（GDPR）
+```
+
+**核心问题**：
+
+| 问题 | 描述 | 影响 |
+|------|------|------|
+| **数据隔离** | 用户 A 的记忆能否被用户 B 看到 | 数据泄露风险 |
+| **权限模型** | 管理员能看到什么？普通用户能看到什么？ | 企业合规 |
+| **GDPR 合规** | 如何证明「用户确实删除了」？ | 法律风险 |
+| **团队记忆** | 哪些记忆是团队的，哪些是个人的？ | 协作场景 |
+
+**架构设计**：
+
+```typescript
+/**
+ * Multi-Tenancy — 多租户隔离
+ */
+interface TenantContext {
+  tenantId: string;      // 企业/组织 ID
+  userId: string;        // 用户 ID
+  role: 'admin' | 'user' | 'auditor';
+}
+
+/**
+ * 权限模型
+ */
+class MemoryAccessControl {
+  // 检查是否有权访问某条记忆
+  canRead(memoryId: string, ctx: TenantContext): Promise<boolean> {
+    const memory = await this.store.get(memoryId);
+
+    // 规则 1：跨租户永远不可见
+    if (memory.tenantId !== ctx.tenantId) return false;
+
+    // 规则 2：个人记忆只有本人和管理员可见
+    if (memory.scope === 'personal') {
+      return memory.userId === ctx.userId || ctx.role === 'admin';
+    }
+
+    // 规则 3：团队记忆同租户可见
+    if (memory.scope === 'team') {
+      return ctx.role !== 'auditor';  // 审计员只能看，不能操作
+    }
+
+    return ctx.role !== 'auditor';
+  }
+
+  // 检查是否有权写入
+  canWrite(ctx: TenantContext): Promise<boolean> {
+    return ctx.role !== 'auditor';  // 审计员只能读
+  }
+
+  // 检查是否有权删除（GDPR）
+  canDelete(memoryId: string, ctx: TenantContext): Promise<boolean> {
+    const memory = await this.store.get(memoryId);
+    // 只有记忆所有者和租户管理员可以删除
+    return (
+      memory.userId === ctx.userId ||
+      ctx.role === 'admin'
+    );
+  }
+}
+
+/**
+ * GDPR 合规 — 证明「用户确实删除了」
+ */
+class GDPRCompliance {
+  // 硬删除：物理删除数据
+  async hardDelete(memoryId: string, ctx: TenantContext): Promise<DeletionReceipt> {
+    const memory = await this.store.get(memoryId);
+
+    // 验证权限
+    if (!await this.accessControl.canDelete(memoryId, ctx)) {
+      throw new ForbiddenError();
+    }
+
+    // 生成删除凭证
+    const receipt: DeletionReceipt = {
+      memoryId,
+      deletedAt: Date.now(),
+      deletedBy: ctx.userId,
+      verificationHash: sha256(memory.content + memory.deletedAt),
+      // 保留元数据用于审计（不含内容）
+      metadataOnly: {
+        category: memory.category,
+        createdAt: memory.createdAt,
+        deletedBy: ctx.userId,
+      },
+    };
+
+    // 物理删除
+    await this.store.delete(memoryId);
+    await this.vectorIndex.delete(memoryId);
+
+    // 记录删除日志（用于证明）
+    await this.auditLog.record({
+      action: 'memory.hard_delete',
+      memoryId,
+      receipt,
+    });
+
+    return receipt;
+  }
+
+  // 导出用户所有数据（GDPR 主体权利）
+  async exportUserData(userId: string): Promise<ExportBundle> {
+    const memories = await this.store.getByUserId(userId);
+
+    return {
+      userId,
+      exportedAt: Date.now(),
+      totalMemories: memories.length,
+      memories: memories.map(m => ({
+        id: m.id,
+        text: m.text,  // 只有内容，没有向量（向量是系统内部数据）
+        category: m.category,
+        createdAt: m.createdAt,
+      })),
+      processingNotes: this.generateProcessingNotes(),
+    };
+  }
+}
+
+/**
+ * 团队记忆 vs 个人记忆
+ */
+interface MemoryScope {
+  scope: 'personal' | 'team' | 'project';
+  teamId?: string;      // 如果是团队记忆
+  projectId?: string;  // 如果是项目记忆
+  visibility: 'private' | 'team' | 'public';
+}
+
+// 个人记忆：只有本人可见
+// 团队记忆：团队成员可见，可被团队管理员管理
+// 项目记忆：项目成员可见，项目结束时可选择归档或删除
+```
+
+**为什么是工程难题**：多租户隔离不是「加一个 tenant_id」那么简单，涉及索引设计、权限模型、审计日志、GDPR 合规等多个层面的改造。
+
+**版本规划**：v2.4（租户隔离基础）→ v2.6（权限模型）→ v2.8（GDPR 合规）
+
+---
+
+### 8.7.4 问题四：灾难恢复（企业级需求）
+
+**现状**：当前只有 WAL 文件 + 定时备份，但没有明确的 RTO/RPO 指标。
+
+```
+当前方案：
+- WAL 文件：崩溃后可恢复
+- 定时备份：每日凌晨 3 点
+
+缺失：
+- RTO（恢复时间目标）：宕机后多久能恢复？
+- RPO（恢复点目标）：最多丢失多少数据？
+- 跨区域复制：单区域故障怎么办？
+- 记忆库的「最后访问时间」被破坏后如何修复？
+```
+
+**核心问题**：
+
+| 问题 | 描述 | 当前状态 |
+|------|------|---------|
+| **RTO/RPO 指标** | 没有明确的恢复时间承诺 | 未定义 |
+| **数据持久性** | 宕机后数据能恢复多少？ | WAL 保障 |
+| **跨区域复制** | 单区域故障时怎么办？ | 不支持 |
+| **状态一致性** | WAL 和向量索引不一致怎么办？ | 未处理 |
+
+**架构设计**：
+
+```typescript
+/**
+ * Disaster Recovery — 灾难恢复
+ */
+interface DisasterRecoveryConfig {
+  // 恢复时间目标（Recovery Time Objective）
+  rtoMinutes: number;    // 宕机后多久能恢复
+
+  // 恢复点目标（Recovery Point Objective）
+  rpoMinutes: number;    // 最多丢失多少分钟的数据
+
+  // 数据持久性级别
+  durability: 'single_region' | 'multi_region' | 'global';
+
+  // 备份策略
+  backup: {
+    frequency: 'hourly' | 'daily' | 'weekly';
+    retentionDays: number;
+    destination: 'local' | 's3' | 'gcs';
+  };
+}
+
+/**
+ * RTO/RPO 实现
+ */
+class DisasterRecoveryManager {
+  private config: DisasterRecoveryConfig;
+
+  // 定时备份
+  @Cron('0 */4 * * *')  // 每 4 小时
+  async incrementalBackup(): Promise<BackupReceipt> {
+    const since = await this.getLastBackupTimestamp();
+    const memories = await this.store.getMemoriesModifiedSince(since);
+
+    const backup: BackupReceipt = {
+      id: generateUuid(),
+      timestamp: Date.now(),
+      memoryCount: memories.length,
+      sizeBytes: this.estimateSize(memories),
+      checksum: await this.sha256Files(memories),
+    };
+
+    await this.upload(backup, memories);
+    await this.updateBackupIndex(backup);
+
+    return backup;
+  }
+
+  // 模拟故障：测试恢复流程
+  async simulateFailure(): Promise<RecoveryReport> {
+    const backup = await this.getLatestBackup();
+
+    console.log(`[DR Test] Restoring from backup ${backup.id}...`);
+    const startTime = Date.now();
+
+    await this.restoreFromBackup(backup);
+
+    const recoveryTime = Date.now() - startTime;
+    const rtoMet = recoveryTime < this.config.rtoMinutes * 60 * 1000;
+
+    return {
+      backupId: backup.id,
+      recoveryTimeMs: recoveryTime,
+      rtoMinutes: recoveryTime / 60000,
+      rtoMet,
+      memoriesRestored: backup.memoryCount,
+    };
+  }
+
+  // 完整恢复流程
+  async fullRecovery(backup: BackupReceipt): Promise<void> {
+    // Step 1: 停止写入
+    await this.setReadOnlyMode(true);
+
+    // Step 2: 清理当前数据（可选，取决于恢复策略）
+    // await this.store.clear();
+
+    // Step 3: 恢复记忆数据
+    const memories = await this.downloadFromBackup(backup);
+    await this.store.bulkInsert(memories);
+
+    // Step 4: 重建向量索引
+    await this.vectorIndex.rebuild(memories.map(m => m.id));
+
+    // Step 5: 恢复完成，退出只读模式
+    await this.setReadOnlyMode(false);
+
+    // Step 6: 通知
+    await this.notifyRecoveryComplete(memories.length);
+  }
+}
+
+/**
+ * WAL + Vector Index 一致性修复
+ */
+class ConsistencyRepair {
+  // 检测 WAL 和向量索引的不一致
+  async detectInconsistency(): Promise<InconsistencyReport> {
+    const memories = await this.store.all();
+    const vectorIds = await this.vectorIndex.allIds();
+
+    const onlyInStore = memories.filter(m => !vectorIds.includes(m.id));
+    const onlyInVector = vectorIds.filter(id => !memories.find(m => m.id === id));
+
+    return { onlyInStore, onlyInVector };
+  }
+
+  // 修复不一致
+  async repair(): Promise<RepairReport> {
+    const { onlyInStore, onlyInVector } = await this.detectInconsistency();
+
+    // 缺失向量 → 重建
+    for (const memory of onlyInStore) {
+      const vector = await this.embedder.embed(memory.text);
+      await this.vectorIndex.add(memory.id, vector);
+    }
+
+    // 冗余向量 → 删除
+    for (const id of onlyInVector) {
+      await this.vectorIndex.delete(id);
+    }
+
+    return {
+      vectorsRebuilt: onlyInStore.length,
+      vectorsRemoved: onlyInVector.length,
+      repairedAt: Date.now(),
+    };
+  }
+}
+```
+
+**为什么是工程难题**：灾难恢复不是「加个备份」那么简单，需要明确的 RTO/RPO 指标、自动化的故障检测、和定期的恢复演练。
+
+**版本规划**：v2.4（RTO/RPO 定义）→ v2.6（自动化备份）→ v2.8（跨区域复制）
+
+---
+
+### 4 个工程问题汇总
+
+| 问题 | 核心挑战 | 优先级 |
+|------|---------|--------|
+| **测试策略** | 「记忆是否有帮助」无法量化 | 中（行业难题） |
+| **规模边界** | 100 万条时向量搜索性能显著下降 | 高（影响架构选型） |
+| **多租户隔离** | 涉及权限模型、GDPR 合规 | 高（影响企业级部署） |
+| **灾难恢复** | 需要明确的 RTO/RPO 指标 | 中（可逐步完善） |
+
+---
+
 ## 附录：17 个差距对应的架构改造
 
 | 差距 | 需要改造的模块 |
