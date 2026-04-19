@@ -2128,3 +2128,133 @@ Abble: 免费 → 广告模式（记忆数据变现）
 - #53 商业化基础设施（API Key + Quota + Metering）→ 这是 v3.x 的基础
 - #52 记忆加密层 → 这是数据可携带的法律前提
 - 但"记忆产品化"完全没在 TODO 中体现
+
+---
+
+## 🧠 被系统性忽视的问题（2026-04-19 新增）
+
+### 🔴 差距十：记忆的「保鲜期」差异——所有记忆都用同一个 TTL
+
+**问题**：hawk-bridge 的衰减是统一 30 天 TTL，但现实中不同记忆的保鲜期差异巨大：
+
+```
+"我的名字是张三" —— 应该永不过期
+"今天会议结论" —— 7 天后可能就变了
+"项目架构设计" —— 取决于项目周期，可能 6 个月
+"API v2 废弃了" —— 只有在 v3 发布前有价值
+```
+
+**当前问题**：所有记忆共用同一个衰减管道，没有按「保鲜期」分类处理
+
+**解决思路**：
+```typescript
+interface MemoryShelfLife {
+  type: "permanent" | "session" | "project" | "ephemeral";
+  ttl_days: number;  // 覆盖/Override 默认 TTL
+  trigger: "manual" | "event" | "auto";  // 怎么判断过期
+}
+
+// 分类策略
+// permanent：身份信息、长期偏好 → 几乎不衰减
+// project：项目上下文 → 项目结束才过期
+// session：单次对话结论 → session 结束降级
+// ephemeral：临时状态 → 24h 内快速衰减
+```
+
+**capture 时的 LLM 推断**：
+- 包含"总是"/"永远"/"我的名字" → `type: "permanent"`
+- 包含项目名/deadline/sprint → `type: "project"`
+- 包含"今天"/"刚才"/"刚才会议" → `type: "session"`
+- 包含"临时"/"试试"/"可能" → `type: "ephemeral"`
+
+**状态**：❌ 未规划
+
+---
+
+### 🔴 差距十一：记忆的「召回链路」——黑盒 vs 可解释
+
+**问题**：recall 返回记忆时，用户/Agent 不知道「为什么这条记忆被召回」。
+
+**具体场景**：
+```
+用户问："上次我们讨论的那个数据库方案是什么来着？"
+hawk-bridge 返回：[记忆1, 记忆2, 记忆3]
+Agent/用户内心：这三个和我的问题有什么关系？哪个最相关？
+```
+
+**向量相似度是黑盒**：
+- 记忆1 可能因为「数据库」这个词匹配
+- 记忆2 可能因为「上次」这个词匹配
+- 记忆3 可能因为用户最近访问过（recency bias）
+- 但用户/Agent 完全看不到这个决策过程
+
+**Claude Code 的做法**：recall 结果带 description（每条记忆的一行描述），用户可以判断相关性
+
+**解决思路**：
+```typescript
+interface RecallResult {
+  memory: Memory;
+  recall_reason: string;  // "包含关键词 '数据库'"
+  relevance_breakdown: {
+    keyword_match: number;      // 0-1
+    semantic_similarity: number;  // 0-1
+    recency_boost: number;     // 0-1
+    importance_weight: number;  // 0-1
+  };
+  triggered_rules: string[];  // "MMR 多样性策略"、"记忆年龄 47 天触发 freshness caveat"
+}
+```
+
+**价值**：
+- Agent 可以判断「这条记忆真的相关还是误匹配」
+- 调试 recall 效果时有依据
+- 用户可以反馈「这条记忆不相关」→ 形成 recall quality feedback
+
+**状态**：❌ 未规划
+
+---
+
+### 🔴 差距十二：记忆的「一致性漂移」——同一实体多个版本
+
+**问题**：同一条实体被多次更新，描述可能漂移，recall 时可能返回不一致的信息。
+
+**具体场景**：
+```
+记忆v1（3个月前）："项目用 Python 3.9"
+记忆v2（1个月前）："项目升级到 Python 3.11"
+记忆v3（今天）："项目用 FastAPI + Pydantic"
+
+三个版本都在数据库里
+用户问："项目用 Python 哪个版本？"
+→ recall 可能返回 v1（最相关）但不是最新的
+→ 用户被误导
+```
+
+**根本原因**：
+- 没有"当前共识版本"机制
+- 向量搜索只找最相关的，不找最新/最准确的
+- 版本历史存在，但 recall 时不优先用最新版本
+
+**解决思路**：
+```typescript
+interface MemoryVersion {
+  version_id: string;
+  content: string;
+  content_hash: string;  // SHA-256，用于去重
+  created_at: number;
+  superseded_by?: string;  // 被哪个新版本取代
+  is_current: boolean;  // 是否是当前共识版本
+}
+
+// capture 时
+// → 检查是否有同主题的记忆已存在
+// → 如果有，追加到版本历史，而不是创建新记忆
+// → recall 时默认返回 is_current: true 的版本
+// → 可选：返回版本历史供用户选择
+```
+
+**和 #55 版本历史链的区别**：
+- #55 是审计用的（查看历史）
+- 这是实时一致性用的（确保 recall 返回最新版本）
+
+**状态**：❌ 未规划（#55 是审计用，不是实时一致性用）
