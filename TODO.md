@@ -346,6 +346,12 @@ hawk-bridge 当前 recall 结果缺少 mtime、type description、verification_c
 ### [ ] 44. 记忆验证引擎（Memory Verification Engine） {#item-44}
 **解决的问题**：记忆会过时/被污染，但系统无法判断"这条记忆现在还正确吗"
 
+> ⚠️ **核心价值：删除过时记忆的关键依赖（#63 Decay）**
+> 外部验证源打通是「内容过时判断」的最后一块拼图：
+> - Decay Worker（#63）负责「什么时候考虑删除」
+> - Memory Verification Engine（#44）负责「怎么判断这条记忆已经过时」
+> - 两者结合：从「不访问就删」升级为「验证失败才删」
+
 **行业痛点**：所有记忆系统（Mem0/Notion AI/Copilot）的通病 — 记忆说X，系统无法验证X是否还正确。只能靠TTL衰减或人工复核。
 
 **实现方向**：
@@ -487,6 +493,14 @@ GET /api/v1/metrics/summary      // Token节省/任务改善/使用率统计
 
 ### [ ] 72. 任务完成度 Ranking——recall 应该返回"能帮我完成任务"，而不是"语义最相似" {#item-72}
 **来源：独立判断（maomao）— recall 返回的是「语义相似」而不是「任务完成」**
+
+> ⚠️ **关联功能：定期整理 → MemoryCompiler（v2.3）**
+> 「定期整理」需要 MemoryCompiler 把同主题的多条记忆合并成一条 Pattern。
+> #72（Task-Aware Ranking）和 #102（MemoryCompiler）是同一基础设施的两个面：
+> - #72：recall 时理解任务目标，优先返回「能完成任务」的记忆
+> - #102：整理时把多条相关记忆编译成一条 Pattern，减少 recall 噪音
+>
+> 详见 `docs/ARCHITECTURE-v2.md` 5.5 节 Recall Pipeline MemoryCompilerStage
 
 **问题**：当前 hawk-bridge 的 recall 返回"和 query 最相关的记忆"，基于向量相似度排序。
 
@@ -2127,6 +2141,16 @@ recall_rules:
 ### [ ] 63. Decay 衰减规则（Decay Rules） {#item-63}
 **来源：autoself L1 巡检层决策规则**
 
+> ⚠️ **关联功能：删除过时记忆 → 矛盾检测 + 外部验证源打通**
+> Decay Worker 当前只能做「物理衰减」（不访问 = 过时），无法判断「内容是否过时」。
+> 真正有价值的衰减需要：
+> 1. **矛盾检测**：当新记忆和旧记忆内容矛盾时，触发衰减（见 hawk-memory-api `/consolidate` 接口）
+> 2. **外部验证源打通**（#44）：自动验证记忆（如「文件是否存在」），验证失败的记忆触发衰减
+>
+> 当前 Decay = 「不用的东西删掉」❌
+> 目标 Decay = 「过时的内容删掉」✅
+> 差距：Decay 是技术判断，矛盾检测是语义判断，需要 LLM 或外部验证
+
 ```yaml
 # Decay 衰减规则
 decay_rules:
@@ -2192,6 +2216,15 @@ decay_rules:
 
 ### [ ] 64. Lifecycle 生命周期规则（Lifecycle State Machine） {#item-64}
 **来源：autoself L4 验收层规则**
+
+> ⚠️ **关联功能：封印/变化追踪**
+> 用户期望的「定期整理」不只需要时间衰减，还需要：
+> - 「封印」：区分「临时决策」和「最终决策」，封印后的记忆不再自动 decay
+> - 「变化追踪」：当新记忆替代旧记忆时，旧记忆不是删除，而是标记为「被替代」
+>
+> 这两个能力是 Lifecycle State Machine 的扩展，需要新增两个状态：
+> - `frozen`（封印）：人工确认后不再自动 decay/删除
+> - `superseded`（被替代）：被新记忆替代，但保留历史版本**
 
 ```yaml
 # Lifecycle 状态转换规则
