@@ -1499,11 +1499,16 @@ GET /api/v1/recall?query=API设计
 
 ---
 
-## ⚙️ 规则引擎层（Rule Engine）— autoself Halter 启发
+## ⚙️ 规则引擎层（hawk-bridge 内部轻量规则引擎）
 
 > 新增 — 2026-04-19
-> 来源：autoself README.md — Halter 规则引擎设计 + FEEDBACK-LOOP-DESIGN.md 决策规则配置
-> autoself 各层依赖 LLM 决策，但 LLM 有随机性。规则引擎提供确定性硬约束兜底。
+> 来源：autoself Halter 设计启发 + 记忆生命周期管理需求
+>
+> ⚠️ **架构说明**：此规则引擎是 hawk-bridge **内部组件**，用于记忆生命周期管理。
+> 与 Halter（OpenClaw Agent 运行时安全规则引擎）是**两个独立的系统**，职责不重叠：
+> - **Halter**：关注 Agent 运行时安全（tool call 拦截 / block dangerous operations）
+> - **hawk-bridge 规则引擎**：关注记忆生命周期（capture/recall/decay/lifecycle 策略）
+>
 > 前置依赖：无（独立模块，可提前实现）
 
 ### 规则引擎核心设计
