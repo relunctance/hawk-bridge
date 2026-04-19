@@ -1,8 +1,8 @@
 # TODO — hawk-bridge v1.2+ Backlog
 
 > Priority: **🔴阻断 / 🟡重要 / 🟢增强**
-> Last updated: 2026-04-19（参考 Claude Code 源码 + Hermes Agent 对比 + best-practice-hunter 竞品分析）
-> Total: **70 项**（#69-#70 为新增，来自竞品分析）
+> Last updated: 2026-04-19（参考 Claude Code 源码 + Hermes Agent 对比 + best-practice-hunter 竞品分析 + 独立判断）
+> Total: **74 项**（#69-#70 来自竞品分析，#71-#74 来自独立判断）
 
 ---
 
@@ -2281,6 +2281,181 @@ Archive 后 90 天仍无访问 → 真正删除（永久离开系统）
 | #68 | Auto-Generated 规则 | 从 learnings 自动生成 | 🟢 增强 |
 | #69 | 垃圾记忆清理 | 零访问记忆主动删除 | 🟡 重要 |
 | #70 | 主动遗忘机制 | 基于价值评估的遗忘 | 🟢 增强 |
+
+---
+
+## 🔍 独立判断（不依赖竞品，2026-04-19）
+
+> 以下是我对 hawk-bridge 的独立判断，基于对系统设计的深层思考，而非竞品分析。
+> 竞品印证占 20%，独立思考占 80%。
+
+### [ ] 71. Capture 拒绝机制——记忆系统应该能说"不"
+**来源：独立判断（maomao）— hawk-bridge 是"被动的工具"而不是"主动的伙伴"**
+
+**问题**：当前 hawk-bridge 的 capture 是被调用的 —— Agent 说完了，hawk-bridge 才被动存储。来什么存什么，噪音就是这样积累的。
+
+**真正的问题**：一个好的记忆系统应该**主动判断**——"这条信息太噪音了，我不存"。
+
+**当前设计缺陷**：
+- 没有拒绝机制（block）
+- 噪音进入后只能靠 decay 降级，无法在入口拦截
+- 和 #61（Capture 写入规则）相关，但 #61 是规则驱动，这里是**质量驱动**
+
+**实现方向**：
+```
+Capture Quality Gate：
+1. 注入分析：检测 prompt injection / 角色扮演 / 测试对话
+2. 重复检测：这段内容在过去 7 天出现过吗？（不只是 SimHash，还有语义重复）
+3. 价值预判：这段对话能在未来被 recall 吗？（预判式，不只是回顾式）
+4. 拒绝率统计：系统应该记录"我拒绝了多少 capture 请求"（当前是 0%）
+```
+
+**前置依赖**：无
+**优先级**：🟡 重要
+
+---
+
+### [ ] 72. 任务完成度 Ranking——recall 应该返回"能帮我完成任务"，而不是"语义最相似"
+**来源：独立判断（maomao）— recall 返回的是「语义相似」而不是「任务完成」**
+
+**问题**：当前 hawk-bridge 的 recall 返回"和 query 最相关的记忆"，基于向量相似度排序。
+
+**真正的问题**：用户需要的是"能帮我完成当前任务的记忆"，不是"语义最像的记忆"。
+
+**两者差异**：
+
+| 目标 | 排序依据 | 问题 |
+|------|---------|------|
+| 语义相似 | 向量距离近 | 和当前任务无关也可能排在前面 |
+| 任务完成 | 记忆能帮我做决策 | 需要理解当前任务上下文 |
+
+**当前 ranking 公式的问题**：
+```
+score = similarity × 0.6 + reliability × 0.4
+```
+这只是优化「语义相似 + 可靠性」，不是「任务完成度」。
+
+**实现方向**：
+```
+Task-Aware Recall：
+1. 传入当前任务上下文（task_goal）
+2. 评估每条记忆对当前任务的价值（不是向量相似度）
+3. 优先返回"能帮我完成当前任务"的记忆
+
+记忆价值评估：
+- 这条记忆能帮用户避免重复错误吗？
+- 这条记忆能帮用户理解上下文吗？
+- 这条记忆能帮用户做出更好的决策吗？
+```
+
+**前置依赖**：#43（Context-Aware Filtering）
+**优先级**：🟡 重要
+
+---
+
+### [ ] 73. 多 Agent 可见性控制——主 agent 和子 agent 应该看到不同的记忆
+**来源：独立判断（maomao）— autoself L3 设计与 hawk-bridge 可见性冲突**
+
+**问题**：autoself 的 L3 设计是「子 agent 不带记忆，主 agent 注入上下文」。但 hawk-bridge 没有「可见性控制」—— 同一数据库，不同 agent 应该看到不同的记忆集合。
+
+**当前设计**：
+- session_id 隔离不同会话
+- 但同一个主 agent 和子 agent 共享 session_id
+- 子 agent 能看到主 agent 的所有记忆（包括主 agent 不想让子 agent 看到的）
+
+**autoself L3 的设计意图**：
+```
+主 agent（编排者）：
+  - 看到所有记忆
+  - 决定哪些记忆注入给子 agent
+  - 保留关键上下文在自己这里
+
+子 agent（执行者）：
+  - 只看到主 agent 注入的记忆
+  - 不能自主 recall 主 agent 的记忆
+  - 执行完后把结果返回给主 agent
+```
+
+**当前 hawk-bridge 做不到**：因为没有 agent_id + visibility 字段。
+
+**实现方向**：
+```
+可见性字段：
+- agent_id：记忆创建者
+- visible_to：[agent_id list] 或 *（所有人）或 none（仅自己）
+- injected_by：这条记忆是哪个 agent 注入的（追踪链路）
+
+Recall 时的可见性过滤：
+- 子 agent 只能 recall visible_to 包含自己的记忆
+- 主 agent 可以 recall 所有记忆
+- 主 agent 注入记忆给子 agent 时，设置 visible_to = [子agent_id]
+```
+
+**前置依赖**：#5（Agent Memory Context Injection）
+**优先级**：🔴 阻断（autoself L3 串联的关键依赖）
+
+---
+
+### [ ] 74. 自我监控——hawk-bridge 对自己记忆质量的判断是盲的
+**来源：独立判断（maomao）— 系统对自己的质量一无所知**
+
+**问题**：hawk-bridge 记录 access_count、reliability 等指标，但从来不问自己"这些记忆真的有用吗"？
+
+**真正的问题**：系统对「自己的记忆质量」一无所知。
+- capture 成功率是多少？（来什么存什么，没有拒绝率）
+- recall 命中率是多少？（用户说"不是这个"多少次？）
+- 噪音记忆占比是多少？
+- 平均记忆价值（memory ROI）是多少？
+
+**这和 #57（Memory ROI 量化）不同**：
+- #57 是量化"记忆对最终产出的贡献"
+- 这里是量化"记忆系统自身的健康度"
+
+**实现方向**：
+```
+Memory Health Dashboard：
+1. Capture Metrics：
+   - capture_request_count：capture 请求数
+   - capture_accepted_count：实际存储数
+   - capture_rejected_count：拒绝数（当前=0，需要 #71）
+   - capture_reject_rate：拒绝率（当前=0%）
+
+2. Recall Metrics：
+   - recall_request_count：recall 请求数
+   - recall_hit_count：用户说"是这个"的次数
+   - recall_miss_count：用户说"不是这个"的次数
+   - recall_hit_rate：命中率（当前无统计）
+
+3. Memory Quality Metrics：
+   - total_memory_count：总记忆数
+   - archive_memory_count：归档记忆数
+   - candidate_deletion_count：待删除记忆数（#69）
+   - avg_memory_age：平均记忆年龄
+   - zero_access_memory_count：零访问记忆数
+
+4. 系统健康度评分（0-100）：
+   - 基于上述指标综合计算
+   - 类似"记忆系统的体检报告"
+```
+
+**前置依赖**：#71（Capture 拒绝机制）+ #57（Memory ROI）
+**优先级**：🟢 增强（但对系统自我优化非常重要）
+
+---
+
+## 汇总：70 项 + 4 项独立判断
+
+| 分类 | 数量 |
+|------|------|
+| Claude Code 对比发现 | #1-#12（12项） |
+| autoself 10层支撑 | #16-#23（8项） |
+| 幻觉防护体系 | #24-#26（3项） |
+| 记忆污染防御 | #27-#34（8项） |
+| Hermes 特有功能 | #35-#43（9项） |
+| 存储与架构 | #50-#59（10项） |
+| 规则引擎 | #60-#70（11项） |
+| **独立判断（新增）** | **#71-#74（4项）** |
+| **总计** | **74 项** |
 
 ---
 
