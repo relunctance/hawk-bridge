@@ -44,6 +44,235 @@
 | **一致性** | 同实体多版本，recall 返回旧版本 | Version Chain + supersedes 链 |
 | **可观测** | 生命周期不可追溯 | MemoryTrace + Tracing 基础设施 |
 
+### 108 项 TODO 的版本 Scope
+
+> ⚠️ **务实提醒**：108 项不是全部在 v2.0 完成。按工程可落地性分为三类：
+
+| Scope | 项数 | 性质 | 示例 |
+|-------|------|------|------|
+| **v2.0 交付** | ~35 项 | 可施工的功能和架构 | Schema v2、Pipeline、Storage Engine、Rule Engine、Hook 系统、Event Bus |
+| **v2.x 迭代** | ~40 项 | 架构可支撑但需持续迭代 | Semantic Index、Working Memory、Adaptive Decay、Recall Rerank、Multi-Agent 隔离 |
+| **v3.x+ 规划** | ~33 项 | 长期研究方向或依赖外部 | 知识蒸馏、Memory Compiler、Sync 协议、知识图谱、#107/#108 LLM 专属 |
+
+#### v2.0 交付清单（35 项）
+
+```
+基础设施（必做）：
+  #47 Embedding Provider 抽象
+  #48 VectorStore Provider 抽象
+  #60 规则引擎核心
+  #64 Lifecycle State Machine
+
+Capture 相关（7项）：
+  #1  Taxonomy 扩展（fact/preference/decision/entity → 4类）
+  #2  What NOT to Save 排除列表
+  #10 相对日期转绝对日期
+  #13 Context Fence 防注入
+  #14 记忆内容安全扫描
+  #15 记忆字符限额
+  #71 Capture 拒绝机制
+
+Recall 相关（6项）：
+  #3  Memory Fence 标签机制
+  #4  记忆年龄标签（Freshness Text）
+  #5  Source Tracing（来源+验证计数）
+  #24 Confidence-Gated Recall
+  #25 LLM Self-Verification Hook
+  #26 Factuality Classification
+
+Security（5项）：
+  #27 Audit Log
+  #28 Injection Detector
+  #29 Write Confidence Threshold
+  #31 Quarantine Mechanism
+  #34 Cross-Reference Verification
+
+Autoself 支撑（5项）：
+  #16 Hook 系统完善
+  #17 子 Agent 上下文注入
+  #21 Cron Job 结果自动写入记忆
+  #22 Multi-Agent Session Isolation
+  #23 Constitution 锚定记忆
+
+存储/可观测（4项）：
+  #55 记忆版本历史链
+  #44 记忆验证引擎（核心）
+  #74 自我监控
+  #43 Health Alerting
+```
+
+#### v2.x 迭代清单（40 项）
+
+```
+Intelligence 层：
+  #8  双重选择器（Manifest Scan → LLM TopN）
+  #11 Memory Shape Telemetry
+  #12 MEMORY.md 入口索引
+  #35 Background Prefetch
+  #36 Session Insights
+  #37 MemoryManager 编排层
+  #38 Skill Auto-Creation
+  #41 User Modeling
+  #45 知识图谱关系层
+  #46 主动记忆推送
+
+Rule Engine 完善：
+  #61 Capture 写入规则
+  #62 Recall 召回规则
+  #63 Decay 衰减规则
+  #65 Verify 验证触发规则
+  #66 Tier 升降规则
+  #67 规则引擎 API + 管理界面
+  #68 Auto-Generated 规则
+
+Multi-Agent：
+  #6  Team Memory + Symlink 安全
+  #39 Multi-tenant Namespace
+  #50 Storage Quota + Rate Limit
+  #59 Multi-Agent 视角感知记忆
+  #73 多 Agent 可见性控制
+
+Storage 演进：
+  #40 Auto-Compression
+  #51 跨设备 Sync 协议（⚠️ 见阻断性缺口）
+  #52 记忆加密层 + Right-to-Erasure
+  #54 Event vs Concept 区分
+
+Recall 质量：
+  #56 记忆质量反馈闭环
+  #57 Memory ROI 量化评估
+  #58 元认知自我调优
+  #72 任务完成度 Ranking（⚠️ 见阻断性缺口）
+  #44 记忆验证引擎（完整）
+```
+
+#### v3.x+ 长期研究（33 项）
+
+```
+知识进化层（18项 #75-#92）：
+  #75 知识蒸馏架构（Raw→Pattern→Principle→Skill）
+  #76 动态分层存储
+  #77 记忆血缘链
+  #78 Notion-Like 个人知识库视图
+  #79 ToB 企业私域知识库
+  #80 记忆时间胶囊
+  #81 置信度衰减曲线
+  #82 跨会话上下文迁移
+  #83 记忆的可证明性
+  #84 主动遗忘的社会化影响
+  #85 记忆经济学
+  #86 跨 Agent 记忆迁移
+  #87 记忆的"诺贝尔奖"机制
+  #88 记忆的"平行宇宙"视图
+  #89 记忆压缩质量评估
+  #90 多语言语义等价
+  #91 记忆的温度感
+  #92 记忆的"考古学"模式
+
+战略与挑战（13项）：
+  #93 竞争护城河
+  #94 核心挑战：记忆验证引擎（完整）
+  #95 核心挑战：跨设备 Sync + CRDT（⚠️ 见阻断性缺口）
+  #96 生命周期适配蒸馏引擎
+  #97 阶段转换触发器
+  #98 知识遗产化引擎
+  #99 知识断舍离引擎
+  #100 记忆有效性闭环
+  #101 知识蒸馏的 LLM 边界
+  #102 Memory Compiler（⚠️ 见阻断性缺口）
+  #103 供应商锁定
+  #104 跨 Agent 记忆产权
+  #105 记忆自污染机制
+
+LLM 专属（2项）：
+  #107 记忆原生 Attention
+  #108 专用小模型矩阵
+```
+
+### 3 个阻断性架构缺口
+
+> 以下 3 个缺口在 v2.0 设计时必须正视，否则无法支撑对应 TODO：
+
+#### 阻断 1：Memory Compiler（#72, #102）
+
+**问题**：Recall Pipeline 输出是 `[记忆1, 记忆2, 记忆3]` 列表，不是答案。
+
+```typescript
+// 当前：Recall Pipeline 终点
+interface RecallResult {
+  memories: Memory[];  // ← Agent 还要自己综合
+}
+
+// 理想：Recall Pipeline 终点
+interface RecallResult {
+  answer: string;              // ← 直接是答案
+  sources: Memory[];           // ← 来源记录
+  compileType: 'merged' | 'conflict' | 'timeline' | 'summary';
+  recallReason: string;        // ← 为什么返回这个答案
+}
+```
+
+**影响**：
+- #72 任务完成度 Ranking 需要理解「这条记忆对任务有没有用」→ 需要 Compiler
+- #102 Memory Compiler 直接依赖这个基础设施
+- #56 质量反馈闭环也需要先有 Compiler 才能追踪「哪个记忆对答案贡献最大」
+
+**架构调整**：在 Recall Pipeline 增加 `MemoryCompilerStage`（在 CrossEncoderRerankStage 之后）
+
+#### 阻断 2：Sync 协议（#51）
+
+**问题**：多个设备同时写入同一记忆，CRDT 冲突解决比想象中复杂。
+
+```
+场景：
+  手机写入：「项目用 Python 3.11」
+  电脑写入：「项目升级到 Python 3.12」
+  → 冲突了，谁对？
+
+人类大脑的处理方式：
+  - "最近的记忆"覆盖"旧记忆"
+  - 但如果记忆内容矛盾，需要外部验证（查代码）
+  - 这不是单纯的技术问题，是语义问题
+```
+
+**当前状态**：架构中完全没有设计 Sync 模块。
+
+**架构调整**：
+- 方案 A（务实）：v2.0 只做「设备注册 + 记忆同步」，冲突时保留最新写入，冲突记录可查
+- 方案 B（完整）：引入 CRDT（Conflict-free Replicated Data Types），设计 `MemorySyncEngine`
+- 建议：**v2.x 先做方案 A**，方案 B 是 v3.x 的事情
+
+#### 阻断 3：Multi-tenant 完整隔离（#39, #50, #52）
+
+**问题**：Storage Engine 抽象了，但 tenant isolation 没有。
+
+```
+embedding space 污染问题：
+  用户 A 的 embedding model → hawk-bridge 实例
+  用户 B 的 embedding model → 同一个 hawk-bridge 实例
+  → 向量空间是共享的 → recall 可能跨租户污染
+```
+
+**架构调整**：
+- API Gateway 层增加 TenantContext 中间件（注入 tenant_id）
+- Storage Engine 的 `vectorSearch()` 增加 `tenantId` filter
+- Embedder 按 tenant 隔离或使用 tenant-aware embedding
+
+### 架构与 TODO 映射矩阵
+
+| 架构组件 | 覆盖的 TODO | 缺失的 TODO |
+|---------|------------|------------|
+| **Capture Pipeline** | #1, #2, #10, #13, #14, #15, #71 | #8（双重选择器）|
+| **Recall Pipeline** | #3, #4, #5, #24, #25, #26 | #72（需要 Compiler）|
+| **Storage Engine** | #47, #48, #55 | #51（Sync）|
+| **Event Bus** | #16（Hook 触发）, #21 | - |
+| **LLM Service** | #25, #26, #44 | #35, #46（预取/推送）|
+| **Rule Engine** | #60, #61, #62, #63, #64, #65, #66, #67, #68 | - |
+| **Decay Worker** | #63, #66, #69, #70 | - |
+| **Pipeline Observer** | #74, #11 | - |
+| **Memory Core** | #55, #56, #57, #64 | - |
+| **AgentMemoryRouter** | #6, #17, #22, #59, #73 | #39, #50（Multi-tenant）|
+
 ### 诚实评价
 
 > ⚠️ **务实提醒**：108 项 TODO 代表的是「我们想到了」，不是「我们做到了」。
@@ -51,6 +280,7 @@
 | 维度 | 评分 | 说明 |
 |------|------|------|
 | **工程完整度** | ⭐⭐⭐⭐⭐ | 108 项涵盖所有已知需求 |
+| **v2.0 可交付** | ⭐⭐⭐ | ~35 项核心功能可落地 |
 | **技术护城河** | ⭐⭐⭐ | #107/#108 是真壁垒，其他可复制 |
 | **可落地性** | ⭐⭐ | 工程量巨大，优先级见仁见智 |
 | **核心范式** | ⭐⭐⭐ | 仍是向量检索 + RAG++，无范式突破 |
@@ -76,11 +306,37 @@
 
 | 盲区 | 根因 | 突破方向 |
 |------|------|---------|
-| 记忆定义仍是文本块 | 假设「记忆 = 文本 + 向量」 | 四平面模型（v3.x，长期研究） |
-| 记忆是存储单位非学习单位 | 存储「说过的话」而非「学到的东西」 | Learning Unit + Skill 联动 |
-| recall 是 query 驱动非任务驱动 | 假设 recall = 「找相关的」 | Task Context + Task-Aware Recall |
-| 遗忘是删除非替代 | 假设「旧的是错的，新的对」 | Reconciliation + Deprecation 语义 |
-| 系统没有自我监控 | 监控使用数据而非认知状态 | Self-Awareness Memory + 系统巡检 |
+| 记忆定义仍是文本块 | 假设「记忆 = 文本 + 向量」 | 四平面模型（v3.x） |
+| 记忆是存储单位非学习单位 | 存储「说过的话」非「学到的东西」 | Learning Unit + Skill |
+| recall 是 query 驱动非任务驱动 | recall = 「找相关的」非「任务需要」 | Task-Aware Recall |
+| 遗忘是删除非替代 | 假设「旧=错，新=对」 | Deprecation 语义 |
+| 系统没有自我监控 | 监控使用数据非认知状态 | Self-Awareness Memory |
+
+### 版本 Scope 边界
+
+> 明确 v2.0 做什么，不做什么。避免架构文档过于庞大。
+
+**v2.0 做**（可施工）：
+- Schema v2（4 表拆分）
+- Pipeline Stage 接口 + Observer
+- Storage Engine 抽象（热/冷/冰三层）
+- Event Bus（In-Memory + Redis 可选）
+- LLM Service HTTP 客户端（替代 subprocess）
+- Decay Worker 独立进程
+- Capture Pipeline 重构
+- Recall Pipeline + Rerank（不包含 Compiler）
+- Hook 系统完善（session/task 生命周期）
+- Rule Engine 核心（State Machine）
+- Self-Awareness + Health Alerting
+
+**v2.0 不做**（v2.x 迭代或 v3.x 研究）：
+- Memory Compiler（→ v2.3）
+- Semantic Index / 双重选择器（→ v2.3）
+- Knowledge Graph Relations（→ v2.4）
+- Cross-device Sync（→ v2.x，简化版先做）
+- Multi-tenant 完整隔离（→ v2.x）
+- 知识蒸馏架构（→ v3.x）
+- #107/#108 LLM 专属（依赖 LLM 团队）
 
 ### LLM 团队专属护城河（#107/#108）
 
@@ -869,13 +1125,67 @@ class RecallPipeline {
     new RRFusionStage(),              // Reciprocal Rank Fusion 合并
     new ContestedFilterStage(),        // 过滤 contested 记忆
     new VersionResolverStage(),        // 确保返回最新版本
-    new CrossEncoderRerankStage(),     // Cross Encoder 重排
+    new CrossEncoderRerankStage(),    // Cross Encoder 重排
+    // ★ MemoryCompilerStage 在 v2.3 加入（当前 v2.0 版本不含）
+    // new MemoryCompilerStage(this.llmService),  // 将记忆列表编译为答案
     new ResultBuilderStage(),          // 返回结果 + recall_reason
   ];
 }
 ```
 
-### 5.6 Pipeline 组装 — 依赖注入
+> ⚠️ **MemoryCompilerStage 说明**（v2.3 加入）：
+> 当前 v2.0 的 Recall Pipeline 输出是 `Memory[]` 列表，Agent 需要自己做综合。
+> v2.3 将增加 `MemoryCompilerStage`，把多条相关记忆编译为单一答案：
+> ```typescript
+> // MemoryCompilerStage 输出
+> interface CompiledRecallResult {
+>   answer: string;              // 编译后的答案
+>   sources: Array<{ memoryId: string; text: string; relevance: number }>;
+>   compileType: 'merged' | 'conflict' | 'timeline' | 'summary' | 'single';
+>   recallReason: string;       // 为什么返回这个答案
+>   warnings?: string[];         // 冲突警告、置信度警告等
+> }
+> ```
+> 这是 #72（任务完成度 Ranking）和 #102（Memory Compiler）的架构基础。
+
+### 5.6 Sync 协议模块（v2.x）
+
+> ⚠️ **当前架构不含 Sync 模块**，#51（跨设备 Sync）完全未设计。
+> 以下是 v2.x 的设计方向，用于指导后续施工：
+
+```typescript
+/**
+ * Sync 协议 — v2.x 简化版
+ *
+ * 目标：多设备写入同一记忆时，保留最新写入，冲突记录可查。
+ * 不做：CRDT 语义冲突解决（那是 v3.x 的事情）。
+ */
+interface MemorySyncEngine {
+  // 设备注册
+  registerDevice(deviceId: string, tenantId: string): Promise<void>;
+
+  // 增量同步
+  deltaExport(since: number): Promise<SyncDelta>;
+  deltaImport(delta: SyncDelta): Promise<ImportReport>;
+
+  // 冲突解决策略（简化版）
+  resolveConflict(local: Memory, remote: Memory): 'local' | 'remote' | 'merge' | 'conflict';
+}
+
+/** 冲突记录 */
+interface SyncConflict {
+  memoryId: string;
+  localVersion: Memory;
+  remoteVersion: Memory;
+  occurredAt: number;
+  resolvedBy: 'local' | 'remote' | 'manual';
+  resolutionNote?: string;
+}
+```
+
+> **架构决策**：Sync 模块不在 v2.0 Scope，v2.x 先做简化版（设备注册 + 增量同步 + 最新写入覆盖），v3.x 再考虑 CRDT 语义冲突解决。
+
+### 5.7 Pipeline 组装 — 依赖注入
 
 ```typescript
 /**
@@ -2082,7 +2392,149 @@ node dist/decay-worker.js  # 输出 JSON 报告，无报错
 
 ---
 
-### 12.4 文件结构（v2.0 目标）
+### 12.4 TODO 与落地任务的映射
+
+| 落地任务 | 对应 TODO | 优先级 | 说明 |
+|---------|----------|--------|------|
+| Task A: Embedder 接口 | #47 | P0 | Storage Engine 的前置依赖 |
+| Task B: LLM Service HTTP | #60 规则引擎核心 | P0 | 所有 LLM 调用走 HTTP |
+| Task C: Decay Worker | #63, #66, #69, #70 | P0 | 解耦 OpenClaw |
+| Task D: Pipeline Stage 接口 | #16 Hook 系统完善 | P1 | 基础设施 |
+| Task E: Pipeline Observer | #74 自我监控 | P1 | 可观测性 |
+| Sync 协议（v2.x） | #51 | v2.x | 简化版先做 |
+| MemoryCompilerStage（v2.3） | #72, #102 | v2.3 | Recall 输出列表→答案 |
+| Multi-tenant 隔离 | #39, #50, #52 | v2.x | API Gateway 层 |
+
+### 12.5 阻断性缺口专项说明
+
+#### 缺口 1：MemoryCompilerStage（v2.3）
+
+```typescript
+// MemoryCompilerStage — 将记忆列表编译为答案
+// 位置：Recall Pipeline 最末端（CrossEncoderRerankStage 之后）
+class MemoryCompilerStage implements PipelineStage<MemoryCandidate[], CompiledRecallResult> {
+  name = 'memory_compiler';
+
+  async process(memories: MemoryCandidate[], ctx: PipelineContext): Promise<CompiledRecallResult> {
+    // 1. 检测是否有冲突记忆
+    const conflicts = this.detectConflicts(memories);
+
+    // 2. LLM 综合（调用 hawk-memory-api）
+    const summary = await this.llmService.summarize({
+      memories: memories.map(m => ({ id: m.id, text: m.text })),
+      query: ctx.config.query ?? '',
+    });
+
+    // 3. 构建输出
+    return {
+      answer: summary.text,
+      sources: memories.map(m => ({ memoryId: m.id, text: m.text, relevance: m.score })),
+      compileType: conflicts.length > 0 ? 'conflict' : summary.type,
+      recallReason: summary.reason,
+      warnings: conflicts.map(c => `冲突: ${c.local} vs ${c.remote}`),
+    };
+  }
+}
+```
+
+**施工检查点**：
+- [ ] `CompiledRecallResult` 接口定义
+- [ ] `MemoryCompilerStage` 实现（LLM 综合）
+- [ ] Recall Pipeline 组装时加入该 Stage
+- [ ] 质量反馈闭环：用户标记「答案有用/无用」→ 记录到 MemoryScore.usefulness_score
+
+#### 缺口 2：Sync 协议（v2.x 简化版）
+
+```typescript
+// 简化版 Sync — 设备注册 + 增量同步 + 最新写入覆盖
+// 不做：CRDT 语义冲突解决
+
+class SyncModule {
+  async deltaExport(since: number): Promise<SyncDelta> {
+    const changed = await this.storage.getMemoriesChangedSince(since);
+    return { memories: changed, exportedAt: Date.now() };
+  }
+
+  async deltaImport(delta: SyncDelta): Promise<ImportReport> {
+    const conflicts: SyncConflict[] = [];
+
+    for (const remote of delta.memories) {
+      const local = await this.storage.getMemoryById(remote.id);
+
+      if (!local) {
+        // 不存在 → 直接写入
+        await this.storage.createMemory(remote);
+      } else if (local.updated_at < remote.updated_at) {
+        // 远程更新 → 覆盖本地
+        await this.storage.updateMemory(remote);
+      } else if (local.updated_at > remote.updated_at) {
+        // 本地更新 → 保留本地（冲突记录）
+        conflicts.push({
+          memoryId: remote.id,
+          localVersion: local,
+          remoteVersion: remote,
+          occurredAt: Date.now(),
+          resolvedBy: 'local',  // 简化策略：本地优先
+        });
+      }
+      // updated_at 相等 → 跳过
+    }
+
+    return { imported: delta.memories.length - conflicts.length, conflicts };
+  }
+}
+```
+
+**施工检查点**：
+- [ ] `DeviceRegistry` — 设备注册表（tenant_id + device_id）
+- [ ] `SyncDelta` — 增量包格式（序列号 or timestamp based）
+- [ ] `SyncConflict` — 冲突记录（用于用户手动查看）
+- [ ] Sync API 端点（`POST /api/v1/sync/delta-export`, `POST /api/v1/sync/delta-import`）
+
+#### 缺口 3：Multi-tenant 隔离
+
+```typescript
+// API Gateway 中间件 — 注入 TenantContext
+class TenantMiddleware {
+  async handle(req: Request, next: Handler): Promise<Response> {
+    const tenantId = req.headers['x-tenant-id'];
+    if (!tenantId) return new Response('Missing tenant', { status: 401 });
+
+    // 注入到 context
+    const ctx = { ...req.context, tenantId };
+
+    // 所有 Storage Engine 调用自动带 tenant filter
+    return next({ ...req, context: ctx });
+  }
+}
+
+// Storage Engine — 所有接口增加 tenantId filter
+interface StorageEngine {
+  vectorSearch(query: number[], topK: number, filter?: Filter & { tenantId?: string }): Promise<string[]>;
+  createMemory(core: MemoryCore, tenantId: string): Promise<string>;
+}
+
+// Embedder — 按 tenant 隔离（或使用 tenant-aware embedding）
+class TenantAwareEmbedder implements Embedder {
+  async embed(texts: string[], tenantId: string): Promise<number[][]> {
+    // 如果是共享 embedding provider，按 tenant_id 在向量层面做归一化
+    // 如果是 per-tenant model，用 tenantId 选择对应的 model
+    const vectors = await this.baseEmbedder.embed(texts);
+    return vectors.map(v => this.normalize(v, tenantId));
+  }
+}
+```
+
+**施工检查点**：
+- [ ] `TenantContext` 类型定义
+- [ ] API Gateway TenantMiddleware
+- [ ] Storage Engine 所有接口加 tenantId filter
+- [ ] Embedder tenant-aware 封装
+- [ ] QuotaManager 实现（#50 Storage Quota）
+
+---
+
+### 12.6 文件结构（v2.0 目标）
 
 ```
 hawk-bridge/
