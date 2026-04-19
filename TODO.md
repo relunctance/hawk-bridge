@@ -2,7 +2,7 @@
 
 > Priority: **🔴阻断 / 🟡重要 / 🟢增强**
 > Last updated: 2026-04-19（参考 Claude Code 源码 + Hermes Agent 对比 + best-practice-hunter 竞品分析 + 独立判断）
-> Total: **~98 项**（移除 10 项迁移到 soul-engine，详见 `docs/MIGRATION-TO-SOUL-ENGINE.md`）
+> Total: **~102 项**（移除 10 项迁移到 soul-engine，新增 4 项 soul-engine 集成，详见 `docs/MIGRATION-TO-SOUL-ENGINE.md`）
 
 > ⚠️ **重大变更**：部分功能已迁移到 [soul-engine](https://github.com/relunctance/soul-engine)
 > - #18, #19, #20, #21, #38, #41, #45, #46, #58, #72 已迁移
@@ -18,6 +18,7 @@
 | 🛡️ Security（安全防护） | 防止注入、审计、隔离、合规 | #item-13, #item-14, #item-27, #item-28, #item-29, #item-30, #item-31, #item-32, #item-33, #item-34 |
 | 🔵 Multi-Agent（多代理） | 多租户隔离、子Agent可见性控制 | #item-6, #item-17, #item-22, #item-39, #item-50, #item-59, #item-73 |
 | 🟠 Autoself（架构支撑） | 支撑autoself 10层架构的Hook | #item-16, #item-23 |
+| 🔗 soul-engine 集成 | hawk-bridge 作为存储层与 soul-engine 打通 | #item-75, #item-76, #item-77, #item-78 |
 | 🟤 Storage（存储与架构） | 压缩、加密、跨设备同步、版本历史 | #item-40, #item-47, #item-48, #item-51, #item-52, #item-54, #item-55 |
 | 🟢 Ecosystem（生态与商业） | 多语言SDK、健康告警、商业化 | #item-42, #item-43, #item-49, #item-53 |
 | 🟣 Intelligence（智能与进化） | 预取、洞察、自动压缩 | #item-35, #item-36, #item-37 |
@@ -5881,3 +5882,239 @@ GET /api/v1/system/self-awareness
 **关键洞察**：一个好的记忆系统应该能评估自己的记忆质量，而不仅仅是存储和检索记忆。
 
 **状态**：❌ 未规划
+
+---
+
+## 🔗 soul-engine 集成 {#soul-engine-integration}
+
+> 新增 — 2026-04-19
+> hawk-bridge 作为 L0 存储层，与 soul-engine 进化层打通
+
+### 架构定位
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      soul-engine                            │
+│  进化层：提炼 / 抽象 / 进化 / 自我认知                      │
+│  - 读取 hawk-bridge 的 Raw Memory 进行提炼                  │
+│  - 把 Pattern/Principle/Skill 写回 hawk-bridge             │
+│  - 监听 hawk-bridge 事件触发进化                           │
+└────────────────────────┬────────────────────────────────────┘
+                         │ 读写记忆 + 事件回调
+┌────────────────────────▼────────────────────────────────────┐
+│                      hawk-bridge                            │
+│  L0 存储层：Capture / Recall / Decay / Storage             │
+│  - 存储所有层级记忆（Raw + Pattern + Principle + Skill）    │
+│  - recall 时优先召回高层级知识                              │
+│  - 暴露事件回调给 soul-engine                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### [ ] 75. 记忆层级支持（Knowledge Tier） {#item-75}
+**来源：soul-engine 需求**
+
+**解决的问题**：hawk-bridge 需要存储和区分 Raw/Pattern/Principle/Skill 四种层级的记忆
+
+**实现方向**：
+```typescript
+// memory.type 扩展
+type MemoryTier = 'raw' | 'pattern' | 'principle' | 'skill';
+
+// memory 表新增字段
+interface Memory {
+  id: string;
+  type: MemoryTier;
+  content: string;
+  sources?: string[];         // 来源记忆 ID（血缘关系）
+  confidence: number;
+  metadata: {
+    derived_from?: string[];   // 来源记忆 IDs
+    validated_by?: string[];  // 验证过的 Agent
+    usage_count?: number;     // 被引用次数
+    success_rate?: number;    // 成功率（Skill/Principle）
+    trigger_conditions?: string; // Skill 触发条件
+    implementation?: string;   // Skill 实现代码
+  };
+}
+```
+
+**召回优先级**：
+```
+recall 时优先返回高层级知识：
+Skill > Principle > Pattern > Raw Memory
+```
+
+**状态**：🔴 阻断（soul-engine 集成基础）
+
+**前置依赖**：无
+
+---
+
+### [ ] 76. 知识层级筛选 API {#item-76}
+**来源：soul-engine 需求**
+
+**解决的问题**：soul-engine 需要按层级读取 hawk-bridge 的记忆进行提炼
+
+**实现方向**：
+```typescript
+// GET /api/v1/memories?tier=raw&theme=xxx&min_confidence=0.7&limit=100
+GET /api/v1/memories
+  ?tier=raw|pattern|principle|skill   // 按层级筛选
+  &theme=xxx                          // 按主题筛选（可选）
+  &min_confidence=0.7                 // 最低置信度（可选）
+  &limit=100                          // 限制数量
+
+// Response
+{
+  "memories": [
+    {
+      "id": "mem_xxx",
+      "type": "raw",
+      "content": "用户上周说...",
+      "sources": [],
+      "confidence": 0.9,
+      "created_at": 1713000000
+    }
+  ],
+  "total": 150
+}
+```
+
+**状态**：🔴 阻断
+
+**前置依赖**：#75 记忆层级支持
+
+---
+
+### [ ] 77. 批量写入 API {#item-77}
+**来源：soul-engine 需求**
+
+**解决的问题**：soul-engine 提炼结果需要批量写入 hawk-bridge
+
+**实现方向**：
+```typescript
+// POST /api/v1/memories/batch
+// soul-engine 提炼结果批量写入
+POST /api/v1/memories/batch
+{
+  "memories": [
+    {
+      "type": "pattern",
+      "content": "用户倾向于在下午处理复杂任务",
+      "sources": ["mem_001", "mem_002", "mem_003"],
+      "confidence": 0.85,
+      "metadata": {
+        "derived_from": ["mem_001", "mem_002", "mem_003"],
+        "theme": "user_preference"
+      }
+    },
+    {
+      "type": "principle",
+      "content": "当用户表达不满时，应该先确认理解而非辩解",
+      "sources": ["pat_001"],
+      "confidence": 0.9,
+      "metadata": {
+        "derived_from": ["pat_001"],
+        "validated_by": ["agent_1", "agent_2"]
+      }
+    }
+  ]
+}
+
+// Response
+{
+  "created": 2,
+  "ids": ["pat_new_001", "pri_new_001"]
+}
+```
+
+**状态**：🔴 阻断
+
+**前置依赖**：#75 记忆层级支持
+
+---
+
+### [ ] 78. 事件回调 Webhook {#item-78}
+**来源：soul-engine 需求**
+
+**解决的问题**：hawk-bridge 需要能通知 soul-engine 触发进化流程
+
+**实现方向**：
+```typescript
+// soul-engine 注册回调 URL
+POST /api/v1/integrations/soul-engine
+{
+  "callback_url": "https://soul-engine.example.com/webhook",
+  "events": ["memory_created", "recall_completed", "decay_triggered"]
+}
+
+// hawk-bridge 回调 soul-engine
+POST https://soul-engine.example.com/webhook
+{
+  "event": "memory_created",
+  "timestamp": 1713000000,
+  "data": {
+    "memory": {
+      "id": "mem_xxx",
+      "type": "raw",
+      "content": "用户说...",
+      "confidence": 0.9
+    },
+    "theme": "user_feedback"
+  }
+}
+
+// 支持的事件类型
+type WebhookEvent =
+  | 'memory_created'    // 新记忆创建
+  | 'memory_updated'    // 记忆更新
+  | 'memory_deleted'    // 记忆删除
+  | 'recall_completed'  // recall 完成（可触发 MemoryCompiler）
+  | 'decay_triggered'   // 衰减触发
+  | 'relation_created'  // 关系创建
+  | 'tier_changed';     // 层级变化（Raw → Pattern）
+```
+
+**状态**：🟡 重要
+
+**前置依赖**：#75 记忆层级支持
+
+---
+
+### 与 soul-engine 的数据流
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      hawk-bridge                            │
+│                                                              │
+│  capture 新记忆（type=raw）                                  │
+│      ↓                                                      │
+│  webhook → soul-engine: memory_created                       │
+│      ↓                                                      │
+│  soul-engine 读取同主题 Raw Memory（GET /memories?tier=raw） │
+│      ↓                                                      │
+│  soul-engine 提炼 → Pattern                                 │
+│      ↓                                                      │
+│  soul-engine 批量写回（POST /memories/batch）               │
+│      ↓                                                      │
+│  hawk-bridge 存储 Pattern                                   │
+│      ↓                                                      │
+│  下次 recall 时 hawk-bridge 优先召回 Pattern/Skill          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 备注：hawk-bridge 与 soul-engine 的边界
+
+| | hawk-bridge | soul-engine |
+|--|------------|-------------|
+| **定位** | L0 存储层 | 进化层 |
+| **核心职责** | 存储 + 召回 + 衰减 | 提炼 + 抽象 + 进化 |
+| **输出** | 记忆列表 | 可执行的能力 |
+| **接口方向** | 被调用方 | 调用方 |
+| **关键能力** | 高性能检索、多租户隔离 | LLM 提炼、规则引擎、进化闭环 |
+
+详见：[docs/MIGRATION-TO-SOUL-ENGINE.md](./docs/MIGRATION-TO-SOUL-ENGINE.md)
