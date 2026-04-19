@@ -2345,6 +2345,750 @@ class ScheduledBackup {
 
 ---
 
+## 8.6 五个根本性盲区（范式层面的假设缺陷）
+
+> 即使 59 项 TODO 全实现 + 7 大架构缺口全补上，hawk-bridge 仍然只是做了一个「更高级的文本向量检索系统」，而不是「真正理解记忆是什么的记忆系统」。
+> 这 5 个盲区不属于「功能」或「架构」范畴，而是**根本性假设的限制**。
+
+### 8.6.1 盲区一：记忆的定义仍是「文本块」
+
+**问题**：整个系统建立在 `Memory { id, text, vector, category, metadata }` 的隐喻上，但没有回答：这条记忆**对 agent 意味着什么**？
+
+```
+当前范式：
+用户说「API 设计有问题」 → Memory(text="API 设计有问题")
+
+但没有区分：
+- 这是「事实」（观察）还是「判断」（观点）？
+- 这是「过去发生的事」还是「对未来行动的期望」？
+- agent 应该「记住」还是「参考」还是「警惕」这条记忆？
+```
+
+**根本缺陷**：即使 59 项全实现，系统仍然只存储「文本片段」，无法让 agent 理解「这条记忆在当前任务中的角色」。
+
+**架构设计**：
+
+```typescript
+/**
+ * Memory 的完整语义抽象
+ * 四平面模型 — 超越当前的 text + vector 范式
+ */
+interface SemanticMemory {
+  id: string;
+
+  // 内容平面（当前实现只到这个层面）
+  contentPlane: {
+    text: string;           // 原始文本
+    summary?: string;        // 摘要（LLM 生成）
+    entities: string[];     // 提及的实体
+  };
+
+  // 语义类型平面 — 这条记忆的认知角色
+  semanticType: {
+    // 不是 category: fact/preference/decision（太粗糙）
+    // 而是：这条记忆在 agent 认知中的角色
+    role: 'observation' | 'belief' | 'preference' | 'goal' | 'constraint' | 'rule' | 'exception';
+    // 例：「API 设计有问题」→ role: 'belief' (用户的判断)
+    // 例：「用户偏好 REST」→ role: 'preference'
+    // 例：「不能破坏现有功能」→ role: 'constraint'
+  };
+
+  // 置信平面 — 这条记忆的可信度
+  confidencePlane: {
+    basis: 'direct_experience' | 'hearsay' | 'inference' | 'assumption' | 'explicit_instruction';
+    // 区分：亲眼所见 vs 听说 vs 推断 vs 猜测 vs 明确指令
+    confidenceLevel: 'high' | 'medium' | 'low' | 'unknown';
+    contested: boolean;      // 是否有矛盾证据
+    lastValidated?: number;  // 最后一次被验证的时间
+  };
+
+  // 意图平面 — 为什么存这条记忆
+  intentPlane: {
+    purpose: 'grounding' | 'constraint' | 'goal' | 'context' | 'preference' | 'warning';
+    // grounding：给后续对话提供上下文
+    // constraint：限制后续行动
+    // goal：描述期望的目标状态
+    // warning：提醒警惕某种情况
+    goalId?: string;          // 如果是 goal 相关
+    constraintId?: string;    // 如果是 constraint 相关
+  };
+
+  // 关联平面 — 这条记忆和 agent 认知体系的关系
+  relevancePlane: {
+    relatedGoals: string[];      // 和哪些目标相关
+    requiredForTasks: string[];  // 哪些任务必须这条记忆
+    contradictsWith: string[];   // 和哪些记忆/信念矛盾
+    supersedes: string[];        // 这条记忆取代了哪些旧记忆
+    derivedFrom: string[];       // 这条记忆是从哪些记忆推断出来的
+  };
+}
+
+/**
+ * Semantic Type 推断器
+ * 在 Capture 时自动推断 semanticType
+ */
+class SemanticTypeDetector {
+  async detect(text: string, context: CaptureContext): Promise<SemanticType> {
+    const prompt = `
+判断这条记忆的语义类型：
+
+文本：${text}
+上下文：${context.recentConversation}
+
+类型定义：
+- observation：客观观察或事实（"API 用了 REST"）
+- belief：主观判断或观点（"API 设计有问题"）
+- preference：用户偏好（"用户喜欢简洁代码"）
+- goal：期望目标（"要实现 SSO"）
+- constraint：限制条件（"不能破坏现有功能"）
+- rule：规则规范（"所有 API 必须有文档"）
+- exception：例外情况（"除了认证端点"）
+
+输出：{ "role": "...", "confidence": "...", "reasoning": "..." }
+`;
+    return this.llm.complete(prompt);
+  }
+}
+```
+
+**为什么是根本盲区**：没有「语义类型平面」和「意图平面」，recall 只能返回「相关文本」，无法返回「对当前任务有意义的认知单元」。
+
+**版本规划**：v3.0（语义类型推断）→ v3.1（置信平面）→ v3.2（意图平面）
+
+---
+
+### 8.6.2 盲区二：记忆是「存储单位」而非「学习单位」
+
+**问题**：系统存储「过去说过的话」，而不是「从过去中学到的东西」。
+
+```
+当前范式：
+用户说「API 要改成 REST」 → Memory(text="API 要改成 REST")
+
+真正有价值的学习：
+用户说「API 要改成 REST」
+  → 提取为可执行知识：
+    「未来 API 设计应优先考虑维护成本」
+    「GraphQL 复杂度 > 长期收益时应考虑简化」
+  → 记忆不是「改 REST」，而是「做架构决策时要评估长期维护成本」
+```
+
+**根本缺陷**：系统存储「X」，但不存储「从 X 学到的 Y」。下次遇到类似场景，agent 还是要从原始记忆重新推理。
+
+**架构设计**：
+
+```typescript
+/**
+ * Learning Unit — 从记忆中学到的抽象知识
+ * 和原始记忆不同，Learning Unit 是跨场景可复用的知识
+ */
+interface LearningUnit {
+  id: string;
+
+  // 原始记忆来源
+  sourceMemoryIds: string[];
+
+  // 抽象后的知识（可跨场景复用）
+  abstraction: {
+    whatHappened: string;        // 原始事件：「API 从 GraphQL 改为 REST」
+    whatWasLearned: string;      // 学到的：「架构决策应评估长期维护成本」
+    whyItMatters: string;       // 为什么重要：「避免过度设计」
+    applicableContext: string;   // 适用场景：「评估技术选型时」
+  };
+
+  // 知识的可复用性追踪
+  reusability: {
+    timesApplied: number;        // 被应用次数
+    successRate: number;         // 应用成功率
+    generalizationLevel: 'specific' | 'pattern' | 'principle';
+    // specific：只在原始场景有用
+    // pattern：可以应用到同类场景
+    // principle：可以形成通用原则
+  };
+
+  // 和 Skills 的关系
+  relatedSkills: string[];        // 这个知识被哪个 Skill 使用
+  skillCreationCandidate: boolean; // 是否应该创建为 Skill
+
+  // 知识的生命周期
+  lifecycle: {
+    createdAt: number;
+    lastApplied: number;
+    applicabilityScore: number;  // 随着成功应用次数增加而提升
+  };
+}
+
+/**
+ * Learning Extractor — 从记忆中自动提取 Learning Unit
+ * 在 Capture 时并行执行，存储为独立的知识单元
+ */
+class LearningExtractor {
+  async extract(memories: Memory[]): Promise<LearningUnit[]> {
+    const prompt = `
+从以下记忆序列中，提取可复用的知识：
+
+记忆序列：
+${memories.map((m, i) => `${i + 1}. [${m.semanticType?.role}] ${m.contentPlane.text}`).join('\n')}
+
+请分析：
+1. 这些记忆之间有什么因果/演变关系？
+2. 可以抽象出什么跨场景可复用的知识？
+3. 这个知识属于哪个层次（specific / pattern / principle）？
+
+输出格式：
+{
+  "learnings": [
+    {
+      "whatWasLearned": "...",
+      "whyItMatters": "...",
+      "applicableContext": "...",
+      "generalizationLevel": "..."
+    }
+  ]
+}
+`;
+    return this.llm.complete(prompt);
+  }
+
+  // 判断是否应该创建为 Skill
+  async shouldCreateSkill(learning: LearningUnit): Promise<boolean> {
+    return (
+      learning.reusability.timesApplied >= 3 &&
+      learning.reusability.generalizationLevel === 'principle' &&
+      learning.lifecycle.applicabilityScore > 0.8
+    );
+  }
+}
+
+/**
+ * Learning Memory 存储
+ * Learning Unit 存储在独立表中，和原始 Memory 分开索引
+ */
+interface LearningStore {
+  learnings: LearningUnit[];
+
+  // recall learnings（不经过向量）
+  recallByPrinciple(principle: string): LearningUnit[];
+  recallByContext(context: string): LearningUnit[];
+
+  // 应用 learnings 到当前任务
+  applyToTask(taskId: string, context: string): AppliedLearning[];
+}
+```
+
+**为什么是根本盲区**：没有 Learning Unit，记忆库只是「历史对话存档」而不是「agent 的知识体系」。skill auto-creation (#38) 和记忆进化真正需要的是 Learning Unit。
+
+**版本规划**：v3.1（Learning Unit 核心）→ v3.2（自动提取）→ v3.3（Skill 联动）
+
+---
+
+### 8.6.3 盲区三：recall 是「query 驱动」而非「任务目标驱动」
+
+**问题**：recall 不知道 agent 要干什么，只能返回「和 query 相关的文本」。
+
+```
+当前 recall 流程：
+1. Agent: "用户问了 X"
+2. hawk-bridge: "返回和 X 最相关的 N 条记忆"
+3. Agent: "从 N 条记忆中选择使用哪些"
+
+理想 recall 流程：
+1. Agent: "我要完成目标 Y，当前任务状态是 Z"
+2. hawk-bridge: "基于 Y 和 Z，返回：
+   - 必须知道的信息（缺失会导致任务失败）
+   - 可能相关的信息（可能有帮助）
+   - 需要警惕的信息（可能和 Y 矛盾）"
+```
+
+**根本缺陷**：recall 缺少「任务上下文」，agent 拿到的是「相关记忆列表」而不是「完成任务的记忆指南」。
+
+**架构设计**：
+
+```typescript
+/**
+ * Task Context — 当前任务上下文
+ * Agent 在 recall 时传递，hawk-bridge 据此决定返回什么
+ */
+interface TaskContext {
+  taskId: string;
+  taskGoal: string;              // "完成 API 重构"
+  currentState: 'planning' | 'implementing' | 'reviewing' | 'testing';
+  relevantEntities: string[];     // "hawk-memory-api", "user:qilin"
+  constraints: string[];          // "不能破坏现有功能"
+  recentActions: string[];        // "刚完成了数据库 schema 设计"
+  anticipatedChallenges: string[]; // "担心认证兼容性问题"
+}
+
+/**
+ * Task-Aware Recall — 不是「找相关的」，而是「找完成当前任务需要的」
+ */
+interface TaskAwareRecall {
+  recallWithContext(
+    query: string,
+    taskContext: TaskContext,
+    options: RecallOptions
+  ): Promise<TaskAwareRecallResult>;
+}
+
+interface TaskAwareRecallResult {
+  // 必须知道的（缺失会导致任务失败）
+  mustKnow: MemoryWithRationale[];
+
+  // 可能有用（开阔思路）
+  mightBeHelpful: MemoryWithRationale[];
+
+  // 需要警惕（和当前目标可能矛盾）
+  cautionNeeded: MemoryWithRationale[];
+
+  // 知识缺口（任务需要但记忆库没有的）
+  knowledgeGaps: string[];
+
+  // 行动建议（基于历史记忆）
+  suggestedActions: string[];
+}
+
+/**
+ * MemoryWithRationale — 记忆 + 召回理由
+ * 让 agent 知道为什么这条记忆被召回
+ */
+interface MemoryWithRationale {
+  memory: MemoryEntry;
+  recallRationale: string;
+  // "这条被召回是因为：你刚提到担心认证兼容性问题，
+  // 而这条记忆记录了上次认证重试的实现方案"
+  relevanceScore: number;
+  urgencyLevel: 'critical' | 'important' | 'background';
+
+  // 额外维度（Task-Aware 新增）
+  taskAlignment: 'required' | 'helpful' | 'conflicting';
+  conflictNote?: string;  // 如果是 conflicting，说明冲突点
+}
+
+/**
+ * Task-Aware Recall Pipeline
+ */
+class TaskAwareRecallPipeline {
+  async recallWithContext(
+    query: string,
+    taskContext: TaskContext,
+    options: RecallOptions
+  ): Promise<TaskAwareRecallResult> {
+    // Step 1: 传统向量召回
+    const rawResults = await this.vectorRecall(query, options);
+
+    // Step 2: 任务上下文增强
+    const taskEnhanced = await this.enhanceWithTaskContext(rawResults, taskContext);
+
+    // Step 3: 分类
+    const mustKnow = taskEnhanced.filter(m => m.taskAlignment === 'required');
+    const mightBeHelpful = taskEnhanced.filter(m => m.taskAlignment === 'helpful');
+    const cautionNeeded = taskEnhanced.filter(m => m.taskAlignment === 'conflicting');
+
+    // Step 4: 知识缺口检测
+    const knowledgeGaps = await this.detectKnowledgeGaps(taskContext, rawResults);
+
+    // Step 5: 行动建议生成
+    const suggestedActions = await this.generateActionHints(taskContext, rawResults);
+
+    return { mustKnow, mightBeHelpful, cautionNeeded, knowledgeGaps, suggestedActions };
+  }
+
+  private async enhanceWithTaskContext(
+    memories: MemoryEntry[],
+    taskContext: TaskContext
+  ): Promise<MemoryWithRationale[]> {
+    const prompt = `
+任务目标：${taskContext.taskGoal}
+当前状态：${taskContext.currentState}
+约束条件：${taskContext.constraints.join(', ')}
+
+记忆列表：
+${memories.map((m, i) => `${i + 1}. ${m.text}`).join('\n')}
+
+请判断每条记忆对这个任务的作用：
+- required：如果缺失这条记忆，任务很可能失败
+- helpful：对任务有正面帮助
+- conflicting：和任务目标或约束矛盾
+
+对于每条记忆，说明：
+1. 为什么这条记忆对当前任务重要或矛盾
+2. 如何利用或应对这条记忆
+
+输出格式：
+{
+  "assessments": [
+    { "index": 1, "alignment": "required|helpful|conflicting", "rationale": "...", "actionHint": "..." }
+  ]
+}
+`;
+    return this.llm.complete(prompt);
+  }
+}
+```
+
+**为什么是根本盲区**：没有 Task Context，recall 永远是「大海捞针」而不是「精准供给」。agent 无法区分「这条记忆对当前任务至关重要」和「这条记忆只是有点相关」。
+
+**版本规划**：v3.2（Task Context 核心）→ v3.3（知识缺口检测）→ v3.4（行动建议生成）
+
+---
+
+### 8.6.4 盲区四：「遗忘」的逻辑仍是「删除」而非「替代」
+
+**问题**：真实的遗忘不是「删除」，而是「被新的理解覆盖整合」。
+
+```
+真实的人类遗忘：
+「我以前觉得 X 是对的」→「我现在认为 X 需要修正」
+→ 两者都存在，只是新的更突出
+
+当前 hawk-bridge 遗忘：
+access_count 低了 → archive → 删除
+旧记忆彻底消失，没有「更新后的理解」这个概念
+```
+
+**根本缺陷**：没有「记忆更新」的语义。用户纠正一条记忆时，系统只是标记 ignored/suppressed，但没有「生成新的正确理解」。
+
+**架构设计**：
+
+```typescript
+/**
+ * Memory Reconciliation — 记忆调和
+ * 当新记忆和旧记忆冲突时，如何处理
+ */
+interface MemoryReconciliation {
+  detectConflict(newMemory: Memory, existingMemories: Memory[]): ConflictGroup | null;
+  resolveConflict(conflict: ConflictGroup): ReconciliationResult;
+}
+
+/**
+ * 冲突组 — 描述新旧记忆之间的冲突关系
+ */
+interface ConflictGroup {
+  rootMemoryId: string;
+  newMemoryId: string;
+  conflictType: 'correction' | 'update' | 'contradiction' | 'refinement';
+
+  oldClaim: string;
+  newClaim: string;
+
+  temporalOrder: 'new_supersedes_old' | 'old_still_valid' | 'both_valid_in_context';
+}
+
+/**
+ * 解决结果
+ */
+interface ReconciliationResult {
+  resolution: 'merged' | 'superseded' | 'coexist' | 'needs_human_review';
+
+  // merged：生成新的综合记忆
+  mergedMemory?: Memory;
+
+  // superseded：标记旧记忆为历史版本
+  historicalMemory?: {
+    memoryId: string;
+    supersededBy: string;
+    supersessionReason: string;
+  };
+
+  // coexist：两者都保留，标记为 contested
+  coexistingMemories?: Memory[];
+
+  suggestedAction?: string;
+}
+
+/**
+ * Memory Reconciler — 替代当前的 ignore/suppress 机制
+ */
+class MemoryReconciler {
+  // 用户说「不对，应该是 Y」
+  async reconcile(
+    memoryId: string,
+    correction: string,
+    reason: string
+  ): Promise<ReconciliationResult> {
+    const existing = await this.memoryStore.get(memoryId);
+    const conflict = this.detectConflict(
+      Memory.createFromText(correction),
+      [existing]
+    );
+
+    if (!conflict) {
+      // 没有冲突，直接更新
+      await this.memoryStore.update(memoryId, correction);
+      return { resolution: 'merged' };
+    }
+
+    return this.resolveConflict(conflict);
+  }
+
+  private resolveConflict(conflict: ConflictGroup): ReconciliationResult {
+    switch (conflict.conflictType) {
+      case 'correction':
+        // 用户明确纠正 → 新记忆取代旧记忆
+        return {
+          resolution: 'superseded',
+          historicalMemory: {
+            memoryId: conflict.rootMemoryId,
+            supersededBy: conflict.newMemoryId,
+            supersessionReason: `用户纠正：${conflict.newClaim}`,
+          },
+        };
+
+      case 'refinement':
+        // 用户细化理解 → 合并两者
+        return {
+          resolution: 'merged',
+          mergedMemory: Memory.merge(conflict.rootMemoryId, conflict.newMemoryId),
+        };
+
+      case 'contradiction':
+        // 用户说和原来矛盾 → 都需要保留，标记为 contested
+        return {
+          resolution: 'coexist',
+          coexistingMemories: [conflict.rootMemoryId, conflict.newMemoryId].map(
+            id => this.memoryStore.get(id)
+          ),
+        };
+
+      default:
+        return { resolution: 'needs_human_review' };
+    }
+  }
+}
+
+/**
+ * Deprecation — 替代「删除」的语义
+ * 用户「改主意了」→ 记录为「已放弃的意图」，不删除
+ */
+interface MemoryDeprecation {
+  // 标记为已放弃的意图
+  deprecate(
+    memoryId: string,
+    reason: string,      // "用户改主意了"
+    supersededBy?: string  // 新意图是什么
+  ): Promise<void>;
+
+  // 获取「已放弃的意图」历史
+  getDeprecated(memoryId: string): DeprecatedMemory[];
+}
+
+/**
+ * Deprecated Memory — 被放弃的意图/决策
+ * 不是删除，而是记录为「曾经考虑过但已放弃」
+ */
+interface DeprecatedMemory {
+  memoryId: string;
+  deprecatedAt: number;
+  deprecatedReason: string;
+  supersededBy?: string;   // 被什么替代
+  deprecatedBy: 'user' | 'agent' | 'system';
+}
+```
+
+**为什么是根本盲区**：没有 Reconciliation，「纠正」只是「标记旧的是错的」而不是「生成新的对的理解」。contested 记忆会不断累积，却没有真正被解决。
+
+**版本规划**：v3.2（Reconciliation 核心）→ v3.3（Deprecation 语义）→ v3.4（自动合并）
+
+---
+
+### 8.6.5 盲区五：系统没有「自我监控」的记忆
+
+**问题**：hawk-bridge 监控的是「记忆的使用情况」（access_count, recall latency），但没有监控「系统自身的认知状态」。
+
+```
+当前监控：
+- 这条记忆被访问了多少次？
+- 召回延迟是多少毫秒？
+
+真正需要的监控：
+- agent 最近决策失误了多少次？是否和某个记忆误导有关？
+- 哪些类型的记忆最容易在 recall 时被忽略？
+- 记忆库是否在某个主题上存在系统性盲区？
+```
+
+**根本缺陷**：hawk-bridge 对「自己的记忆质量」一无所知。即使实现了 #56（Recall Quality Feedback）和 #57（Memory ROI），那也只是「单条记忆的价值评估」，不是「系统整体认知状态的监控」。
+
+**架构设计**：
+
+```typescript
+/**
+ * Self-Awareness Memory — 系统的自我监控记忆
+ * 不是关于用户的记忆，而是关于系统自身运作状况的知识
+ */
+interface SystemSelfAwareness {
+  // 系统对自身状态的感知
+  systemSelfMemory: SystemSelfKnowledge[];
+
+  // 记忆库的「健康状态」
+  memoryHealth: {
+    blindSpots: string[];           // 系统性盲区
+    noiseAccumulation: number;       // 噪音积累程度
+    fragmentationScore: number;     // 记忆碎片化程度
+    stalenessRate: number;         // 记忆老化速率
+  };
+
+  // agent 行为的「系统记忆」
+  agentBehaviorPattern: {
+    frequentlyOverlookedMemoryTypes: string[];  // 哪些类型的记忆容易被忽略
+    repeatedMistakes: string[];                // 反复出现的决策错误
+    successfulStrategies: string[];           // 反复成功的策略
+    confidenceCalibration: 'overconfident' | 'underconfident' | 'calibrated';
+  };
+
+  // 任务完成率的系统级分析
+  taskCompletionAnalysis: {
+    overallSuccessRate: number;
+    failureModes: Array<{
+      pattern: string;
+      frequency: number;
+      likelyCause: string;
+    }>;
+  };
+}
+
+/**
+ * 系统自我知识 — 区别于用户记忆的系统自身认知
+ */
+interface SystemSelfKnowledge {
+  id: string;
+  category: 'system_bias' | 'agent_pattern' | 'memory_gap' | 'success_pattern';
+
+  discoveredAt: number;
+  discoveryMethod: 'analysis' | 'feedback' | 'explicit_report';
+
+  content: string;
+
+  confidence: number;  // 这个系统自我知识的置信度
+
+  actionTaken: boolean;
+  actionDescription?: string;
+}
+
+/**
+ * Self-Awareness Analyzer — 定期分析系统自身状态
+ * 类似于 soul-force 的巡检，但针对的是系统自身
+ */
+class SelfAwarenessAnalyzer {
+  // 每日巡检：系统对自身的认知状态
+  @Cron('0 2 * * *')  // 每天凌晨 2 点
+  async runSelfDiagnosis(): Promise<SystemSelfAwareness> {
+    // 分析失败模式
+    const failurePatterns = await this.analyzeRecentFailures();
+
+    // 分析记忆盲区
+    const blindSpots = await this.detectBlindSpots();
+
+    // 分析 agent 行为模式
+    const agentPatterns = await this.analyzeAgentBehavior();
+
+    // 综合评估
+    const diagnosis = {
+      systemSelfMemory: await this.consolidateSystemKnowledge(
+        failurePatterns,
+        blindSpots,
+        agentPatterns
+      ),
+      memoryHealth: this.computeMemoryHealth(blindSpots, failurePatterns),
+      agentBehaviorPattern: agentPatterns,
+      taskCompletionAnalysis: this.analyzeTaskCompletion(failurePatterns),
+    };
+
+    // 存储系统自我知识
+    await this.storeSelfKnowledge(diagnosis);
+
+    // 如果发现问题 → 触发行动
+    await this.handleSelfDiagnosis(diagnosis);
+
+    return diagnosis;
+  }
+
+  private async detectBlindSpots(): Promise<BlindSpot[]> {
+    // 分析：哪些类型的任务持续失败？
+    // 分析：哪些记忆从未被成功应用？
+    // 分析：哪些知识缺口反复出现？
+
+    const prompt = `
+分析最近的失败案例，识别系统性盲区：
+
+失败案例：
+${this.failureCases.map((c, i) => `${i + 1}. 任务：${c.task}，失败原因：${c.reason}`).join('\n')}
+
+请识别：
+1. 是否有某种类型的任务反复失败？（模式）
+2. 是否有某种信息反复缺失导致失败？（盲区）
+3. 是否有某种类型的记忆最容易被忽略？（选择性盲区）
+
+输出：
+{
+  "blindSpots": [
+    { "type": "...", "description": "...", "evidence": [...] }
+  ]
+}
+`;
+    return this.llm.complete(prompt);
+  }
+
+  private async handleSelfDiagnosis(
+    diagnosis: SystemSelfAwareness
+  ): Promise<void> {
+    // 盲区检测 → 建议补充相关记忆
+    if (diagnosis.memoryHealth.blindSpots.length > 0) {
+      await this.notify(
+        `记忆库存在 ${diagnosis.memoryHealth.blindSpots.length} 个系统性盲区，` +
+        `建议通过 auto-evolve 巡检补充相关上下文`
+      );
+    }
+
+    // 反复失误检测 → 触发学习优化
+    if (diagnosis.agentBehaviorPattern.repeatedMistakes.length > 0) {
+      await this.createOptimizationTask(
+        diagnosis.agentBehaviorPattern.repeatedMistakes
+      );
+    }
+
+    // 置信度校准
+    if (diagnosis.agentBehaviorPattern.confidenceCalibration !== 'calibrated') {
+      await this.adjustConfidenceThreshold(
+        diagnosis.agentBehaviorPattern.confidenceCalibration
+      );
+    }
+  }
+}
+
+/**
+ * Self-Knowledge Store — 系统自我知识的持久化
+ * 和用户记忆分开存储
+ */
+interface SelfKnowledgeStore {
+  // 存储系统自我知识
+  store(knowledge: SystemSelfKnowledge): Promise<void>;
+
+  // 查询相关自我知识
+  recall(category: string): SystemSelfKnowledge[];
+
+  // 更新置信度
+  updateConfidence(knowledgeId: string, newConfidence: number): Promise<void>;
+}
+```
+
+**为什么是根本盲区**：没有 Self-Awareness Memory，系统永远是「被动响应」而不是「主动反思」。hawk-bridge 不知道自己在哪个方面「不行」。
+
+**版本规划**：v3.3（Self-Awareness 核心）→ v3.4（自动诊断）→ v3.5（自我优化联动）
+
+---
+
+### 5 个根本性盲区汇总
+
+| 盲区 | 根因 | 影响 | 突破方向 |
+|------|------|------|---------|
+| **记忆定义仍是文本块** | 假设「记忆 = 文本 + 向量」 | recall 只能返回文本，无法理解记忆的认知角色 | 四平面模型（内容/语义/置信/意图） |
+| **记忆是存储单位非学习单位** | 存储「说过的话」而非「学到的东西」 | 记忆库只是历史存档，无法形成知识体系 | Learning Unit + Skill 联动 |
+| **recall 是 query 驱动非任务驱动** | 假设 recall = 「找相关的」 | agent 拿到相关列表而非任务指南 | Task Context + Task-Aware Recall |
+| **遗忘是删除非替代** | 假设「旧的是错的，新的对」 | contested 记忆累积，没有真正解决 | Reconciliation + Deprecation 语义 |
+| **系统没有自我监控** | 监控使用数据而非认知状态 | 系统不知道自己哪个方面「不行」 | Self-Awareness Memory + 系统巡检 |
+
+---
+
 ## 附录：17 个差距对应的架构改造
 
 | 差距 | 需要改造的模块 |
