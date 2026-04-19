@@ -24,6 +24,7 @@
 | 🌱 生命周期适配（人/企业） | 人四阶段、企业四阶段、传承、断舍离 | #item-96, #item-97, #item-98, #item-99 |
 | 🧠 独立深度思考 | 反馈闭环、LLM边界、Compiler、锁定、产权、自污染 | #item-100, #item-101, #item-102, #item-103, #item-104, #item-105 |
 | 🔮 LLM共进化与护城河 | 定义好记忆标准、五大升级方向、三阶段护城河路径 | #item-106 |
+| 🤖 LLM团队专属（内部定制） | 记忆原生Attention、专用小模型矩阵 | #item-107, #item-108 |
 
 
 ---
@@ -2696,8 +2697,9 @@ Memory Health Dashboard：
 | 竞争战略与核心挑战 | #93-#95（3项） |
 | 生命周期适配（人/企业） | #96-#99（4项） |
 | 独立深度思考（竞品未发现） | #100-#105（6项） |
-| **LLM共进化与护城河** | **#106（1项）** |
-| **总计** | **106 项** |
+| LLM共进化与护城河 | #106（1项） |
+| **LLM团队专属（内部定制）** | **#107-#108（2项）** |
+| **总计** | **108 项** |
 
 ---
 
@@ -4985,6 +4987,233 @@ hawk-bridge 的护城河建设路径：
 
 **前置依赖**：#100（记忆有效性闭环）+ #101（知识蒸馏的LLM能力边界）
 **优先级**：🔴（终极护城河，非技术问题）
+
+---
+
+### [ ] 107. 记忆原生 Attention 机制（LLM 团队专属） {#item-107}
+
+**来源：独立思考 — 如果 LLM 团队是自家的，可以深度定制**
+
+**背景**：当前 LLM 的 attention 是无差别的，所有 token 一视同仁。记忆的 metadata（importance/contested/freshness）完全无法影响推理权重。这是 API 层面无法解决的问题，需要在模型架构层面直接实现。
+
+**核心差异**：
+
+```
+#106（对内）：提需求，说清楚为什么需要，LLM 团队去改
+#107（自家）：LLM 团队直接改 model architecture，不是 API，是 weight
+
+这不是 API 参数，是 weight 和 architecture。
+竞品就算知道这个设计，也无法通过 API 复制。
+只有你们公司有这个能力。
+```
+
+**记忆路由器架构**：
+
+```
+Input Layer
+    ↓
+┌─────────────────────────────────────┐
+│  Memory Attention Router             │  ← 新增的组件（model weight）
+│                                     │
+│  输入：每条记忆的 metadata           │
+│    - importance_score（0.0-1.0）    │
+│    - contested（boolean）            │
+│    - fresh_recent（boolean）         │
+│    - lineage_depth（int）            │
+│                                     │
+│  输出：每条记忆的 attention weight  │
+│    - contested记忆 → 自动降权 50%   │
+│    - importance=0.9 → 权重 × 1.5   │
+│    - fresh=true → 权重 × 1.2        │
+│    - lineage_depth>2 → 权重 × 0.7  │
+└─────────────────────────────────────┘
+    ↓
+Standard Transformer Layers
+    ↓
+Output
+```
+
+**具体需求给 LLM 团队**：
+
+```
+需求：Memory-Aware Attention Layer
+
+输入格式：
+{
+  "memories": [...],
+  "memory_metadata": {
+    "mem_001": {"importance": 0.9, "contested": false, "fresh": true, "lineage_depth": 1},
+    "mem_002": {"importance": 0.3, "contested": true, "fresh": false, "lineage_depth": 3}
+  }
+}
+
+期望行为：
+- mem_001 的 attention weight 是 mem_002 的 ~4.5 倍
+- contested 记忆自动降权
+- lineage_depth 越深，降权越多（自污染检测）
+
+训练数据：
+- 用 hawk-bridge 的 recall feedback 数据（#100）
+- 标注哪些记忆「应该权重高」，哪些「应该权重低」
+- 让模型从数据中学习记忆权重的规律
+```
+
+**为什么是护城河**：
+
+```
+1. 架构层面的改变，不是 prompt，不是 API
+2. 需要 LLM 团队专门训练，其他公司无法通过 API 复制
+3. 记忆质量越高（#100 feedback 数据越多），这个 layer 越准
+4. flywheel：记忆质量提升 → attention 更准 → 记忆质量进一步提升
+```
+
+**前置依赖**：#100（记忆有效性闭环）
+**优先级**：🔴（LLM 团队专属护城河）
+
+---
+
+### [ ] 108. 记忆专用小模型矩阵（LLM 团队专属） {#item-108}
+
+**来源：独立思考 — 大模型贵，专用的才便宜**
+
+**背景**：用大模型做记忆蒸馏/矛盾检测/质量评估，成本高、延迟高、无法闲时运行。LLM 团队可以训一系列专门的小模型，比大模型便宜 100 倍，专门做记忆操作。
+
+**记忆专用模型矩阵**：
+
+| 模型 | 大小 | 用途 | 运行时 | 延迟目标 |
+|------|------|------|--------|---------|
+| **Consolidation-Mini** | 7B | 矛盾检测、记忆整合 | 闲时（睡觉时） | <5s |
+| **Distillation-Mini** | 7B | Raw→Pattern 蒸馏 | 闲时 | <5s |
+| **Quality-Score** | 3B | 评估 recall 质量 | 实时 | <100ms |
+| **ImportPredict** | 1B | 预测新记忆重要性 | 写入时 | <50ms |
+| **TimeReasoner** | 3B | 时序因果推理 | 实时查询 | <200ms |
+
+```
+总成本：约 21B 参数 ≈ 一个大模型的 1/5 成本
+但这些是专门优化的，每 token 推理速度是大模型的 10 倍
+```
+
+**Flywheel 效应**：
+
+```
+Consolidation-Mini 发现矛盾 → 产生新的 distilled 记忆
+       ↓
+这些新记忆进入 recall pool
+       ↓
+Quality-Score 评估 recall 质量提升
+       ↓
+ImportPredict 预测新记忆重要性更准
+       ↓
+TimeReasoner 建立更完整的时序图
+       ↓
+回到 Consolidation-Mini，形成正向循环
+```
+
+**Consolidation-Mini（7B）— 矛盾检测**
+
+```
+输入：今天的新记忆 + 相关的历史记忆
+输出：矛盾检测报告 + 整合建议
+
+示例：
+输入：
+  新记忆："用户说微服务架构更好"
+  历史记忆："用户之前偏好单体架构，因为团队小"
+
+输出：
+  {
+    "contradiction_detected": true,
+    "contradiction_type": "preference_change",
+    "analysis": "团队规模扩大后，用户自然调整了偏好",
+    "resolution": "更新偏好记忆，保留'团队规模小→单体'的上下文",
+    "confidence": 0.85
+  }
+
+训练数据：hawk-bridge 的 recall feedback（标记矛盾的记忆对）
+运行时间：用户不活跃时（如睡觉时），批量处理
+```
+
+**Quality-Score（3B）— 评估 recall 质量**
+
+```
+输入：query + recall_results + context
+输出：这个 recall 对用户有没有帮助（0-100）
+
+示例：
+输入：
+  query: "用户想迁移到微服务，评估可行性"
+  recall_results: [mem_001, mem_002, mem_003]
+
+输出：
+  {
+    "quality_score": 78,
+    "analysis": "mem_001 和 mem_002 直接相关，mem_003 轻微干扰",
+    "suggestion": "提升 mem_001/mem_002 权重，降低 mem_003 权重"
+  }
+
+训练数据：hawk-bridge 的 recall feedback（用户打分）
+运行时间：实时，<100ms
+```
+
+**ImportPredict（1B）— 预测记忆重要性**
+
+```
+输入：新 capture 的记忆内容
+输出：预测 importance_score（0.0-1.0）
+
+示例：
+输入："用户今天提到'考虑年后跳槽'"
+
+输出：
+  {
+    "predicted_importance": 0.7,
+    "reasoning": "职业重大决策，通常是高价值记忆",
+    "suggested_tier": "pattern",
+    "watch_for_followup": true
+  }
+
+训练数据：hawk-bridge 历史记忆的 importance 标注
+运行时间：写入时，<50ms
+```
+
+**TimeReasoner（3B）— 时序因果推理**
+
+```
+输入：带时间戳的记忆列表
+输出：时序图 + 因果链
+
+示例：
+输入：
+  mem_001: "2024-01: 选了 GraphQL"
+  mem_002: "2024-03: GraphQL 复杂度超预期"
+  mem_003: "2024-06: 决定简化 GraphQL"
+
+输出：
+  {
+    "timeline": "GraphQL(2024-01) → 复杂度问题(2024-03) → 简化决策(2024-06)",
+    "causal_chain": {
+      "cause": "GraphQL 复杂度超预期",
+      "effect": "决定简化",
+      "strength": 0.9
+    },
+    "key_insight": "技术选型决策受执行经验影响"
+  }
+
+训练数据：hawk-bridge 的记忆 lineage 数据
+运行时间：实时查询，<200ms
+```
+
+**为什么是护城河**：
+
+```
+1. 训练和推理成本是大模型的 1/5，速度是 10 倍
+2. 专门优化的记忆领域模型，通用 LLM 无法匹敌
+3. 需要 LLM 团队专门训练，竞品无法通过 API 复制
+4. flywheel 越转越准，形成数据壁垒
+```
+
+**前置依赖**：#100（记忆有效性闭环）
+**优先级**：🔴（LLM 团队专属护城河）
 
 ---
 
