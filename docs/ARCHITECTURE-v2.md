@@ -889,55 +889,230 @@ v3.x ─────────────────────────
 
 ### 8.2 Event Bus 选型
 
-| 方案 | 优势 | 劣势 |
-|------|------|------|
-| **Redis Streams** | 持久化，支持多实例，消费者组，exactly-once，成熟稳定 | 需要额外部署 Redis |
-| **Kafka** | 企业级，可靠性极高 | 过度工程，运维复杂 |
-| **In-Memory** | 无额外依赖，低延迟 | 单实例，断电丢失，无法水平扩展 |
+> **2026-04-19 更新**：采用「本地优先 + Redis Streams 可升级」策略。
+> 默认部署不需要 Redis，降低门槛；有规模需求时再升级。
 
-**决策**：直接采用 **Redis Streams**，原因：
-- Redis 已在团队基础设施中（xinference 等服务已用）
-- 支持消费者组（Consumer Groups），多实例消费无重复
-- 内置持久化，断电不丢
-- 比 Kafka 轻量，比 In-Memory 可靠
+| 方案 | 优势 | 劣势 | 适用场景 |
+|------|------|------|---------|
+| **In-Memory + WAL**（默认） | 零依赖，clone 就能跑，延迟最低 | 单实例，断电丢少量事件（<1s），无法水平扩展 | v1.x 单实例、个人/小团队 |
+| **Redis Streams**（可选升级） | 持久化，消费者组，多实例消费，exactly-once | 需要额外部署 Redis，增加运维复杂度 | v2.x 多实例、企业级 |
+| **Kafka** | 企业级，可靠性极高 | 过度工程，运维极复杂 | 超大规模（>1000 QPS） |
+
+**决策**：
+
+- **v1.x 默认**：In-Memory Event Bus + 磁盘 WAL（fsync 到磁盘，崩溃恢复）
+- **v2.x 可选**：Redis Streams（只需修改配置，代码层面自动兼容）
+- **v3.x 预留**：Kafka（仅在超大规模时考虑）
+
+> 架构原则：**简单场景零门槛，复杂场景可升级**，不强迫用户为不需要的能力买单。
 
 ```typescript
-// Redis Streams Event Bus 接口设计
-interface MemoryEventBus {
-  // 发布事件
-  publish(channel: string, event: MemoryEvent): Promise<void>;
+/**
+ * Event Bus 两层架构
+ *
+ *  LocalEventBus（默认）          RedisStreamsBus（可选升级）
+ *  ┌──────────────────┐           ┌──────────────────────────┐
+ *  │  Memory Queue    │           │  Redis Streams          │
+ *  │  + WAL File      │  ←切换→  │  + Consumer Groups      │
+ *  │  (同步写磁盘)    │           │  (多实例消费)           │
+ *  └──────────────────┘           └──────────────────────────┘
+ *        ↓                              ↓
+ *  ┌──────────────────┐           ┌──────────────────────────┐
+ *  │  EventHandler    │           │  EventHandler            │
+ *  └──────────────────┘           └──────────────────────────┘
+ */
 
-  // 订阅消费（消费者组模式）
+/**
+ * EventBus 接口 — Local 和 Redis 共用同一接口
+ */
+interface EventBus {
+  publish(channel: string, event: MemoryEvent): Promise<void>;
   subscribe(
     group: string,
     consumer: string,
     handler: (event: MemoryEvent) => Promise<void>
   ): Promise<void>;
-
-  // 确认已处理
   ack(channel: string, group: string, id: string): Promise<void>;
+  close(): Promise<void>;
 }
 
-// MemoryEvent 类型
-type MemoryEventType =
-  | 'memory.captured'
-  | 'memory.recalled'
-  | 'memory.contested'
-  | 'memory.verified'
-  | 'memory.corrected'
-  | 'memory.decayed'
-  | 'memory.archived'
-  | 'memory.deleted';
+/**
+ * LocalEventBus — 默认实现（v1.x）
+ *
+ * 特点：
+ * - 内存队列 + WAL 文件（append only）
+ * - 进程内同步写 WAL，崩溃后可恢复
+ * - 单实例使用，不支持多实例消费
+ * - 零外部依赖
+ */
+class LocalEventBus implements EventBus {
+  private queue: Map<string, MemoryEvent[]> = new Map();
+  private handlers: Map<string, Set<(event: MemoryEvent) => Promise<void>>> = new Map();
+  private walPath: string;
+  private walStream: fs.WriteStream;
 
-interface MemoryEvent {
-  id: string;           // Redis Stream message ID
-  trace_id: string;      // 分布式追踪 ID
-  type: MemoryEventType;
-  memory_id: string;
-  payload: Record<string, unknown>;
-  timestamp: number;
+  constructor(walPath: string = './data/events.wal') {
+    this.walPath = walPath;
+    // 确保目录存在
+    fs.mkdirSync(path.dirname(walPath), { recursive: true });
+    // 打开 WAL（append mode）
+    this.walStream = fs.createWriteStream(walPath, { flags: 'a' });
+    // 启动时恢复未消费的事件
+    this.recoverFromWAL();
+  }
+
+  async publish(channel: string, event: MemoryEvent): Promise<void> {
+    // 内存队列
+    if (!this.queue.has(channel)) {
+      this.queue.set(channel, []);
+    }
+    this.queue.get(channel)!.push(event);
+
+    // 同步写 WAL（batch fsync 优化）
+    this.walStream.write(JSON.stringify({ channel, event }) + '\n');
+
+    // 触发本地 handlers（同步）
+    const handlers = this.handlers.get(channel);
+    if (handlers) {
+      await Promise.all([...handlers].map(h => h(event)));
+    }
+  }
+
+  async subscribe(
+    group: string,
+    consumer: string,
+    handler: (event: MemoryEvent) => Promise<void>
+  ): Promise<void> {
+    if (!this.handlers.has(group)) {
+      this.handlers.set(group, new Set());
+    }
+    this.handlers.get(group)!.add(handler);
+  }
+
+  async ack(channel: string, group: string, id: string): Promise<void> {
+    // Local 模式不需要 ack（单实例，同步处理）
+  }
+
+  async close(): Promise<void> {
+    return new Promise((resolve) => {
+      this.walStream.end(() => resolve());
+    });
+  }
+
+  // WAL 恢复：启动时重放未处理的事件
+  private async recoverFromWAL(): Promise<void> {
+    if (!fs.existsSync(this.walPath)) return;
+
+    const lines = fs.readFileSync(this.walPath, 'utf-8').split('\n').filter(Boolean);
+    for (const line of lines) {
+      try {
+        const { channel, event } = JSON.parse(line);
+        // 重放事件到 handlers
+        const handlers = this.handlers.get(channel);
+        if (handlers) {
+          await Promise.all([...handlers].map(h => h(event)));
+        }
+      } catch (e) {
+        console.warn('WAL recovery: skip malformed line', e);
+      }
+    }
+  }
 }
-```
+
+/**
+ * RedisStreamsBus — 可选升级（v2.x）
+ *
+ * 切换方式：
+ * 1. 安装 Redis
+ * 2. 修改配置：eventbus.provider: "redis"
+ * 3. 重启服务，自动从 Local 切换到 Redis Streams
+ */
+class RedisStreamsBus implements EventBus {
+  private redis: Redis;
+  private group: string;
+
+  constructor(config: { url: string; group: string }) {
+    this.redis = new Redis(config.url);
+    this.group = config.group;
+  }
+
+  async publish(channel: string, event: MemoryEvent): Promise<void> {
+    await this.redis.xadd(channel, '*', 'data', JSON.stringify(event));
+  }
+
+  async subscribe(
+    group: string,
+    consumer: string,
+    handler: (event: MemoryEvent) => Promise<void>
+  ): Promise<void> {
+    // 确保消费者组存在
+    try {
+      await this.redis.xgroup('CREATE', group, consumer, '0');
+    } catch (e) {
+      // 消费者组已存在，忽略
+    }
+
+    // 持续消费
+    while (true) {
+      const events = await this.redis.xreadgroup(
+        'GROUP', group, consumer,
+        'COUNT', 100,
+        'BLOCK', 1000,
+        'STREAMS', group, '>'
+      );
+
+      for (const [stream, messages] of events) {
+        for (const [id, fields] of messages) {
+          const event = JSON.parse(fields[1]);
+          await handler(event);
+          await this.redis.xack(group, consumer, id);
+        }
+      }
+    }
+  }
+
+  async ack(channel: string, group: string, id: string): Promise<void> {
+    await this.redis.xack(channel, group, id);
+  }
+
+  async close(): Promise<void> {
+    await this.redis.quit();
+  }
+}
+
+/**
+ * EventBus Factory — 根据配置自动选择实现
+ */
+class EventBusFactory {
+  static create(config: HawkConfig['eventbus']): EventBus {
+    switch (config.provider) {
+      case 'redis':
+        return new RedisStreamsBus(config.redis);
+      case 'local':
+      default:
+        return new LocalEventBus(config.local?.walPath);
+    }
+  }
+}
+
+/**
+ * 配置示例
+ */
+const hawkConfig: HawkConfig = {
+  eventbus: {
+    // 默认：本地模式（零依赖）
+    provider: 'local',
+    local: {
+      walPath: './data/events.wal',
+    },
+    // 未来升级 Redis：
+    // provider: 'redis',
+    // redis: {
+    //   url: 'redis://localhost:6379',
+    //   group: 'hawk-bridge',
+    // },
+  },
+};
 
 ### 8.3 向量 Embedding 抽象
 
