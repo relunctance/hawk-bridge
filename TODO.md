@@ -21,6 +21,7 @@
 | 📊 Observability（可观测性） | 自我监控、系统健康度 | #item-74 |
 | 🧠 知识进化（100年计划） | 分层蒸馏、动态Tier、溯源、合规、经济学 | #item-75, #item-76, #item-77, #item-78, #item-79, #item-80, #item-81, #item-82, #item-83, #item-84, #item-85, #item-86, #item-87, #item-88, #item-89, #item-90, #item-91, #item-92 |
 | 🔺 竞争战略与核心挑战 | 护城河定位、技术攻坚、高频刚需 | #item-93, #item-94, #item-95 |
+| 🌱 生命周期适配（人/企业） | 人四阶段、企业四阶段、传承、断舍离 | #item-96, #item-97, #item-98, #item-99 |
 
 
 ---
@@ -2690,8 +2691,9 @@ Memory Health Dashboard：
 | 规则引擎 | #60-#70（11项） |
 | 独立判断（新增） | #71-#74（4项） |
 | 知识进化（100年计划新增） | #75-#92（18项） |
-| **竞争战略与核心挑战** | **#93-#95（3项）** |
-| **总计** | **95 项** |
+| 竞争战略与核心挑战 | #93-#95（3项） |
+| **生命周期适配（人/企业）** | **#96-#99（4项）** |
+| **总计** | **99 项** |
 
 ---
 
@@ -3569,6 +3571,355 @@ interface MemoryArchaeology {
 - "最意外的发现" → 跨越时间的意外关联
 
 **前置依赖**：#77（记忆血缘链）+ #91（Memory Warmth）
+**优先级**：🟢
+
+---
+
+### [ ] 96. 生命周期适配蒸馏引擎（人/企业/组织） {#item-96}
+
+**来源：autoself 100年计划 — 知识进化策略适配视角**
+
+**背景**：人的需求在变——少年、成年、中年、老年，企业也有不同阶段——初创、成长、成熟、转型。知识的生命周期和进化蒸馏策略不应该用同一套逻辑贯穿始终。同一套"3次重复触发Pattern"对少年太激进，对老年又太慢。
+
+**核心洞察**：
+```
+人：少年 → 成年 → 中年 → 老年
+        ↓       ↓       ↓       ↓
+记忆策略：吸收型  提炼型  整合型  传承型
+
+企业：初创 → 成长 → 成熟 → 转型/遗产
+        ↓       ↓       ↓       ↓
+知识策略：快速Capture  Pattern→Principle  传承 vs 断舍离
+```
+
+### 人的四阶段策略
+
+| 维度 | 少年（0-25） | 成年（25-45） | 中年（45-65） | 老年（65+） |
+|------|-------------|--------------|--------------|------------|
+| **记忆模式** | 吸收型（多多益善） | 提炼型（形成模式） | 整合型（原则体系） | 传承型（智慧遗产） |
+| **蒸馏触发** | 5次重复 | 3次重复 | 2次重复 | 1次重要经验 |
+| **抽象偏好** | 低（保留原始） | 中 | 高 | 极高 |
+| **衰减曲线** | 快速（艾宾浩斯） | 正常 | 慢衰减 | 极慢 + 突触巩固 |
+| **遗忘策略** | 自然遗忘即可 | 清理噪音 | 强化核心 | 刻意保留意义 |
+
+### 企业四阶段策略
+
+| 维度 | 初创（0-3年） | 成长（3-10年） | 成熟（10-30年） | 遗产（30+年） |
+|------|-------------|----------------|----------------|--------------|
+| **知识模式** | 战斗经验，存活者偏差 | 快速迭代 | 系统化，流程固化 | 知识老化，需断舍离 |
+| **遗忘策略** | 快速遗忘失败，保留成功 | 正常衰减 | 慢衰减，保护核心 | 激进删除过时知识 |
+| **治理强度** | 宽松，大家随意 | 中等 | 严格，变更需审批 | 传承 vs 断舍离 |
+| **核心风险** | 人走知识失 | 知识分散，版本乱 | 知识僵化，创新抑制 | 知识断层 |
+
+### 生命周期适配蒸馏引擎
+
+```typescript
+type HumanLifeStage = 'youth' | 'early_adulthood' | 'midlife' | 'late_life';
+type OrgLifecycleStage = 'startup' | 'growth' | 'maturity' | 'legacy';
+
+interface LifecycleDistillationEngine {
+  // 阶段检测
+  detect_stage(): HumanLifeStage | OrgLifecycleStage;
+
+  // 获取当前阶段的蒸馏策略
+  get_distillation_config(stage: Stage): DistillationConfig {
+    // 根据阶段返回不同的蒸馏阈值、遗忘曲线、抽象偏好
+  }
+
+  // 阶段转换时的渐变过渡
+  transition_blend(from: Stage, to: Stage, progress: number): DistillationConfig {
+    // 0.0 = 完全旧策略，1.0 = 完全新策略，中间线性插值
+  }
+}
+
+// 遗忘曲线阶段适配
+const decayCurvesByStage = {
+  youth: 'ebbinghaus',           // 先快后慢，快速迭代
+  early_adulthood: 'ebbinghaus', // 正常艾宾浩斯
+  midlife: 'step',               // 阶梯衰减，关键节点突触巩固
+  late_life: 'linear',           // 线性衰减，接近永久保留
+};
+
+// 蒸馏阈值阶段适配
+const distillationThresholds = {
+  youth: { pattern_trigger: 5, min_raw: 10 },   // 多积累，不急提炼
+  early_adulthood: { pattern_trigger: 3, min_raw: 5 },
+  midlife: { pattern_trigger: 2, min_raw: 3 },   // 加速整合
+  late_life: { pattern_trigger: 1, min_raw: 2 }, // 加速传承
+};
+```
+
+### 人与企业交叉（最复杂情况）
+
+当一个人在中年的成长期公司时，记忆策略需要同时考虑两个生命周期：
+
+```typescript
+// 个体在组织中的记忆策略融合
+interface PersonInOrgAdaptation {
+  person_stage: HumanLifeStage;
+  org_stage: OrgLifecycleStage;
+
+  // 策略融合
+  final_strategy = f(person_stage, org_stage, context);
+
+  // 知识归属判断
+  knowledge_ownership: {
+    // 公司知识：随公司生命周期
+    // 个人知识：随个人生命周期
+    // 混合知识：需判断归属
+  };
+
+  // 离职时知识处理
+  offboarding_strategy: {
+    // 公司知识 → 留在公司（强制）
+    // 个人知识 → 可选择带走或捐赠
+    // 混合知识 → 需要归属判断
+  };
+}
+```
+
+### 落到 hawk-bridge 的实现
+
+```typescript
+// 新增配置项
+interface MemoryLifecycleConfig {
+  entity_type: 'person' | 'org' | 'person_in_org';
+  entity_age_years: number;
+  current_stage: Stage;
+  stage_config: DistillationConfig;  // 当前阶段的蒸馏配置
+}
+
+// API
+POST /api/memory/config/lifecycle
+{
+  "entity_type": "person",
+  "entity_age_years": 30,
+  "auto_detect_stage": true
+}
+
+// Recall时自动应用生命周期权重
+GET /api/memory/recall?query=...&lifecycle_boost=true
+```
+
+**前置依赖**：#75（知识蒸馏架构）+ #81（可配置衰减曲线）
+**优先级**：🟡
+
+---
+
+### [ ] 97. 阶段转换触发器（动态推断 vs 手动设置） {#item-97}
+
+**来源：autoself 100年计划 — 知识进化动态适配视角**
+
+**背景**：阶段转换不是按年龄一刀切，而是按"认知成熟度"动态判断。一个25岁的人可能已经是"整合型"，一个45岁的人可能还是"提炼型"。
+
+**动态检测指标**：
+
+```typescript
+interface StageTransitionSignals {
+  // 阶段转换的信号
+  signals: {
+    wisdom_score: number;         // 智慧评分（通过记忆数据分析）
+    distillation_frequency: number;  // 高层记忆提炼频率
+    teaching_behavior: boolean;   // 开始主动教导他人
+    reflection_behavior: boolean; // 开始频繁回顾和整合过去
+    abstraction_ratio: number;   // 高层记忆占比变化趋势
+    pattern_count: number;       // 积累了多少Pattern
+    principle_count: number;     // 积累了多少Principle
+  };
+
+  // 转换触发条件
+  trigger: {
+    age_based: boolean;           // 年龄到了自动触发
+    wisdom_based: boolean;        // 智慧评分达到阈值
+    behavior_based: boolean;      // 行为模式变化
+    manual_override: boolean;      // 用户手动切换
+  };
+
+  // 阶段渐变而非跳跃
+  transition_period_months: number;  // 过渡期（如2年）
+}
+```
+
+**手动设置 vs 自动推断**：
+
+| 模式 | 适用场景 | 精度 |
+|------|---------|------|
+| 自动推断 | 大多数用户，开箱即用 | 中等 |
+| 手动设置 | 有明确自我认知的用户 | 高 |
+| 半自动（建议 + 确认） | 每次阶段转换提示用户确认 | 高且用户可控 |
+
+**前置依赖**：#96（生命周期适配蒸馏引擎）
+**优先级**：🟡
+
+---
+
+### [ ] 98. 知识遗产化引擎（遗产 vs 断舍离） {#item-98}
+
+**来源：autoself 100年计划 — 传承视角**
+
+**背景**：无论是个人老年期还是企业遗产期，都会面临"什么该留、什么该舍"的问题。不是所有记忆都值得传承，有些应该优雅地消逝。
+
+**知识遗产分类**：
+
+```typescript
+type LegacyType = 'perpetuate' | 'archive' | 'delete';
+
+// 知识遗产评估
+interface LegacyAssessment {
+  memory_id: string;
+
+  // 遗产价值评估
+  legacy_value: {
+    historical_significance: number;   // 历史意义
+    teaching_value: number;          // 教学价值
+    emotional_value: number;         // 情感价值（对家族/团队）
+    practical_value: number;          // 实用价值
+    uniqueness: number;              // 独特性（是否独一无二）
+  };
+
+  // 建议
+  recommendation: LegacyType;
+  reasoning: string;
+
+  // 传承对象
+  inherit_target: {
+    type: 'family' | 'team' | 'org' | 'public';
+    specific_targets?: string[];
+  };
+}
+
+// 遗产化执行
+interface LegacyAction {
+  // 永久保留（perpetuate）
+  perpetual_memories: {
+    // 永久存储，不可删除
+    // 例：家族重大事件、核心价值观、企业使命
+  };
+
+  // 归档（archive）
+  archived_memories: {
+    // 保留元数据，内容可删除
+    // 例：普通项目记录、日常决策
+  };
+
+  // 删除（delete）
+  deleted_memories: {
+    // 彻底删除，释放空间
+    // 例：过时技术栈、已遗忘的失败经历
+  };
+
+  // 遗产时间胶囊
+  legacy_capsule: {
+    // 封装给后代的记忆包
+    memories: string[];
+    message_to_descendants: string;
+    unlock_conditions: 'immediate' | 'on_demand' | 'scheduled';
+  };
+}
+```
+
+**企业遗产场景**：
+
+```typescript
+// 企业被收购/关闭时的知识遗产处理
+interface OrgLegacyPlanning {
+  trigger: 'acquisition' | 'shutdown' | 'restructuring';
+
+  // 知识资产评估
+  asset_categories: {
+    ip_assets: string[];        // 专利、商标、专有技术
+    process_knowledge: string[]; // 核心流程文档
+    customer_knowledge: string[]; // 客户关系、案例
+    cultural_knowledge: string[]; // 价值观、故事、经验
+  };
+
+  // 遗产分配
+  distribution: {
+    to_acquirer: string[];      // 移交给收购方
+    to_employees: string[];      // 分发给员工
+    to_industry_archive: string[];  // 存入行业档案馆
+    to_public: string[];        // 公开分享
+  };
+}
+```
+
+**前置依赖**：#80（记忆时间胶囊）+ #96（生命周期适配）
+**优先级**：🟢
+
+---
+
+### [ ] 99. 知识断舍离引擎（主动删除 vs 被动衰减） {#item-99}
+
+**来源：autoself 100年计划 — 遗忘机制视角**
+
+**背景**：#70（主动遗忘机制）只讲了"什么时候删"，没有讲"怎么判断该不该删"。知识断舍离是主动遗忘的高级形式——不是被动等待衰减，是主动决策。
+
+**断舍离评估框架**：
+
+```typescript
+interface KnowledgeMinimalismAssessment {
+  memory_id: string;
+
+  // 保留价值
+  retention_value: {
+    recall_frequency: number;         // 历史召回频率
+    recall_quality_score: number;     // 召回质量评分
+    downstream_influence: number;     // 对其他记忆的影响度
+    emotional_anchor: boolean;        // 是否有强烈情感连接
+    uniqueness: number;               // 是否独一无二
+  };
+
+  // 保留成本
+  retention_cost: {
+    storage_bytes: number;
+    maintenance_effort: number;       // 需要维护更新的程度
+    staleness_risk: number;          // 过时风险
+  };
+
+  // 断舍离决策
+  decision: {
+    verdict: 'keep' | 'archive' | 'delete';
+    confidence: number;
+    reasoning: string;
+
+    // 如果删除，影响有多大
+    deletion_impact: {
+      orphaned_descendants: number;   // 多少后代记忆会失去祖先
+      knowledge_gap_risk: number;     // 会不会留下知识空白
+    };
+  };
+}
+
+// 断舍离策略（按阶段）
+const minimalismStrategy = {
+  youth: {
+    // 年少时期：少删除，多积累
+    auto_delete_threshold: 0.1,      // 只有极低价值才删除
+    archive_threshold: 0.3;
+  },
+  midlife: {
+    // 中年时期：开始断舍离
+    auto_delete_threshold: 0.3;
+    archive_threshold: 0.5;
+  },
+  late_life: {
+    // 老年时期：激进精简，只留精华
+    auto_delete_threshold: 0.5;
+    archive_threshold: 0.8;
+  },
+};
+```
+
+**和#70主动遗忘的区别**：
+
+| 维度 | #70 主动遗忘 | #99 断舍离 |
+|------|-------------|-----------|
+| 触发方式 | 规则引擎（基于频率/评分） | 用户主动决策（基于价值判断） |
+| 粒度 | 系统自动批量处理 | 单条记忆的精细判断 |
+| 用户参与 | 无 | 建议 + 用户确认 |
+| 关注点 | 释放存储空间 | 知识资产优化 |
+
+**前置依赖**：#70（主动遗忘机制）+ #96（生命周期适配）
 **优先级**：🟢
 
 ---
