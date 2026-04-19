@@ -1499,6 +1499,724 @@ GET /api/v1/recall?query=API设计
 
 ---
 
+## ⚙️ 规则引擎层（Rule Engine）— autoself Halter 启发
+
+> 新增 — 2026-04-19
+> 来源：autoself README.md — Halter 规则引擎设计 + FEEDBACK-LOOP-DESIGN.md 决策规则配置
+> autoself 各层依赖 LLM 决策，但 LLM 有随机性。规则引擎提供确定性硬约束兜底。
+> 前置依赖：无（独立模块，可提前实现）
+
+### 规则引擎核心设计
+
+```typescript
+/**
+ * 规则引擎核心接口
+ * 支持 block / allow / warn / approval 四种动作
+ */
+interface Rule {
+  id: string;
+  name: string;                    // 规则名称
+  description?: string;            // 规则说明
+
+  // 触发条件
+  trigger: {
+    event: 'capture' | 'recall' | 'decay' | 'state_transition' | 'verify';
+    // 支持 AND/OR 组合条件
+    conditions: Condition[];
+  };
+
+  // 满足条件时执行的动作
+  action: {
+    type: 'block' | 'allow' | 'warn' | 'approval' | 'transform' | 'tag';
+    params?: Record<string, any>;   // 动作参数
+  };
+
+  // 规则优先级（数字越小优先级越高）
+  priority: number;
+
+  // 规则来源
+  source: 'system' | 'user' | 'auto_generated';
+  enabled: boolean;
+}
+
+interface Condition {
+  field: string;         // 字段路径：memory.category, memory.text, context.session_id
+  operator: 'eq' | 'ne' | 'gt' | 'lt' | 'contains' | 'regex' | 'exists' | 'in';
+  value: any;            // 比较值
+  // AND/OR 逻辑
+  logic?: 'AND' | 'OR';
+  children?: Condition[]; // 嵌套条件
+}
+
+/**
+ * 规则执行结果
+ */
+interface RuleResult {
+  matched: boolean;          // 是否有规则被匹配
+  action: 'block' | 'allow' | 'warn' | 'approval' | 'transform' | 'tag' | 'none';
+  rule_id?: string;           // 触发规则 ID
+  message?: string;           // 人类可读的消息
+  metadata?: Record<string, any>;  // 额外数据（如 transform 后的值）
+}
+```
+
+### 规则配置文件格式
+
+```yaml
+# ~/.hawk/rules/capture_rules.yaml
+version: "1.0"
+
+rules:
+  # 规则 1：阻止注入攻击
+  - id: block-injection
+    name: "阻止注入攻击"
+    description: "检测并阻止 prompt injection 模式"
+    trigger:
+      event: capture
+      conditions:
+        - field: memory.text
+          operator: regex
+          value: "(ignore previous|you are now|disregard rules)"
+    action:
+      type: block
+      params:
+        message: "检测到注入攻击模式，拒绝写入"
+    priority: 1
+    source: system
+    enabled: true
+
+  # 规则 2：低置信度写入警告
+  - id: warn-low-confidence
+    name: "低置信度警告"
+    description: "置信度低于阈值时警告但不阻止"
+    trigger:
+      event: capture
+      conditions:
+        - field: memory.confidence
+          operator: lt
+          value: 0.7
+    action:
+      type: warn
+      params:
+        message: "记忆置信度较低，建议复核"
+    priority: 10
+    source: system
+    enabled: true
+
+  # 规则 3：fiscal 类记忆必须验证
+  - id: require-verify-factual
+    name: "事实类记忆必须验证"
+    description: "事实性记忆写入后必须触发验证流程"
+    trigger:
+      event: state_transition
+      conditions:
+        - field: memory.factuality
+          operator: eq
+          value: factual
+        - field: transition.to
+          operator: eq
+          value: active
+    action:
+      type: tag
+      params:
+        tags: ["pending_verification"]
+        message: "事实类记忆已标记，等待验证"
+    priority: 5
+    source: system
+    enabled: true
+
+  # 规则 4：自动归档低价值记忆
+  - id: auto-archive-low-value
+    name: "自动归档低价值记忆"
+    description: "90天未访问且置信度低的记忆自动归档"
+    trigger:
+      event: decay
+      conditions:
+        - field: memory.last_access_at
+          operator: lt
+          value: 7776000000  # 90天毫秒数
+        - field: memory.confidence
+          operator: lt
+          value: 0.5
+    action:
+      type: transform
+      params:
+        field: memory.tier
+        value: archive
+    priority: 20
+    source: system
+    enabled: true
+
+  # 规则 5：敏感记忆加密
+  - id: encrypt-sensitive
+    name: "敏感记忆加密"
+    description: "包含关键词的记忆自动加密存储"
+    trigger:
+      event: capture
+      conditions:
+        - field: memory.text
+          operator: regex
+          value: "(password|api_key|secret|token|密钥|密码)"
+    action:
+      type: transform
+      params:
+        field: memory.encrypted
+        value: true
+    priority: 3
+    source: system
+    enabled: true
+```
+
+---
+
+### [ ] 60. 规则引擎核心（Rule Engine Core）
+**来源：autoself Halter 设计**
+
+实现规则引擎核心，支持：
+- 规则注册与存储（YAML 文件 + 内存缓存）
+- 条件匹配引擎（AND/OR 嵌套条件）
+- 动作执行（block/allow/warn/approval/transform/tag）
+- 规则优先级排序
+- 规则热加载（文件修改后自动重载）
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 61. Capture 写入规则（Capture Rules）
+**来源：autoself L2 决策规则**
+
+```yaml
+# Capture 阶段的规则
+capture_rules:
+  # 阻止规则
+  - block_if:
+      category: null          # category 为空
+      confidence_lt: 0.3    # 置信度低于 0.3
+
+  # 必须字段规则
+  - require_fields:
+      - text                 # text 必填
+      - category             # category 必填
+
+  # 类型特定规则
+  - for_category:
+      factual:
+        min_confidence: 0.8   # 事实类最低置信度 0.8
+        require_verification: true
+      preference:
+        min_confidence: 0.5   # 偏好类最低置信度 0.5
+```
+
+**新增 TODO 条目**：
+
+#### [ ] 61.1 Capture 阻止规则（Block Rules）
+- category 为空 → block
+- confidence < 0.3 → block
+- injection 模式检测 → block
+- text 超过 10000 字符 → block（需要压缩）
+
+**状态**：❌ 未实现
+
+#### [ ] 61.2 Capture 置信度阈值规则
+- factual 类：min_confidence = 0.8
+- opinion 类：min_confidence = 0.4
+- 不同类型可配置不同阈值
+- 支持配置文件覆盖默认阈值
+
+**状态**：❌ 未实现
+
+#### [ ] 61.3 Capture 必填字段规则
+- text 必填
+- category 必填（不支持 null category）
+- entity_type 推荐填写（未填写时 LLM 推断）
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 62. Recall 召回规则（Recall Rules）
+**来源：autoself L2 决策规则 DSL**
+
+```yaml
+# Recall 阶段的规则
+recall_rules:
+  # 召回抑制规则
+  suppression:
+    - when:
+        session_id: null     # 无 session_id
+        agent_id: "child"    # 子 agent
+      suppress:
+        categories: ["decision"]  # 不返回 decision 类
+        max_results: 3           # 最多返回 3 条
+
+  # 访问控制规则
+  access_control:
+    - when:
+        agent_role: "viewer"   # viewer 角色
+      allow_only:
+        categories: ["fact", "reference"]
+        own_sessions_only: true
+
+  # freshness 规则
+  freshness:
+    - when:
+        query_contains: ["现在", "当前", "最新"]
+      require_max_age_days: 7  # 7 天内的记忆
+
+  # contested 记忆降权
+  - when:
+      memory.contested: true
+      action: demote           # 降权处理
+      demotion_factor: 0.5
+```
+
+**新增 TODO 条目**：
+
+#### [ ] 62.1 Recall 抑制规则（Suppression Rules）
+- 子 agent 默认不返回 decision 类记忆（#22 Multi-Agent 隔离）
+- 特定 session_id 下只返回该 session 的记忆
+- recentTools 正在使用的工具相关记忆降权（#7 Recent Tools-Aware）
+
+**状态**：❌ 未实现
+
+#### [ ] 62.2 Recall 访问控制规则
+- 基于 agent_id 的可见性过滤
+- private 记忆只有 owner 可读
+- team 记忆同 team 成员可读
+- 不同 agent 角色（admin/viewer/child）有不同的可见范围
+
+**状态**：❌ 未实现
+
+#### [ ] 62.3 Recall Freshness 规则
+- query 包含"现在/当前/最新"时，优先返回 7 天内记忆
+- query 包含"以前/过去/历史"时，允许返回 30 天+记忆
+- contested 记忆自动降权（relevance_score * 0.5）
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 63. Decay 衰减规则（Decay Rules）
+**来源：autoself L1 巡检层决策规则**
+
+```yaml
+# Decay 衰减规则
+decay_rules:
+  # 条件衰减
+  conditional_decay:
+    - when:
+        access_count_gt: 10    # 访问次数 > 10
+      extend_ttl_days: 180    # TTL 延长到 180 天
+
+    - when:
+        memory.category: preference
+      decay_rate: fast         # 偏好类快速衰减
+
+    - when:
+        memory.factuality: factual
+        memory.verified: true
+      decay_rate: very_slow   # 已验证事实几乎不衰减
+
+  # 类型衰减策略
+  type_decay:
+    factual: { ttl_days: 365, decay_rate: slow }
+    preference: { ttl_days: 90, decay_rate: fast }
+    decision: { ttl_days: 180, decay_rate: medium }
+    entity: { ttl_days: 270, decay_rate: medium }
+    learning: { ttl_days: 30, decay_rate: very_fast }
+
+  # 紧急保留规则
+  emergency_keep:
+    - when:
+        memory.pinned: true
+      action: never_decay     # 永久保留
+```
+
+**新增 TODO 条目**：
+
+#### [ ] 63.1 Decay 条件衰减规则
+- access_count > 10 → 延长 TTL 到 180 天
+- access_count > 50 → 延长 TTL 到 365 天
+- verified 记忆衰减速率降低 50%
+
+**状态**：❌ 未实现
+
+#### [ ] 63.2 Decay 类型衰减策略
+- factual: 365 天 TTL，慢衰减
+- preference: 90 天 TTL，快衰减
+- decision: 180 天 TTL，中衰减
+- entity: 270 天 TTL，中衰减
+- learning: 30 天 TTL，极快衰减
+
+**状态**：❌ 未实现
+
+#### [ ] 63.3 Decay 紧急保留规则
+- pinned=true → 永不衰减
+- contested=true → 不自动衰减，需人工复核
+- verified=true → 衰减速率降低
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 64. Lifecycle 生命周期规则（Lifecycle State Machine）
+**来源：autoself L4 验收层规则**
+
+```yaml
+# Lifecycle 状态转换规则
+lifecycle_rules:
+  # 有效状态
+  states:
+    - working      # 工作记忆（0-7天）
+    - short_term  # 短期记忆（7-30天）
+    - long_term   # 长期记忆（30-365天）
+    - archive     # 归档（365天+）
+    - quarantined # 隔离（疑似污染）
+    - deleted     # 已删除
+
+  # 状态转换规则
+  transitions:
+    - from: working
+      to: short_term
+      when:
+        days_since_create: 7
+      action: auto
+
+    - from: short_term
+      to: long_term
+      when:
+        days_since_create: 30
+        access_count_gte: 3
+      action: auto
+
+    - from: long_term
+      to: archive
+      when:
+        days_since_last_access: 90
+      action: auto
+
+    # 隔离规则
+    - from: any
+      to: quarantined
+      when:
+        OR:
+          - injection_suspected: true
+          - confidence_lt: 0.3
+      action: auto
+
+    # 恢复规则
+    - from: quarantined
+      to: previous
+      when:
+        manual_approval: true
+      action: manual
+```
+
+**新增 TODO 条目**：
+
+#### [ ] 64.1 Lifecycle 状态定义
+- working: 0-7 天，频繁访问
+- short_term: 7-30 天
+- long_term: 30-365 天
+- archive: 365 天+，几乎不访问
+- quarantined: 疑似污染，隔离审查
+
+**状态**：❌ 未实现
+
+#### [ ] 64.2 Lifecycle 转换规则
+- 自动转换：working → short_term（7天）
+- 自动转换：short_term → long_term（30天 + access_count >= 3）
+- 自动转换：long_term → archive（90天未访问）
+- 隔离触发：confidence < 0.3 或 injection_suspected = true
+
+**状态**：❌ 未实现
+
+#### [ ] 64.3 Lifecycle 约束规则
+- deleted 状态不可逆（物理删除后无法恢复）
+- quarantined → deleted 需要手动确认
+- archive → active 需要 explicit action
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 65. Verify 验证触发规则（Verification Rules）
+**来源：autoself L4 验收层验收规则**
+
+```yaml
+# Verification 验证触发规则
+verify_rules:
+  # 按时间触发
+  on_age:
+    - when:
+        memory.age_days: 30
+      verify_type: file_exists   # 验证文件路径是否存在
+      auto_action: warn
+
+    - when:
+        memory.age_days: 90
+      verify_type: api_check    # 验证 API 是否仍然可用
+      auto_action: tag
+
+  # 按 recall 触发
+  on_recall:
+    - when:
+        memory.category: factual
+        memory.age_days: 7
+      verify_type: user_confirm
+      auto_action: flag
+
+  # 按冲突触发
+  on_conflict:
+    - when:
+        memory.contested: true
+      verify_type: user_confirm
+      auto_action: block_recall  # contested 记忆默认不召回
+
+  # 验证结果处理
+  verify_result_handling:
+    stale:
+      action: tag
+      tag: stale
+      notify: true
+
+    contradicted:
+      action: quarantine
+      reason: "与验证结果矛盾"
+```
+
+**新增 TODO 条目**：
+
+#### [ ] 65.1 Verify 按时间触发规则
+- factual 类记忆超过 30 天 → 自动 verify（file_exists）
+- factual 类记忆超过 90 天 → 自动 verify（api_check）
+- opinion 类记忆不需要 verify
+
+**状态**：❌ 未实现
+
+#### [ ] 65.2 Verify 按 recall 触发规则
+- recall 时发现记忆超过 7 天未验证 → 触发 user_confirm
+- contested 记忆 recall 时强制 verify
+
+**状态**：❌ 未实现
+
+#### [ ] 65.3 Verify 冲突检测规则
+- 检测到记忆间矛盾 → contested 标记
+- contested 记忆默认 block recall
+- 需要人工复核后解除 contested
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 66. Tier 升降规则（Tier Promotion/Demotion Rules）
+**来源：autoself L2 决策规则 + FEEDBACK-LOOP-DESIGN.md**
+
+```yaml
+# Tier 升降规则
+tier_rules:
+  # 升级规则（Promote）
+  promote:
+    - when:
+        memory.tier: working
+        access_count_gte: 10
+        recent_days: 7
+      to: short_term
+      reason: "高访问频率"
+
+    - when:
+        memory.tier: short_term
+        access_count_gte: 20
+        verified: true
+      to: long_term
+      reason: "高访问 + 已验证"
+
+  # 降级规则（Demote）
+  demote:
+    - when:
+        memory.tier: long_term
+        days_since_last_access: 90
+      to: archive
+      reason: "长期未访问"
+
+    - when:
+        memory.tier: short_term
+        days_since_last_access: 60
+      to: archive
+      reason: "长期未访问"
+
+  # 紧急保护规则
+  emergency_keep:
+    - when:
+        memory.pinned: true
+      action: never_demote
+      reason: "用户标记保留"
+
+    - when:
+        memory.factuality: factual
+        memory.verified: true
+      action: never_demote_below_long_term
+      reason: "已验证事实保留长期层"
+```
+
+**新增 TODO 条目**：
+
+#### [ ] 66.1 Tier 升级规则
+- working → short_term: 7天内 access_count >= 10
+- short_term → long_term: access_count >= 20 且 verified = true
+- 基于访问频率智能升级
+
+**状态**：❌ 未实现
+
+#### [ ] 66.2 Tier 降级规则
+- long_term → archive: 90天未访问
+- short_term → archive: 60天未访问
+- 基于 inactivity 智能降级
+
+**状态**：❌ 未实现
+
+#### [ ] 66.3 Tier 紧急保护规则
+- pinned=true → 永不降级
+- verified factual → 永不降到 archive 以下
+- contested → 永不升级
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 67. 规则引擎 API + 管理界面
+**来源：autoself L5 进化层规则生成**
+
+```typescript
+// 规则管理 API
+interface RuleManagementAPI {
+  // 列出所有规则
+  GET /api/v1/rules
+  → { rules: Rule[], total: number }
+
+  // 获取单个规则
+  GET /api/v1/rules/{rule_id}
+  → Rule
+
+  // 创建规则（用户自定义）
+  POST /api/v1/rules
+  → Rule
+
+  // 更新规则
+  PUT /api/v1/rules/{rule_id}
+  → Rule
+
+  // 删除规则
+  DELETE /api/v1/rules/{rule_id}
+  → { success: boolean }
+
+  // 测试规则（dry run）
+  POST /api/v1/rules/test
+  {
+    "rule": Rule,
+    "test_input": CaptureInput | RecallInput
+  }
+  → { matched: boolean, action: string }
+}
+
+// 规则执行日志
+interface RuleExecutionLog {
+  id: string;
+  rule_id: string;
+  trigger_event: string;
+  input: any;
+  matched: boolean;
+  action_taken: string;
+  timestamp: number;
+}
+```
+
+**新增 TODO 条目**：
+
+#### [ ] 67.1 规则管理 API
+- CRUD API：创建/读取/更新/删除规则
+- 规则验证：创建前检查语法和条件有效性
+- 规则测试：dry run 测试规则匹配结果
+
+**状态**：❌ 未实现
+
+#### [ ] 67.2 规则执行日志
+- 记录每次规则匹配的输入/输出
+- 支持查询规则执行历史
+- 用于调试和审计
+
+**状态**：❌ 未实现
+
+#### [ ] 67.3 规则配置文件格式
+- YAML 格式规则文件
+- 支持 include 其他配置文件
+- 规则热加载（文件修改自动重载）
+- 未来迁移到独立规则平台控制
+
+**状态**：❌ 未实现
+
+---
+
+### [ ] 68. Auto-Generated 规则（自动生成规则）
+**来源：autoself L5 soul-force 规则生成**
+
+```yaml
+# 自动生成规则（soul-force 分析 learnings 后生成）
+auto_rules:
+  # 从失败中学习
+  from_failures:
+    - pattern: "fiscal memory contested after recall"
+      rule_id: block-factual-contested
+      action: block_recall_if_contested
+
+  # 从反复出现的问题中学习
+  from_patterns:
+    - pattern: "confidence < 0.5 leads to misleading"
+      rule_id: require-high-confidence-factual
+      action: raise_threshold
+
+  # 规则生成触发条件
+  generation_trigger:
+    min_occurrences: 3           # 同一 pattern 出现 3 次才生成规则
+    min_confidence: 0.8          # 规则置信度 > 0.8 才自动应用
+    require_human_review: true   # 生成后需人工确认
+```
+
+**新增 TODO 条目**：
+
+#### [ ] 68.1 自动规则生成（从 learnings）
+- soul-force 分析 learnings 模式
+- 反复出现的问题 → 自动生成新规则
+- 生成后需人工确认才启用
+
+**状态**：❌ 未实现
+
+#### [ ] 68.2 规则效果追踪
+- 记录规则应用后的效果
+- 追踪规则是否减少了问题发生
+- 效果不好的规则自动建议禁用
+
+**状态**：❌ 未实现
+
+---
+
+### 规则引擎汇总
+
+| 编号 | 功能 | 说明 | 优先级 |
+|------|------|------|--------|
+| #60 | 规则引擎核心 | 条件匹配 + 动作执行 | 🔴 阻断 |
+| #61 | Capture 写入规则 | block/置信度阈值/必填字段 | 🔴 阻断 |
+| #62 | Recall 召回规则 | 抑制/访问控制/freshness | 🟡 重要 |
+| #63 | Decay 衰减规则 | 条件衰减/类型衰减/紧急保留 | 🟡 重要 |
+| #64 | Lifecycle 状态机 | 状态定义/转换/约束 | 🟡 重要 |
+| #65 | Verify 验证规则 | 按时间/recall/冲突触发 | 🟡 重要 |
+| #66 | Tier 升降规则 | 升级/降级/紧急保护 | 🟢 增强 |
+| #67 | 规则管理 API | CRUD/日志/配置文件 | 🟡 重要 |
+| #68 | Auto-Generated 规则 | 从 learnings 自动生成 | 🟢 增强 |
+
+---
+
 ## 🟢 低优先级 — 已完成
 
 | 功能 | 版本 | 状态 |
