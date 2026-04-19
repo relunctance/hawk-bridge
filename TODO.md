@@ -2423,3 +2423,90 @@ GET /api/v1/traces?session_id=xxx  // 查看某个 session 的所有 trace
 - "decay 误删"：可以通过 trace 确认记忆被 decay 前没有被访问过
 
 **状态**：❌ 未规划
+
+---
+
+## 🌍 生态维度和开发者体验的问题（2026-04-19 新增）
+
+### 🔴 差距十六：开发者接入门槛——用 hawk-bridge 有多难？
+
+**问题**：我们一直在谈功能，但没想过：一个外部开发者要接入 hawk-bridge，有多难？
+
+**当前现状**：
+```
+安装：npm install → 配 OpenClaw Hook → 装 Python 环境 → 配置 LanceDB
+接入：看 README.md → 对着 API 文档 → 自己摸索
+调试：recall 返回不对 → 不知道是 embedding 问题还是 query 问题
+生产：没有 SDK → raw HTTP 调用 → 没有类型提示 → 没有错误处理
+```
+
+**对比竞品的开发者体验**：
+
+| 竞品 | 接入体验 |
+|------|---------|
+| Mem0 | `pip install mem0` → 3 行代码接入 |
+| Notion AI | 官方 SDK + Playground |
+| Copilot | VS Code 插件，一键开启 |
+| **hawk-bridge** | README + raw HTTP + 摸索 |
+
+**问题本质**：开发者体验决定了 hawk-bridge 能不能普及
+
+**解决思路**：
+```
+1. 一行命令接入：npx hawk-bridge@latest（一键初始化）
+2. TypeScript SDK：类型提示 + 完整错误处理 + 自动重试
+3. Playground Web UI：可视化调试 recall/capture
+4. 开发者文档：不仅仅是 API 文档，而是"How to think about memory design"
+```
+
+**状态**：❌ 未规划（#49 TS SDK 在 v3.1，太晚了）
+
+---
+
+### 🔴 差距十七：系统的「自我认知」——它知道自己质量好不好吗？
+
+**问题**：hawk-bridge 是做记忆系统的，但它对自己的记忆质量一无所知。
+
+**当前 hawk-bridge 能告诉你**：
+- 有多少条记忆
+- recall 了多少次
+- 内存占用多少
+
+**hawk-bridge 不能告诉你**：
+- capture 的记忆有多少是有价值的（vs 噪音）
+- recall 返回的记忆有多少被用户/Agent 真正使用了
+- 衰减策略是否合理（该删的删了吗？该留的留了吗？）
+- embedding 模型在这个场景的召回准确率是多少
+
+**类比**：一个图书管理员，能告诉你书架上有多少本书，但不知道有多少人真正借阅了、借了哪些、还回来的书有没有损坏。
+
+**解决思路**：
+```typescript
+// hawk-bridge 给自己建的"记忆"
+interface SystemSelfAwareness {
+  // capture 质量
+  capture_success_rate: number;        // 成功 capture / 总调用
+  capture_noise_rate: number;           // 被判定为噪音的比率
+  capture_avg_importance: number;       // 平均 importance 分数
+
+  // recall 质量
+  recall_hit_rate: number;             // recall 后用户继续追问同类问题的比率
+  recall_miss_rate: number;             // recall 后用户说"不是这个"的比率
+  recall_silence_rate: number;          // recall 返回空但用户期望有结果的比率
+
+  // 系统健康
+  memory_growth_rate: number;           // 记忆增长速度
+  noise_ratio: number;                   // 噪音记忆占比
+  orphan_memory_rate: number;            // 从未被访问的记忆占比
+  decay_effectiveness: number;          // 衰减策略的有效性
+}
+
+// 自我诊断 API
+GET /api/v1/system/self-awareness
+→ 返回系统对自己记忆质量的评估
+→ 类似"认知自我评估"
+```
+
+**关键洞察**：一个好的记忆系统应该能评估自己的记忆质量，而不仅仅是存储和检索记忆。
+
+**状态**：❌ 未规划
