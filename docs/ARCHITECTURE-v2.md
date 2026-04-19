@@ -1,9 +1,10 @@
 # Hawk-Bridge v2.0 架构设计
 
-> 基于 17 个系统级差距和 59 项功能 TODO 的全面架构升级
+> 基于 17 个系统级差距和 108 项功能 TODO 的全面架构升级
 >
 > 生成时间：2026-04-19
-> 状态：概念设计，待评审
+> 状态：概念设计，已补充诚实评价和已知局限
+> 版本：v2.0（含 autoself 定位 + LLM 团队专属护城河）
 
 ---
 
@@ -17,6 +18,47 @@
 6. [跨领域功能架构](#6-跨领域功能架构)
 7. [实施路线图](#7-实施路线图)
 8. [关键技术决策](#8-关键技术决策)
+
+---
+
+## ⚠️ 已知架构边界（阅读前必看）
+
+> 即使 v2.0 架构全部实现，仍有以下**根本性局限**，需要在架构层面有清醒认知。
+
+### 七大架构缺口（功能层面）
+
+即使 108 项 TODO 全完成，仍有 7 个功能缺口需要持续迭代：
+
+| 缺口 | 核心问题 | 版本规划 |
+|------|---------|---------|
+| **Semantic Index** | 只有向量检索，无法按「主题/实体/人」查询 | v2.3→v2.8 |
+| **Working Memory** | 多轮对话没有上下文缓存，每次 recall 冷启动 | v2.2→v2.6 |
+| **Memory Compiler** | recall 返回列表而非答案，LLM 需额外综合 | v2.3→v2.7 |
+| **Adaptive Decay** | 纯时间衰减，不考虑访问模式 | v2.3→v2.8 |
+| **Recall Suppression** | 只能全开/全关，无细粒度可见性控制 | v2.2→v2.6 |
+| **Lifecycle State Machine** | 状态转换无约束，decay/verify/delete 逻辑耦合 | v2.2→v2.6 |
+| **Memory Exchange** | 无导入/导出/增量同步能力 | v2.2→v2.6 |
+
+### 五个根本性盲区（范式层面）
+
+即使七大缺口全补上，仍是「更高级的向量检索系统」而非真正的记忆系统：
+
+| 盲区 | 根因 | 突破方向 |
+|------|------|---------|
+| **记忆定义仍是文本块** | 假设「记忆 = 文本 + 向量」 | 四平面模型（内容/语义/置信/意图） |
+| **记忆是存储单位非学习单位** | 存储「说过的话」而非「学到的东西」 | Learning Unit + Skill 联动 |
+| **recall 是 query 驱动非任务驱动** | 假设 recall = 「找相关的」 | Task Context + Task-Aware Recall |
+| **遗忘是删除非替代** | 假设「旧的是错的，新的对」 | Reconciliation + Deprecation 语义 |
+| **系统没有自我监控** | 监控使用数据而非认知状态 | Self-Awareness Memory + 系统巡检 |
+
+### LLM 团队专属护城河（需要 LLM 团队配合）
+
+这是**竞品无法复制**的架构层差异，但需要 LLM 团队在模型架构层面的持续投入：
+
+- **#107 记忆原生 Attention**：模型直接支持 importance/contested/freshness 加权（不是 prompt，是 weight）
+- **#108 专用小模型矩阵**：Consolidation-Mini / Quality-Score / ImportPredict / TimeReasoner（比大模型便宜 100 倍）
+
+> ⚠️ **务实提醒**：108 项 TODO 代表的是「我们想到了」，不是「我们做到了」。架构设计的完整性不等于工程实现的完成度。
 
 ---
 
@@ -65,6 +107,38 @@
 | **无 Event Bus** | 子系统间通过直接调用耦合，无法异步 |
 | **无跨语言支持** | Python LLM 提取是 subprocess，无法暴露内部 API |
 | **无 Tracing 基础设施** | 每条记忆的生命周期不可追溯（差距#15） |
+
+---
+
+### 1.4 在 autoself 体系中的位置
+
+```
+autoself 10层架构（2026-04-19）：
+┌─────────────────────────────────────────┐
+│  L10 宪法层（Qujin Constitution）         │
+│  L9  宪法进化层（Constitution Evolution） │
+│  L8  架构决策层（Tangseng Brain）         │
+│  L7  自我修复层（Self-Repair）           │
+│  L6  宪法编辑层（Qujin Editor）           │
+│  L5  记忆进化层（Soul Force）            │
+│  L4  Hook系统层（Context Hawk）           │
+│  L3  巡检执行层（Auto Evolve）           │
+│  L2  决策层（Tangseng）                  │
+│  L1  感知层（Hawk Bridge + Memory）  ← hawk-bridge 在这里
+└─────────────────────────────────────────┘
+```
+
+**hawk-bridge 是 autoself 的 L0 记忆层**，负责：
+- **Capture**：从 OpenClaw 会话中提取记忆
+- **Recall**：根据上下文召回相关记忆
+- **Distillation**：将 Raw Memory 蒸馏为 Pattern/Principle/Skill
+
+**与 autoself 其他层的关系**：
+- L1（hawk-bridge）提供原材料，L5（soul-force）负责进化
+- L1 的 recall quality直接影响 L3（auto-evolve）的巡检准确性
+- L6（qujin-editor）的 Constitution 修订依赖 L1 的记忆质量反馈
+
+> **重要**：ARCHITECTURE-v2.md 的所有设计都必须考虑与 autoself 其他层的集成。特别是 #107/#108 的 LLM 团队专属能力，会影响 autoself 的进化效果。
 
 ---
 
@@ -2331,7 +2405,7 @@ class ScheduledBackup {
 
 ---
 
-### 7 个架构缺口汇总
+### 7 个架构缺口 + LLM专属汇总
 
 | 缺口 | 定位 | 核心价值 | 版本规划 |
 |------|------|---------|---------|
@@ -2342,12 +2416,16 @@ class ScheduledBackup {
 | **Recall Suppression** | 召回抑制机制 | 多 Agent 细粒度可见性控制 | v2.2 → v2.6 |
 | **Lifecycle State Machine** | 生命周期状态机 | 完整状态定义和转换规则 | v2.2 → v2.6 |
 | **Memory Exchange** | 双向数据通道 | 导入/导出/增量同步 | v2.2 → v2.6 |
+| **🤖 记忆原生 Attention** | LLM 团队专属 | 模型 weight 层面支持 metadata 加权 | #107 |
+| **🤖 专用小模型矩阵** | LLM 团队专属 | Consolidation-Mini / Quality-Score 等 5 个专用模型 | #108 |
+
+> LLM 专属的 #107/#108 不属于功能/架构范畴，是竞品无法复制的护城河。详细设计见上方「已知架构边界」章节。
 
 ---
 
 ## 8.6 五个根本性盲区（范式层面的假设缺陷）
 
-> 即使 59 项 TODO 全实现 + 7 大架构缺口全补上，hawk-bridge 仍然只是做了一个「更高级的文本向量检索系统」，而不是「真正理解记忆是什么的记忆系统」。
+> 即使 108 项 TODO 全实现 + 7 大架构缺口全补上，hawk-bridge 仍然只是做了一个「更高级的文本向量检索系统」，而不是「真正理解记忆是什么的记忆系统」。
 > 这 5 个盲区不属于「功能」或「架构」范畴，而是**根本性假设的限制**。
 
 ### 8.6.1 盲区一：记忆的定义仍是「文本块」
@@ -2454,6 +2532,17 @@ class SemanticTypeDetector {
 **为什么是根本盲区**：没有「语义类型平面」和「意图平面」，recall 只能返回「相关文本」，无法返回「对当前任务有意义的认知单元」。
 
 **版本规划**：v3.0（语义类型推断）→ v3.1（置信平面）→ v3.2（意图平面）
+
+**⚠️ v2.x 务实路径**：四平面模型是长期研究方向，需要 LLM 能力突破才能可靠落地。v2.x 阶段只做简化版：
+
+```typescript
+// v2.x 实际可做到的（简化版）
+interface MemoryV2 {
+  semanticType: 'direct' | 'inferred';  // 不是 7 种，是 2 种
+  confidenceBasis: 'explicit' | 'implicit';  // 不是 5 种，是 2 种
+}
+// 方向：让 LLM 区分「用户明确说的」vs「从对话推断的」，不需要精确到 role/belief/preference
+```
 
 ---
 
