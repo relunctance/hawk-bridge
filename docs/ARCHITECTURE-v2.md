@@ -764,6 +764,112 @@ interface VersionEntry {
 > 2. **Observer 可注入**：每个 Stage 的输入/输出/耗时可被观察和追踪
 > 3. **可配置**：Pipeline 在运行时组装，不硬编码调用链
 
+### 5.0 为什么需要 Pipeline Stage — 痛点分析
+
+> **核心价值**：可观测是副产品，可进化才是目的。
+
+#### 不用 Pipeline Stage 的 5 个痛点
+
+**痛点 1：不能跳过某个 Step**
+
+```
+场景：你想在测试时跳过 LLM 提取（省时间省钱）
+传统方案：改代码，注释掉那一行
+
+场景：某些输入不需要分段（已经是结构化数据）
+传统方案：加 if 判断，代码越来越乱
+```
+
+**痛点 2：不能替换某个 Step 的实现**
+
+```
+场景：你想把 OpenAI Embedding 换成本地 BGE-M3
+传统方案：找到 embed() 函数，重写它，可能影响其他调用方
+
+场景：你想试试不同的去重算法
+传统方案：改 dedupe() 函数，没有回退机制
+```
+
+**痛点 3：不能单独测试每个 Step**
+
+```
+场景：你想单元测试 LLM 提取逻辑
+传统方案：必须 mock 整个 capture 流程
+
+场景：你想压测向量化和存储
+传统方案：必须同时跑 LLM 提取，无法单独测试
+```
+
+**痛点 4：不能在不改代码的情况下加日志/监控**
+
+```
+场景：你想知道 LLM 提取耗时多少
+传统方案：必须改 capture() 代码，加 console.time / logger
+
+场景：你想在每个 step 加 traceId 串联
+传统方案：每个 step 都要手动传 context，改动巨大
+```
+
+**痛点 5：不同 Pipeline 复用同一个 Step**
+
+```
+场景：capture 需要 A→B→C
+       recall 需要 X→Y→Z
+       但 B 和 Y 是同一个去重逻辑
+传统方案：复制粘贴，或者抽成工具函数但调用方式不统一
+```
+
+#### Pipeline Stage 解决的 5 个痛点
+
+| 痛点 | Pipeline Stage 怎么解决 |
+|------|----------------------|
+| **不能跳过** | `canProcess?()` 返回 false 就跳过，不改代码 |
+| **不能替换** | 注入不同的 Stage 实现，运行时切换 |
+| **不能单独测试** | 每个 Stage 独立单元测试，mock 接口 |
+| **不能加监控** | 注入 Observer，不改 Stage 代码 |
+| **不能复用** | 同一个 Stage 可以被多个 Pipeline 共用 |
+
+#### 可观测 × 可进化 的组合效果
+
+```
+场景：每次 Raw→Pattern 进化迭代
+
+【没有 Pipeline Stage 的系统】
+  迭代 1: 加了日志，代码改了一坨
+  迭代 2: 想加 metrics，又要改一坨
+  迭代 3: 想换 LLM provider，要动核心逻辑
+  迭代 4: 没人敢动了，系统僵化
+
+【有 Pipeline Stage + Observer 的系统】
+  迭代 1: Capture Pipeline 第3步是 LLMExtraction
+          → 加一个 Observer 就能看耗时，不改 Stage 代码
+
+  迭代 2: 想验证不同 LLM 提取效果
+          → 换一个新的 LLMExtractionStage 实现
+          → PipelineRunner 注入新的，旧的保留备选
+
+  迭代 3: 想跳过 LLM 提取（节省成本）
+          → 配置 skipStages: ['llm_extraction']
+          → 不用改任何代码
+
+  迭代 4: 想加一个新阶段「质量评分」
+          → 新写一个 QualityScoringStage
+          → 插到 LLMExtraction 和 Deduplication 之间
+          → 其他 Stage 不用改
+```
+
+#### Pipeline Stage 的本质
+
+```
+Pipeline Stage 的本质是：
+把「一个巨石函数」拆成「一组独立可组装的步骤」
+
+每个 Stage 三个特性：
+  1. 输入/输出类型固定（接口约定）
+  2. 内部逻辑完全独立（不依赖其他 Stage）
+  3. 可以被替换/跳过/增强（不改动调用方）
+```
+
 ### 5.1 Pipeline Stage 接口
 
 ```typescript
@@ -2045,6 +2151,68 @@ class SchemaMigrator {
 | **Working Memory** | 每次 recall 冷启动 | v2.2→v2.6 |
 | **Memory Compiler** | recall 返回列表而非答案 | v2.3→v2.7 |
 | **Adaptive Decay** | 纯时间衰减，不考虑访问模式 | v2.3→v2.8 |
+
+#### Adaptive Decay（自适应衰减）— 行业唯一
+
+**为什么是行业唯一**：没有任何其他记忆系统实现了「访问模式驱动的自适应衰减」。MemGPT、Claude Code、Notion AI 都是静态存储。
+
+**与其他系统的本质区别**：
+
+```
+其他所有记忆系统：
+  记忆永久存储，靠向量相似性检索
+  → 问题：噪音记忆越来越多，相关性越来越差
+
+hawk-bridge Adaptive Decay：
+  ┌─────────────────────────────────────────┐
+  │  访问模式驱动衰减                         │
+  │                                         │
+  │  频繁访问 ──────────→ 置信度不降反升     │
+  │  冷门记忆 ──────────→ 置信度按策略衰减   │
+  │  完全遗忘 ──────────→ 自动归档/删除       │
+  └─────────────────────────────────────────┘
+```
+
+**衰减公式**：
+
+```typescript
+// 当前 hawk-bridge 已实现的定时衰减（定时 6h 执行一次）
+newImportance = baseImportance * 0.95 ** (ceil(idleDays * decayMultiplier))
+
+// 真正的 Adaptive Decay（#36-37 TODO，在定时衰减基础上增加访问模式反馈）
+newImportance = baseImportance
+  * 0.95 ** (ceil(idleDays * decayMultiplier))   // 时间衰减
+  * accessBoost(recallCount)                        // 访问反馈
+  * usefulnessBoost(usefulnessScore)               // 有用性反馈
+```
+
+**Tier 分层（已实现）**：
+
+| Tier | 条件 | 衰减策略 |
+|------|------|---------|
+| **permanent** | importance ≥ 0.75 AND recall ≥ 3 | 不衰减 |
+| **stable** | importance ≥ 0.5 | 不衰减 |
+| **decay** | importance > 0.3 | 按公式衰减 |
+| **archived** | importance ≤ 0.3 | 待删除 |
+
+**真正的 Adaptive Decay（TODO #36-37）**：
+
+```
+触发方式：事件驱动（每次 recall 后），不是定时
+衰减速度：时间 + 访问频率 共同决定
+热点保护：被频繁 recall 的记忆衰减几乎为 0
+冷门加速：完全不被访问的记忆加速衰减
+```
+
+**与其他系统的对比**：
+
+| 系统 | 衰减方式 | 自适应 |
+|------|---------|--------|
+| 其他系统 | ❌ 无衰减 | - |
+| MemGPT | ⚠️ 层次化（热/冷），固定阈值 | ❌ |
+| Claude Code | ⚠️ MEMORY.md 索引，无衰减 | ❌ |
+| **hawk-bridge Adaptive Decay** | ✅ 访问模式驱动 | ✅ |
+
 | **Recall Suppression** | 无细粒度可见性控制 | v2.2→v2.6 |
 | **Lifecycle State Machine** | 状态转换无约束 | v2.2→v2.6 |
 | **Memory Exchange** | 无导入/导出/增量同步 | v2.2→v2.6 |
@@ -2105,6 +2273,151 @@ interface CompiledOutput {
   };
   recallReason: string;
 }
+```
+
+#### 记忆进化（Raw→Pattern→Principle→Skill）— soul-engine 负责
+
+> **注意**：记忆进化不由 hawk-bridge 实现，而是由 soul-engine 调用 hawk-bridge 的 recall/capture API 完成原料加工，再写回 hawk-bridge 存储。
+
+**四层进化详解**：
+
+```
+Layer 0: Raw Memory（原始记忆）
+  定义：未经加工的对话片段，直接从对话中 capture 来的原始文本
+  特征：散乱、碎片化、重复、无结构
+  示例：
+    mem_001: "张总在3月15日说要用飞书沟通"
+    mem_002: "今天张总再次确认飞书是首选"
+    mem_003: "行政部也已经全员开通飞书"
+    mem_004: "张总认为飞书比钉钉体验好"
+    mem_005: "飞书消息已读功能很重要"
+
+Layer 1: Pattern（模式）
+  定义：从多条相似的 Raw Memory 中提炼出的重复结构
+  触发条件：minSimilarMemories: 3, minConfidence: 0.7
+  提炼过程：LLM 归纳多条相似记忆的共同结构
+  结果：
+    Pattern #p_001 {
+      content: "张总倾向于使用飞书作为团队主要沟通工具"
+      sourceMemoryIds: [mem_001, mem_002, mem_003, mem_004, mem_005]
+      confidence: 0.85
+      usageCount: 0
+    }
+
+Layer 2: Principle（原则）
+  定义：被反复使用、验证过的 Pattern 晋升成的行动准则
+  晋升条件：minPatternUsage: 10, minValidation: 3
+  什么是"使用"：Agent 决策时引用 Pattern → usageCount++
+  结果：
+    Principle #pr_001 {
+      content: "决策者倾向使用自己偏好的工具，应尊重这一偏好优先选用"
+      sourcePatternIds: [pat_001]
+      evidence: [场景1验证, 场景2验证, 场景3验证]
+      confidence: 0.92
+    }
+
+Layer 3: Skill（技能）
+  定义：经过多次成功验证的 Principle 实例化成的可执行操作
+  实例化条件：minValidation: 5, minSuccessRate: 0.8
+  什么是"成功"：Agent 引用 Principle 做了决策 → 执行成功
+  结果：
+    Skill #sk_001 {
+      content: "决策者倾向使用自己偏好的工具..."
+      implementation: "当需要为决策者选择工具时：
+        1. 识别团队中的决策者
+        2. 询问或回溯其历史工具偏好
+        3. 优先选择其偏好的工具"
+      triggerConditions: "涉及工具选择的决策场景"
+      successRate: 0.85
+    }
+```
+
+**进化流程图**：
+
+```
+                    ┌─────────────────────────────────────┐
+                    │            Raw Memory              │
+                    │  (mem_001 ~ mem_xxx)             │
+                    │                                   │
+                    │  "张总说用飞书"                   │
+                    │  "张总确认飞书"                   │
+                    │  "行政部开通飞书"                 │
+                    │  "张总觉得飞书比钉钉好"           │
+                    │  "飞书已读功能重要"               │
+                    └────────────────┬──────────────────┘
+                                     │ LLM 归纳
+                                     ▼
+                    ┌─────────────────────────────────────┐
+                    │              Pattern                │
+                    │  "张总倾向使用飞书作为主要沟通工具"  │
+                    │                                   │
+                    │  source: [mem_001...mem_005]        │
+                    │  confidence: 0.85                  │
+                    │  usageCount: 0                    │
+                    └────────────────┬──────────────────┘
+                                     │ 被引用 ≥ 10 次
+                                     │ 被 ≥ 3 场景验证
+                                     ▼
+                    ┌─────────────────────────────────────┐
+                    │             Principle               │
+                    │  "决策者偏好应作为工具选择的首要因素" │
+                    │                                   │
+                    │  evidence: [场景1, 场景2, 场景3]      │
+                    │  confidence: 0.92                  │
+                    └────────────────┬──────────────────┘
+                                     │ 验证 ≥ 5 次
+                                     │ 成功率 > 80%
+                                     ▼
+                    ┌─────────────────────────────────────┐
+                    │               Skill                 │
+                    │  "ToolSelectionByDecisionMaker"     │
+                    │                                   │
+                    │  implementation: [步骤1, 2, 3]       │
+                    │  triggerConditions: "工具选择决策" │
+                    │  successRate: 0.85                 │
+                    └─────────────────────────────────────┘
+```
+
+**三层阈值配置**（soul-engine）：
+
+```yaml
+# soul-engine 进化阈值配置
+pattern_threshold:
+  min_similar_memories: 3      # 至少 3 条相似记忆
+  min_confidence: 0.7         # 平均置信度 > 70%
+
+principle_threshold:
+  min_pattern_usage: 10       # Pattern 被引用 ≥ 10 次
+  min_validation: 3           # 被 ≥ 3 个不同场景验证
+
+skill_threshold:
+  min_validation: 5           # 被 ≥ 5 个 Agent 验证
+  min_success_rate: 0.8       # 成功率 > 80%
+```
+
+**信息密度提升**：
+
+| 层级 | 条目数 | 信息量 | 单位信息价值 |
+|------|--------|--------|------------|
+| Raw Memory | 100 条 | 100 个碎片 | 1x |
+| Pattern | 10 个 | 10 个结构 | 10x |
+| Principle | 3 个 | 3 个准则 | 33x |
+| Skill | 1 个 | 1 个可执行操作 | 100x |
+
+**与其他系统的本质区别**：
+
+```
+其他所有记忆系统：
+  存「说过的话」→ 永远只是对话日志
+
+hawk-bridge + soul-engine：
+  Raw Memory ──→ Pattern ──→ Principle ──→ Skill
+  散乱数据       结构化模式    行动准则      可执行技能
+
+效果：
+  - Agent 对话时召回 2 个 Principle + 1 个 Skill
+  - 不是 50 条碎片，而是一段连贯的上下文
+  - 记忆越多越聪明，不是越多越噪音
 ```
 
 ### 11.2 五个根本性盲区
