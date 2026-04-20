@@ -2173,36 +2173,73 @@ hawk-bridge Adaptive Decay：
   └─────────────────────────────────────────┘
 ```
 
-**衰减公式**：
+**衰减公式（实际代码实现）**：
 
 ```typescript
-// 当前 hawk-bridge 已实现的定时衰减（定时 6h 执行一次）
-newImportance = baseImportance * 0.95 ** (ceil(idleDays * decayMultiplier))
+// decay() 中：newImportance 只和这三个因素相关
+newImportance = m.importance                                          // LLM 提取的原始 importance
+              * 0.95^(ceil(idleDays * decayMultiplier))              // 时间×可靠性衰减
+              * m.importanceOverride                                   // 用户手动调整系数
 
-// 真正的 Adaptive Decay（#36-37 TODO，在定时衰减基础上增加访问模式反馈）
-newImportance = baseImportance
-  * 0.95 ** (ceil(idleDays * decayMultiplier))   // 时间衰减
-  * accessBoost(recallCount)                        // 访问反馈
-  * usefulnessBoost(usefulnessScore)               // 有用性反馈
+// decayMultiplier 取决于 reliability（来源可信度）
+// reliability >= 0.7 → decayMultiplier = 0.5（高可信衰减慢）
+// reliability >= 0.4 → decayMultiplier = 0.7（中可信正常衰减）
+// reliability <  0.4 → decayMultiplier = 1.0（低可信快速衰减）
 ```
 
-**Tier 分层（已实现）**：
+**⚠️ 注意：`accessBoost` 不是乘法系数**
+
+文档里之前错误地写了 `importance * 0.95 * accessBoost`。实际 `accessBonus` 是 **0~0.1 的加分项**，参与 composite score 的加权求和，影响 tier 判断，不参与 importance 衰减计算。
+
+**Composite Score 公式（recomputeTier 实际使用）**：
+
+```typescript
+// compositeScore = base*0.4 + usefulness*0.3 + recency*0.2 + accessBonus
+// 其中 accessBonus = min(log1p(recallCount) * 0.05, 0.1)
+
+accessBonus = min(log1p(recallCount) * 0.05, ACCESS_BONUS_MAX)
+//             └─ 对数增长，7次 recall 后封顶（0.1）
+
+// 权重常量
+WEIGHT_BASE         = 0.4  // importance 权重
+WEIGHT_USEFULNESS   = 0.3  // 有用性权重
+WEIGHT_RECENCY      = 0.2  // 时间衰减权重
+ACCESS_BONUS_MAX    = 0.1  // 访问奖励上限
+
+// recency：指数衰减，30天半衰期
+recency = exp(-daysIdle * ln(2) / 30)
+```
+
+**Adaptive 的真正机制（Tier 保护逻辑）**：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Adaptive 的真正机制靠的是 permanent tier 保护：             │
+│                                                             │
+│  if (compositeScore >= 0.85 AND recallCount >= 3)          │
+│    → tier = 'permanent'                                    │
+│    → 这条记忆不参与 decay 流程，不衰减                     │
+│                                                             │
+│  否则按正常公式衰减：                                       │
+│    newImportance = importance * 0.95^(idleDays * dm)      │
+│                                                             │
+│  效果：                                                    │
+│    访问越多（recall ≥ 3）→ compositeScore ↑ → permanent  │
+│    → 不衰减                                                │
+│    冷门记忆 → 永远是 decay/stable → 持续衰减直到删除       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Tier 分层（实际实现）**：
 
 | Tier | 条件 | 衰减策略 |
 |------|------|---------|
-| **permanent** | importance ≥ 0.75 AND recall ≥ 3 | 不衰减 |
-| **stable** | importance ≥ 0.5 | 不衰减 |
-| **decay** | importance > 0.3 | 按公式衰减 |
-| **archived** | importance ≤ 0.3 | 待删除 |
+| **permanent** | compositeScore ≥ 0.85 **AND** recallCount ≥ 3 | ❌ 不衰减，不参与 decay 流程 |
+| **stable** | compositeScore ≥ 0.6 | ❌ 不衰减（但会参与 decay 检查） |
+| **decay** | compositeScore ≥ 0.3 | ✅ 按 `importance × 0.95^(idleDays×dm)` 衰减 |
+| **archived** | compositeScore < 0.3 | ⏳ 等待 ARCHIVE_TTL_DAYS（180天）后删除 |
 
-**真正的 Adaptive Decay（TODO #36-37）**：
-
-```
-触发方式：事件驱动（每次 recall 后），不是定时
-衰减速度：时间 + 访问频率 共同决定
-热点保护：被频繁 recall 的记忆衰减几乎为 0
-冷门加速：完全不被访问的记忆加速衰减
-```
+**冷启动保护**：新 memory 有 7 天 grace period，期间衰减减半（`COLD_START_DECAY_MULTIPLIER = 0.5`）。
 
 **与其他系统的对比**：
 
@@ -2211,7 +2248,7 @@ newImportance = baseImportance
 | 其他系统 | ❌ 无衰减 | - |
 | MemGPT | ⚠️ 层次化（热/冷），固定阈值 | ❌ |
 | Claude Code | ⚠️ MEMORY.md 索引，无衰减 | ❌ |
-| **hawk-bridge Adaptive Decay** | ✅ 访问模式驱动 | ✅ |
+| **hawk-bridge Adaptive Decay** | ✅ permanent tier 保护 + 访问频率影响 tier 判断 | ✅ |
 
 | **Recall Suppression** | 无细粒度可见性控制 | v2.2→v2.6 |
 | **Lifecycle State Machine** | 状态转换无约束 | v2.2→v2.6 |
