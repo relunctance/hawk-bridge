@@ -4980,11 +4980,13 @@ TimeReasoner 建立更完整的时序图
 
 ### v2.3 — 行业突破：知识图谱 + 自动化
 
-| 功能 | 内容 |
+|| 功能 | 内容 |
 |------|------|
-| 自动关系发现 | capture 时 LLM 推断记忆间关系 |
-| 矛盾检测 | recall 返回矛盾记忆时警告 |
-| LLM 自验证（#25） | 高风险写入前二次验证 |
+| **Neo4j 图数据库** | hawk-memory-api 层统一写入 Neo4j（实体 + 关系） |
+| **自动关系发现** | capture 时 LLM 推断记忆间关系 |
+| **矛盾检测** | recall 返回矛盾记忆时警告 |
+| **LLM 自验证（#25）** | 高风险写入前二次验证 |
+| **双写一致性** | Write-Log + Retry + Reconciliation，eventual consistency |
 
 ### v2.4 — 行业突破：主动推送
 
