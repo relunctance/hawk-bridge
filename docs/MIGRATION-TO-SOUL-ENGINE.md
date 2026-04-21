@@ -342,13 +342,13 @@ class MemorySelfTuner {
 
 **来源：独立判断（maomao）— recall 返回的是「语义相似」而不是「任务完成」**
 
-> ⚠️ **关联功能：定期整理 → MemoryCompiler（v2.3）**
-> 「定期整理」需要 MemoryCompiler 把同主题的多条记忆合并成一条 Pattern。
-> #72（Task-Aware Ranking）和 #102（MemoryCompiler）是同一基础设施的两个面：
+> ⚠️ **关联功能：定期整理 → RecallFinalizer（v2.3）**
+> 「定期整理」需要 RecallFinalizer 把同主题的多条记忆合并成一条 Pattern。
+> #72（Task-Aware Ranking）和 #102（RecallDistill）是同一基础设施的两个面：
 > - #72：recall 时理解任务目标，优先返回「能完成任务」的记忆
 > - #102：整理时把多条相关记忆编译成一条 Pattern，减少 recall 噪音
 >
-> 详见 `docs/ARCHITECTURE-v2.md` 5.5 节 Recall Pipeline MemoryCompilerStage
+> 详见 `docs/ARCHITECTURE-v2.md` 5.5 节 Recall Pipeline RecallFinalizerStage
 
 **问题**：当前 hawk-bridge 的 recall 返回"和 query 最相关的记忆"，基于向量相似度排序。
 

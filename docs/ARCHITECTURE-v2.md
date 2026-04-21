@@ -217,7 +217,7 @@ interface RecallResult {
 - #102 Memory Compiler 直接依赖这个基础设施
 - #56 质量反馈闭环也需要先有 Compiler 才能追踪「哪个记忆对答案贡献最大」
 
-**架构调整**：在 Recall Pipeline 增加 `MemoryCompilerStage`（在 CrossEncoderRerankStage 之后）
+**架构调整**：在 Recall Pipeline 增加 `RecallFinalizerStage`（在 CrossEncoderRerankStage 之后）
 
 #### 阻断 2：Sync 协议（#51）
 
@@ -1232,18 +1232,18 @@ class RecallPipeline {
     new ContestedFilterStage(),        // 过滤 contested 记忆
     new VersionResolverStage(),        // 确保返回最新版本
     new CrossEncoderRerankStage(),    // Cross Encoder 重排
-    // ★ MemoryCompilerStage 在 v2.3 加入（当前 v2.0 版本不含）
-    // new MemoryCompilerStage(this.llmService),  // 将记忆列表编译为答案
+    // ★ RecallFinalizerStage 在 v2.3 加入（当前 v2.0 版本不含）
+    // new RecallFinalizerStage(this.llmService),  // 将记忆列表编译为答案
     new ResultBuilderStage(),          // 返回结果 + recall_reason
   ];
 }
 ```
 
-> ⚠️ **MemoryCompilerStage 说明**（v2.3 加入）：
+> ⚠️ **RecallFinalizerStage 说明**（v2.3 加入）：
 > 当前 v2.0 的 Recall Pipeline 输出是 `Memory[]` 列表，Agent 需要自己做综合。
-> v2.3 将增加 `MemoryCompilerStage`，把多条相关记忆编译为单一答案：
+> v2.3 将增加 `RecallFinalizerStage`，把多条相关记忆编译为单一答案：
 > ```typescript
-> // MemoryCompilerStage 输出
+> // RecallFinalizerStage 输出
 > interface CompiledRecallResult {
 >   answer: string;              // 编译后的答案
 >   sources: Array<{ memoryId: string; text: string; relevance: number }>;
@@ -2752,17 +2752,17 @@ node dist/decay-worker.js  # 输出 JSON 报告，无报错
 | Task D: Pipeline Stage 接口 | #16 Hook 系统完善 | P1 | 基础设施 |
 | Task E: Pipeline Observer | #74 自我监控 | P1 | 可观测性 |
 | Sync 协议（v2.x） | #51 | v2.x | 简化版先做 |
-| MemoryCompilerStage（v2.3） | #72, #102 | v2.3 | Recall 输出列表→答案 |
+| RecallFinalizerStage（v2.3） | #72, #102 | v2.3 | Recall 输出列表→答案 |
 | Multi-tenant 隔离 | #39, #50, #52 | v2.x | API Gateway 层 |
 
 ### 12.5 阻断性缺口专项说明
 
-#### 缺口 1：MemoryCompilerStage（v2.3）
+#### 缺口 1：RecallFinalizerStage（v2.3）
 
 ```typescript
-// MemoryCompilerStage — 将记忆列表编译为答案
+// RecallFinalizerStage — 将记忆列表编译为答案
 // 位置：Recall Pipeline 最末端（CrossEncoderRerankStage 之后）
-class MemoryCompilerStage implements PipelineStage<MemoryCandidate[], CompiledRecallResult> {
+class RecallFinalizerStage implements PipelineStage<MemoryCandidate[], CompiledRecallResult> {
   name = 'memory_compiler';
 
   async process(memories: MemoryCandidate[], ctx: PipelineContext): Promise<CompiledRecallResult> {
@@ -2789,7 +2789,7 @@ class MemoryCompilerStage implements PipelineStage<MemoryCandidate[], CompiledRe
 
 **施工检查点**：
 - [ ] `CompiledRecallResult` 接口定义
-- [ ] `MemoryCompilerStage` 实现（LLM 综合）
+- [ ] `RecallFinalizerStage` 实现（LLM 综合）
 - [ ] Recall Pipeline 组装时加入该 Stage
 - [ ] 质量反馈闭环：用户标记「答案有用/无用」→ 记录到 MemoryScore.usefulness_score
 

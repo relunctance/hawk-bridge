@@ -6071,7 +6071,7 @@ type WebhookEvent =
   | 'memory_created'    // 新记忆创建
   | 'memory_updated'    // 记忆更新
   | 'memory_deleted'    // 记忆删除
-  | 'recall_completed'  // recall 完成（可触发 MemoryCompiler）
+  | 'recall_completed'  // recall 完成（可触发 RecallFinalizer）
   | 'decay_triggered'   // 衰减触发
   | 'relation_created'  // 关系创建
   | 'tier_changed';     // 层级变化（Raw → Pattern）
