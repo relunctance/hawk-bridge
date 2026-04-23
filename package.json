@@ -15,8 +15,10 @@
     "proxy-agent": "^8.0.1"
   },
   "devDependencies": {
+    "@vitest/ui": "^4.1.5",
     "esbuild": "^0.27.4",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.5"
   },
   "openclaw": {
     "compat": {
@@ -38,6 +40,9 @@
     "write": "node dist/cli/write.js",
     "read-source": "node dist/cli/read-source.js",
     "doctor": "node dist/cli/doctor.js",
-    "stats": "node dist/cli/stats.js"
+    "stats": "node dist/cli/stats.js",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage"
   }
 }
