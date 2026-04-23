@@ -19,6 +19,7 @@
 | 🔵 Multi-Agent（多代理） | 多租户隔离、子Agent可见性控制 | #item-6, #item-17, #item-22, #item-39, #item-50, #item-59, #item-73 |
 | 🟠 Autoself（架构支撑） | 支撑autoself 10层架构的Hook | #item-16, #item-23 |
 | 🔗 soul-engine 集成 | hawk-bridge 作为存储层与 soul-engine 打通 | #item-75, #item-76, #item-77, #item-78 |
+| 🌐 跨平台 Hook 适配 | OpenClaw/Hermes 等多平台 Hook 统一抽象 | #item-109 |
 | 🟤 Storage（存储与架构） | 压缩、加密、跨设备同步、版本历史 | #item-40, #item-47, #item-48, #item-51, #item-52, #item-54, #item-55 |
 | 🟢 Ecosystem（生态与商业） | 多语言SDK、健康告警、商业化 | #item-42, #item-43, #item-49, #item-53 |
 | 🟣 Intelligence（智能与进化） | 预取、洞察、自动压缩 | #item-35, #item-36, #item-37 |
@@ -2839,8 +2840,86 @@ soul-engine: v0.1-v1.0 版本规划
 | **#116** | **Recall 统一走 hawk-memory-api** | **Phase 0a** | **🔴** | **废弃直接 LanceDB 读，统一存储路径** |
 | **#117** | **hawk-memory-api BM25 支持** | **Phase 0a** | **🔴** | **#220 Pipeline 重构的一部分，recall 质量保障** |
 | **#118** | **事件通知系统（WebSocket/SSE）** | **Phase 1** | **🟡** | **hawk-memory-api 提供，soul-engine 订阅** |
+| **#119** | **跨平台 Hook 适配器架构** | **Phase 1** | **🔴** | **OpenClaw/Hermes 等多平台 Hook 统一抽象为 CommonContext** |
 
 ---
 
-**最后更新**：2026-04-23
+## 🌐 跨平台 Hook 适配器架构 {#跨平台-hook-适配器架构}
+
+### 背景问题
+
+hawk-bridge 当前面临多平台 Hook 适配问题：
+
+| 平台 | 事件 | context 字段 | 注入方式 |
+|------|------|-------------|---------|
+| **Hermes** | `agent:start` | `session_id, user_id, message, platform` | `context["_hawk_recall"] = ...` |
+| **Hermes** | `agent:end` | `session_id, user_id, message, response, platform` | side-effect capture |
+| **OpenClaw** | `agent:bootstrap` | `workspaceDir, cfg, bootstrapFiles` | `event.messages.push(...)` |
+| **OpenClaw** | `message:sent` | `to, content, success, channelId` | `event.messages.push(...)` |
+
+两套系统的 event type、context 结构、注入方式完全不同。直接写死会导致：
+1. 加新平台要改核心逻辑
+2. OpenClaw Hook 代码是按 Hermes context 写的，两边不匹配
+
+### 解决方案：Hook Adapter 模式
+
+```
+OpenClaw Hook Adapter (TypeScript)
+  ↓ 提取并标准化为 CommonContext
+  ↓ session_id, user_id, platform, message, response
+  ↓
+ hawk-memory-api (capture / recall)
+  ↑
+  ↑
+Hermes Hook Adapter (Python)
+  ↓ 提取并标准化为 CommonContext
+```
+
+**CommonContext 统一结构：**
+```typescript
+interface CommonContext {
+  session_id: string
+  user_id: string
+  platform: string          // "hermes" | "openclaw" | "feishu" | ...
+  message: string           // 用户消息
+  response: string          // 助手回复（capture 时用）
+  injected_memories: string // recall 召回结果（注入时用）
+}
+```
+
+**每个平台的 Adapter 负责：**
+1. 理解自己平台的 event type 和 context 结构
+2. 映射到统一的 `CommonContext`
+3. 调用统一的 `capture(common)` / `recall(common)` → hawk-memory-api HTTP
+4. 处理平台特定的注入逻辑（`_hawk_recall` vs `event.messages.push`）
+
+**文件结构：**
+```
+hawk-bridge/
+├── adapters/
+│   ├── hermes_hook/       # 现有 Hermes Hook（Python）
+│   │   └── handler.py     # → adapter 层
+│   ├── openclaw_hook/     # OpenClaw Hook（TypeScript）
+│   │   └── handler.ts     # → adapter 层
+│   └── common/
+│       ├── context.ts      # CommonContext 类型定义
+│       └── hawk_client.py  # 统一的 hawk-memory-api HTTP 客户端
+```
+
+### 状态
+
+- [ ] #119.1: 定义 CommonContext 接口
+- [ ] #119.2: OpenClaw Hook 适配器（main 完成后接手）
+- [ ] #119.3: Hermes Hook 适配器（验证兼容性）
+- [ ] #119.4: 统一 hawk-memory-api HTTP 客户端
+- [ ] #119.5: 集成测试（OpenClaw + Hermes 同时跑）
+
+### 参考
+
+- Hermes handler: `~/repos/hawk-bridge/hermes_hook/handler.py`
+- OpenClaw Hook (backup): `~/repos/gql-openclaw/backup/.../hooks/hawk-bridge/src/hooks/`
+
+---
+
+**最后更新**：2026-04-24
 **维护者**：maomao <maomao@gql.ai>
