@@ -2893,6 +2893,14 @@ interface CommonContext {
 3. 调用统一的 `capture(common)` / `recall(common)` → hawk-memory-api HTTP
 4. 处理平台特定的注入逻辑（`_hawk_recall` vs `event.messages.push`）
 
+**核心设计原则**：
+
+> Hawk 不感知任何 Agent，只感知 HTTP API。
+> 每个 Agent 的适配器自己处理自己平台的 context，映射到 CommonContext 后调同样的 API。
+> 未来加 PicoClaw / any-Claw：只需要写一个新的 Adapter，Hawk 这边不需要改任何代码。
+>
+> Agent 越多，Hawk 越稳定。
+
 **文件结构：**
 ```
 hawk-bridge/
