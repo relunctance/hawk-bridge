@@ -69,6 +69,25 @@ const SEARCH_HISTORY_MAX = 20;
 const searchHistory: Array<{ q: string; ts: number; resultCount: number }> = [];
 export { searchHistory };
 
+// Timeout wrapper for search promises
+async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T, label: string): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timeout/${label}`)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } catch (err: any) {
+    if (err.message.startsWith('timeout/')) {
+      console.error('[hawk-recall] search timeout after ' + ms + 'ms: ' + label);
+      return fallback;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
 // Record a search query
 export function recordSearch(query: string, resultCount: number): void {
   searchHistory.unshift({ q: query, ts: Date.now(), resultCount });
@@ -1126,7 +1145,10 @@ const recallHandler = async (event: HookEvent) => {
     if (selectedIds.length > 0) {
       // Dual select hit: use LLM-selected IDs to filter hybrid search
       const retriever = await getRetriever();
-      const allResults = await retriever.search(trimmed, topK * 3, undefined, undefined, platformFilter);
+      const allResults = await withTimeout(
+        retriever.search(trimmed, topK * 3, undefined, undefined, platformFilter),
+        5000, [], 'hybrid_search'
+      );
       memories = allResults.filter((m: any) => selectedIds.includes(m.id));
       if (memories.length < topK) {
         // Fill remaining slots from unselected results
@@ -1137,9 +1159,12 @@ const recallHandler = async (event: HookEvent) => {
         memories = [...memories, ...unselected];
       }
     } else {
-      // No dual select data — use normal hybrid search
+      // No dual select data — use normal hybrid search (5s timeout to prevent blocking)
       const retriever = await getRetriever();
-      memories = await retriever.search(trimmed, topK, undefined, undefined, platformFilter);
+      memories = await withTimeout(
+        retriever.search(trimmed, topK, undefined, undefined, platformFilter),
+        5000, [], 'hybrid_search'
+      );
     }
     // Filter superseded memories (if B supersedes A, only show B)
     // Track which IDs are superseded so we can exclude them
