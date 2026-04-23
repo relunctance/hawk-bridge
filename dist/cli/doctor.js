@@ -3112,7 +3112,9 @@ async function getConfig() {
   return config;
 }
 function hasEmbeddingProvider() {
-  return !!(process.env.OLLAMA_BASE_URL || process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.JINA_API_KEY || process.env.OPENAI_API_KEY || process.env.COHERE_API_KEY || (process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_PROVIDER));
+  if (process.env.OLLAMA_BASE_URL || process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.JINA_API_KEY || process.env.OPENAI_API_KEY || process.env.COHERE_API_KEY || process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_PROVIDER) return true;
+  const cfg = getConfig();
+  return !!(cfg.embedding?.baseURL && cfg.embedding?.model);
 }
 async function recordConfigHistory(config) {
   try {

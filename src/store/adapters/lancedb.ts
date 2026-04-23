@@ -1074,11 +1074,11 @@ export class LanceDBAdapter implements MemoryStore {
       return expiresAt === 0 || expiresAt > now;
     });
 
-    // LanceDB FTS 返回 _relevance score（越高越相关，类似 BM25）
-    // minScore 对 FTS relevance 同样生效：低于阈值的直接过滤
+    // LanceDB FTS 返回 _score（越高越相关）
+    // minScore 对 FTS score 同样生效：低于阈值的直接过滤
     const retrieved: RetrievedMemory[] = [];
     for (const row of results) {
-      const score = row._relevance ?? 0;
+      const score = row._score ?? 0;
       if (score < minScore) continue;
       retrieved.push(this._rowToRetrieved(row, score));
       if (retrieved.length >= topK) break;

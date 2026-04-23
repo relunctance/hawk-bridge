@@ -112,6 +112,8 @@ async def handle_agent_start(context: dict) -> None:
     if not session_id and not user_id:
         return
 
+    print(f"[hawk-bridge] agent:start hook fired: session={session_id!r} query={message!r}", flush=True)
+
     try:
         client = await get_http_client()
         query = message or f"session {session_id}"

@@ -4547,7 +4547,7 @@ var LanceDBAdapter = class {
     });
     const retrieved = [];
     for (const row of results) {
-      const score = row._relevance ?? 0;
+      const score = row._score ?? 0;
       if (score < minScore) continue;
       retrieved.push(this._rowToRetrieved(row, score));
       if (retrieved.length >= topK) break;

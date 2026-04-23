@@ -277,15 +277,20 @@ export async function getConfig(): Promise<HawkConfig> {
 }
 
 export function hasEmbeddingProvider(): boolean {
-  return !!(
+  // Check env vars (legacy)
+  if (
     process.env.OLLAMA_BASE_URL ||
     process.env.QWEN_API_KEY ||
     process.env.DASHSCOPE_API_KEY ||
     process.env.JINA_API_KEY ||
     process.env.OPENAI_API_KEY ||
     process.env.COHERE_API_KEY ||
-    (process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_PROVIDER)
-  );
+    process.env.HAWK_EMBED_API_KEY ||
+    process.env.HAWK_EMBED_PROVIDER
+  ) return true;
+  // Check config file embedding.baseURL
+  const cfg = getConfig();
+  return !!(cfg.embedding?.baseURL && cfg.embedding?.model);
 }
 
 // ─── Config Version History ─────────────────────────────────────────────────────

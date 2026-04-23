@@ -3643,7 +3643,9 @@ async function getConfig() {
   return config;
 }
 function hasEmbeddingProvider() {
-  return !!(process.env.OLLAMA_BASE_URL || process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.JINA_API_KEY || process.env.OPENAI_API_KEY || process.env.COHERE_API_KEY || (process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_PROVIDER));
+  if (process.env.OLLAMA_BASE_URL || process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.JINA_API_KEY || process.env.OPENAI_API_KEY || process.env.COHERE_API_KEY || process.env.HAWK_EMBED_API_KEY || process.env.HAWK_EMBED_PROVIDER) return true;
+  const cfg = getConfig();
+  return !!(cfg.embedding?.baseURL && cfg.embedding?.model);
 }
 var HAWK_CONFIG_VERSION = process.env.HAWK_CONFIG_VERSION || "1";
 async function recordConfigHistory(config) {
@@ -4561,7 +4563,7 @@ var LanceDBAdapter = class {
     });
     const retrieved = [];
     for (const row of results) {
-      const score = row._relevance ?? 0;
+      const score = row._score ?? 0;
       if (score < minScore) continue;
       retrieved.push(this._rowToRetrieved(row, score));
       if (retrieved.length >= topK) break;
@@ -5539,6 +5541,23 @@ function markBm25Dirty() {
 }
 var SEARCH_HISTORY_MAX = 20;
 var searchHistory = [];
+async function withTimeout(promise, ms, fallback, label) {
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timeout/${label}`)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } catch (err) {
+    if (err.message.startsWith("timeout/")) {
+      console.error("[hawk-recall] search timeout after " + ms + "ms: " + label);
+      return fallback;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 function recordSearch(query, resultCount) {
   searchHistory.unshift({ q: query, ts: Date.now(), resultCount });
   if (searchHistory.length > SEARCH_HISTORY_MAX) searchHistory.pop();
@@ -6686,7 +6705,12 @@ ${injectEmoji} \u6CA1\u6709\u627E\u5230\u9700\u8981\u7EA0\u6B63\u7684\u8BB0\u5FC
     const selectedIds = await dualSelect(trimmed, db, topK * 2);
     if (selectedIds.length > 0) {
       const retriever = await getRetriever();
-      const allResults = await retriever.search(trimmed, topK * 3, void 0, void 0, platformFilter);
+      const allResults = await withTimeout(
+        retriever.search(trimmed, topK * 3, void 0, void 0, platformFilter),
+        5e3,
+        [],
+        "hybrid_search"
+      );
       memories = allResults.filter((m2) => selectedIds.includes(m2.id));
       if (memories.length < topK) {
         const selectedSet = new Set(selectedIds);
@@ -6695,7 +6719,12 @@ ${injectEmoji} \u6CA1\u6709\u627E\u5230\u9700\u8981\u7EA0\u6B63\u7684\u8BB0\u5FC
       }
     } else {
       const retriever = await getRetriever();
-      memories = await retriever.search(trimmed, topK, void 0, void 0, platformFilter);
+      memories = await withTimeout(
+        retriever.search(trimmed, topK, void 0, void 0, platformFilter),
+        5e3,
+        [],
+        "hybrid_search"
+      );
     }
     const supersededIds = /* @__PURE__ */ new Set();
     for (const m2 of memories) {
