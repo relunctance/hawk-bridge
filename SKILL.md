@@ -592,6 +592,49 @@ export HAWK_API_BASE=http://127.0.0.1:18360
 
 ---
 
+## 开发调试
+
+### 两套路径（重要！）
+
+hawk-bridge 有两套路径，改完 Hook 源码后必须同步：
+
+| 路径 | 用途 |
+|------|------|
+| `src/hooks/` | **源码**（你改的地方） |
+| `dist/hooks/` | **构建产物**（Gateway 实际加载） |
+| `~/.openclaw/workspace/dist/hooks/` | Gateway 安装目录的构建产物 |
+
+**每次改完 `src/hooks/` 后必须：**
+
+```bash
+cd ~/repos/hawk-bridge
+npm run build                # 编译 + 拷贝 HOOK.md 到 dist/
+systemctl --user restart openclaw-gateway  # 重启 Gateway
+```
+
+**验证是否生效：**
+```bash
+# 确认 dist/ 是最新
+ls -la dist/hooks/hawk-capture/
+
+# 看 Gateway 日志
+journalctl --user-unit openclaw-gateway -f
+```
+
+### 常见误区
+
+- ❌ 改完 `src/hooks/` 直接跑 Gateway — 跑的是旧版
+- ❌ 只看源码有没有保存 — dist/ 可能几天前的
+- ❌ 重启 Gateway 就以为会重新加载 — 没 build 的话 restart 也没用
+
+### 构建脚本
+
+`scripts/build.js` 定义了编译和拷贝规则：
+- 编译 `.ts` → `.js`
+- 拷贝 `HOOK.md`
+
+---
+
 ## 依赖
 
 **npm:** `npm install`
