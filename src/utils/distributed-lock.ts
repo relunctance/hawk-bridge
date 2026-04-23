@@ -13,24 +13,39 @@
  *   } finally {
  *     releaseLock('bm25_rebuild');
  *   }
+ *
+ * Test usage:
+ *   import { setLockDir } from './distributed-lock.js';
+ *   setLockDir('/tmp/my-test-locks');
  */
 
-import { mkdirSync, unlinkSync, readFileSync, existsSync } from 'fs';
+import { mkdirSync, unlinkSync, readFileSync, existsSync, openSync, writeSync, closeSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { logger } from '../logger.js';
 
-const LOCK_DIR = process.env.HAWK_LOCK_DIR ?? join(homedir(), '.hawk', 'locks');
+// Module-level state — mutable for testing
+let _LOCK_DIR: string | null = null;
+
+// Exported for testing — overrides LOCK_DIR for the lifetime of the process
+export function setLockDir(dir: string): void {
+  _LOCK_DIR = dir;
+}
+
+function getLockDir(): string {
+  return _LOCK_DIR ?? process.env.HAWK_LOCK_DIR ?? join(homedir(), '.hawk', 'locks');
+}
 
 // Map of held locks (for nested release within same process)
 const heldLocks = new Map<string, string>();
 
 function ensureLockDir(): void {
-  if (!existsSync(LOCK_DIR)) mkdirSync(LOCK_DIR, { recursive: true });
+  const dir = getLockDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
 function lockFileFor(name: string): string {
-  return join(LOCK_DIR, `${name}.lock`);
+  return join(getLockDir(), `${name}.lock`);
 }
 
 /**
@@ -41,22 +56,27 @@ export function acquireLock(name: string, ttlMs = 60_000): string | null {
   ensureLockDir();
   const lf = lockFileFor(name);
 
+  // O_EXCL: fails if file already exists → atomic acquire
   try {
-    // mkdirSync is atomic on POSIX when dir doesn't exist
-    mkdirSync(lf, { recursive: false });
+    const fd = openSync(lf, 'wx', 0o644);  // 'w' + 'x' = O_WRONLY | O_CREAT | O_EXCL
     const content = `${process.pid}:${Date.now() + ttlMs}`;
-    require('fs').writeFileSync(lf, content, 'utf8');
+    writeSync(fd, content, 'utf8');
+    closeSync(fd);
     heldLocks.set(name, lf);
     return lf;
   } catch (e: any) {
-    // Lock already exists — check if it's expired
+    if (e.code !== 'EEXIST') {
+      logger.error({ err: e }, 'Unexpected lock acquisition error');
+      return null;
+    }
+    // Lock file already exists — check if it's expired
     try {
       if (existsSync(lf)) {
         const content = readFileSync(lf, 'utf8');
         const parts = content.split(':');
         const expiry = parseInt(parts[1], 10);
         if (Date.now() > expiry) {
-          // Expired — steal it
+          // Expired — delete it and retry
           try { unlinkSync(lf); } catch { /* ignore */ }
           return acquireLock(name, ttlMs);
         }

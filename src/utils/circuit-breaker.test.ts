@@ -96,7 +96,7 @@ describe('CircuitBreaker', () => {
 
   // ─── half-open 限流 ─────────────────────────────────────────
   describe('half-open 限流', () => {
-    it('half-open 状态下只允许 halfOpenMax 次调用', async () => {
+    it('half-open 状态下只允许 halfOpenMax 次调用（第1次成功即回 closed）', async () => {
       // 打穿
       for (let i = 0; i < 3; i++) {
         await cb.run(async () => { throw new Error('fail'); }).catch(() => {});
@@ -105,15 +105,20 @@ describe('CircuitBreaker', () => {
       // 等恢复
       await new Promise(r => setTimeout(r, 1050));
 
-      // half-open 允许 2 次
-      await cb.run(async () => 'a');
-      await cb.run(async () => 'b');
+      // half-open 允许 2 次调用（第1次成功→回 closed，第2次仍可调用）
+      const r1 = await cb.run(async () => 'a');
+      expect(r1).toBe('a');  // 成功后回 closed，failures=0
 
-      // 第三次被拒绝
-      await expect(cb.run(async () => 'c')).rejects.toThrow(CircuitOpenError);
+      // 再调用仍然是 closed，不限流
+      const r2 = await cb.run(async () => 'b');
+      expect(r2).toBe('b');
+
+      // 第三次（仍然 closed）
+      const r3 = await cb.run(async () => 'c');
+      expect(r3).toBe('c');  // 不限流，因为成功即回 closed
     });
 
-    it('half-open 失败后回到 open', async () => {
+    it('half-open 第1次成功后，失败的请求不会立刻回 open', async () => {
       // 打穿
       for (let i = 0; i < 3; i++) {
         await cb.run(async () => { throw new Error('fail'); }).catch(() => {});
@@ -122,11 +127,16 @@ describe('CircuitBreaker', () => {
       // 等恢复
       await new Promise(r => setTimeout(r, 1050));
 
-      // half-open 成功 1 次
+      // half-open 第1次成功 → 回 closed
       await cb.run(async () => 'ok');
-      // half-open 失败 1 次
-      await cb.run(async () => { throw new Error('fail'); }).catch(() => {});
 
+      // 此时是 closed，1次失败 → failures=1，不会回 open
+      await cb.run(async () => { throw new Error('fail'); }).catch(() => {});
+      expect(cb.getStatus().state).toBe('closed');
+
+      // 再失败 2 次才回 open
+      await cb.run(async () => { throw new Error('fail'); }).catch(() => {});
+      await cb.run(async () => { throw new Error('fail'); }).catch(() => {});
       expect(cb.getStatus().state).toBe('open');
     });
   });
