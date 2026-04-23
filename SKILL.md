@@ -594,10 +594,13 @@ export HAWK_API_BASE=http://127.0.0.1:18360
 
 ## Hook 事件注册（OpenClaw）
 
-| Hook | 触发事件 |
-|------|---------|
-| hawk-capture | `message:sent` — 每次 agent 回复后自动提取记忆 |
-| hawk-recall | `agent:bootstrap` + `message:sent` — agent 启动时 + 每次回复前注入记忆 |
+| Hook | 触发事件 | 说明 |
+|------|---------|------|
+| hawk-capture | `message:sent` | Agent 回复后 → 提取记忆 |
+| hawk-recall | `message:received` | 用户发消息 → Agent recall → 生成回复 |
+| hawk-recall | `agent:bootstrap` | Agent 启动时 → 注入初始记忆 |
+
+**注意**：Gateway 日志会轮转（`openclaw-YYYY-MM-DD.log`），调试时要确认看的是哪个文件。
 
 **注意**：修改 HOOK.md 的 `events` 数组后必须 `npm run build` + 重启 Gateway 才能生效。
 
