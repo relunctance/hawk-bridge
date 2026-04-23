@@ -6484,3 +6484,164 @@ class PipelineRunner {
 
 **更新记录**：
 - 2026-04-23：新增竞争战略章节 + #109-#113（用户战略拆解）
+
+---
+
+## 🔗 三系统集成——Memory 格式契约
+
+> 三个系统的 Memory 格式必须统一，否则转换层会成为 bug 大本营
+
+### [ ] 114. Memory 格式契约——三系统共识 {#item-114}
+
+**现状**：hawk-memory-api / hawk-bridge / soul-engine 各有 Memory 模型，字段不统一
+
+**三系统当前 Memory 字段对比**：
+
+| 字段 | hawk-memory-api | hawk-bridge (Go) | soul-engine (规划) |
+|------|----------------|------------------|-------------------|
+| ID | `id` | `id` | 规划中 |
+| 内容 | `text` | `content` | 未定义 |
+| 类别 | `category` | `type` | 未定义 |
+| 重要性 | `importance` | `importance` | 未定义 |
+| 可靠性 | `reliability` | `reliability` | 未定义 |
+| 可见性 | `scope` | 无 | 未定义 |
+| 创建时间 | `created_at` | `created_at` | 未定义 |
+| 访问次数 | `access_count` | `access_count` | 未定义 |
+| 召回次数 | `recall_count` | 无 | 未定义 |
+| 信任分 | 无 | `trust_score` | 未定义 |
+| 平台 | `platform` | 无 | 未定义 |
+
+**需要定义的标准契约**（`docs/MEMORY-CONTRACT.md`）：
+
+```python
+@dataclass
+class Memory:
+    # 核心标识
+    id: str                          # 全局唯一 ID（UUID）
+    content: str                     # 记忆文本内容（hawk-bridge 用 content）
+                                     # hawk-memory-api 用 text → 需统一
+
+    # 分类体系
+    category: MemoryCategory        # enum: raw/pattern/principle/skill
+                                     # 参考 Claude Code: user/feedback/project/reference
+    sub_category: Optional[str]       # 细分子类
+
+    # 重要性与可靠性
+    importance: float = 0.5           # 0.0-1.0
+    reliability: float = 0.7         # 0.0-1.0，可信度
+    trust_score: float = 0.7         # 0.0-1.0，信任分（hawk-bridge 有，hawk-memory-api 无）
+
+    # 可见性
+    scope: Scope = Scope.PERSONAL    # enum: personal/team/public
+
+    # 时间戳
+    created_at: int                  # Unix timestamp（毫秒）
+    updated_at: int                  # Unix timestamp（毫秒）
+    last_accessed_at: int = 0       # Unix timestamp（毫秒）
+
+    # 访问统计
+    access_count: int = 0
+    recall_count: int = 0           # hawk-memory-api 有，hawk-bridge 无
+    verification_count: int = 0
+
+    # 溯源
+    source_platform: str = ""        # hermes / telegram / openclaw...
+    source_session_id: str = ""      # 来源会话
+
+    # 元数据
+    metadata: dict = field(default_factory=dict)
+    name: str = ""                  # 记忆名称（给 LLM 用）
+    description: str = ""           # 简短描述
+
+    # 进化状态（soul-engine 用）
+    tier: Tier = Tier.RAW           # enum: raw/pattern/principle/skill
+    evolution_metadata: EvolutionMetadata = None
+```
+
+**实现步骤**：
+
+1. 创建 `docs/MEMORY-CONTRACT.md`，三系统维护者共同评审
+2. hawk-memory-api：`text` 字段 → `content`（破坏性变更，需 major 版本）
+3. hawk-bridge：确认 Go `Memory` 结构体与契约一致
+4. soul-engine：直接基于契约定义 Python dataclass
+
+**状态**：🔴 阻断（三个系统集成的前提）
+
+**前置依赖**：三系统维护者确认
+
+---
+
+## 🧪 三系统集成测试计划
+
+> 确保 hawk-bridge → hawk-memory-api → soul-engine 三层能正确协作
+
+### [ ] 115. 三系统集成测试——端到端记忆流 {#item-115}
+
+**测试场景**：
+
+```
+1. Capture 端到端
+   hawk-bridge Hook.capture()
+        ↓ POST /capture
+   hawk-memory-api /capture
+        ↓ 双写
+   LanceDB + Neo4j
+        ↓
+   soul-engine Distiller 提炼 Pattern
+
+2. Recall 端到端
+   hawk-bridge Hook.recall()
+        ↓ POST /recall
+   hawk-memory-api /recall（含 GraphStage）
+        ↓ 返回 MemoryItem[]
+   hawk-bridge MemoryCompiler
+        ↓ 生成答案
+
+3. Evolution 端到端
+   soul-engine EvolutionEngine
+        ↓ POST /capture (type=pattern)
+   hawk-memory-api /capture
+        ↓ 双写
+   LanceDB + Neo4j
+```
+
+**测试用例设计**：
+
+```python
+class TestTripleSystemIntegration:
+    """三系统集成测试"""
+
+    async def test_capture_flow(self):
+        """Capture：用户对话 → hawk-bridge → hawk-memory-api → LanceDB"""
+        pass
+
+    async def test_recall_flow(self):
+        """Recall：查询 → hawk-memory-api → GraphStage → hawk-bridge"""
+        pass
+
+    async def test_evolution_flow(self):
+        """Evolution：Pattern 提炼 → hawk-memory-api → Neo4j"""
+        pass
+
+    async def test_memory_contract_consistency(self):
+        """Memory 格式在三系统间保持一致"""
+        pass
+```
+
+**状态**：🟡 重要（长期健康度保障）
+
+**前置依赖**：#114 Memory 格式契约、#203 Neo4j Engine、soul-engine #151 BridgeClient
+
+---
+
+## 📊 战略 TODO 汇总
+
+| 编号 | 功能 | 阶段 | 优先级 | 备注 |
+|------|------|------|--------|------|
+| #109 | GraphStage 图拓扑检索 | Phase 0b | 🔴 | M-flow 核心技术 |
+| #110 | Coreference 指代消解 | Phase 1b | 🟡 | M-flow 对齐 |
+| #111 | Procedural Memory | Phase 1b | 🟡 | M-flow 对齐 |
+| #112 | StorageEngine 多后端 | Phase 0b | 🔴 | GraphStage 依赖 |
+| #113 | Rule Engine 核心 | Phase 0a | 🔴 | 其他规则基础 |
+| #114 | Memory 格式契约 | Phase 0a | 🔴 | 三系统集成前提 |
+| #115 | 三系统集成测试 | Phase 2 | 🟡 | 长期健康度保障 |
