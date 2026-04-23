@@ -62,6 +62,22 @@ Promise.all(builds.map(({ entry, out }) =>
   fs.cpSync('src/hooks/hawk-recall/HOOK.md', 'dist/hooks/hawk-recall/HOOK.md');
   fs.cpSync('src/hooks/hawk-capture/HOOK.md', 'dist/hooks/hawk-capture/HOOK.md');
   fs.cpSync('src/hooks/hawk-decay/HOOK.md', 'dist/hooks/hawk-decay/HOOK.md');
+
+  // Sync dist/ to workspace so Gateway picks up latest build
+  const repoRoot = path.join(__dirname, '..');  // /home/gql/repos/hawk-bridge
+  const workspaceDist = '/home/gql/.openclaw/workspace/dist';
+  try {
+    const stat = fs.lstatSync(workspaceDist);
+    if (stat.isDirectory() || stat.isSymbolicLink()) {
+      fs.rmSync(workspaceDist, { recursive: true });
+      console.log('[sync] Removed old workspace/dist');
+    }
+  } catch {}
+  if (!fs.existsSync(workspaceDist)) {
+    fs.symlinkSync(repoRoot, workspaceDist, 'junction');
+    console.log('[sync] Linked workspace/dist → hawk-bridge (自动同步)');
+  }
+
   console.log('Built successfully');
 }).catch(e => {
   console.error(e.message);
