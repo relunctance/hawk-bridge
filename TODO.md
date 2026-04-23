@@ -6645,3 +6645,137 @@ class TestTripleSystemIntegration:
 | #113 | Rule Engine 核心 | Phase 0a | 🔴 | 其他规则基础 |
 | #114 | Memory 格式契约 | Phase 0a | 🔴 | 三系统集成前提 |
 | #115 | 三系统集成测试 | Phase 2 | 🟡 | 长期健康度保障 |
+| #116 | Recall 统一走 hawk-memory-api | Phase 0a | 🔴 | 废弃直接 LanceDB 读，统一存储路径 |
+| #117 | hawk-memory-api BM25 支持 | Phase 0a | 🔴 | hawk-memory-api #220 是前提 |
+| #118 | 事件通知系统（WebSocket/SSE） | Phase 1 | 🟡 | hawk-memory-api 提供，soul-engine 订阅 |
+
+---
+
+## 🏗️ 架构问题诊断与调整（2026-04-23）
+
+> 发现三件套存在 6 个根本性架构问题，必须在战略升级前解决
+
+### 🔴 架构问题 1：两套检索系统并行，数据一致性无保证
+
+**现状**：
+```
+hawk-bridge: HybridRetriever (内嵌 TypeScript)
+             → 直接读 LanceDB（绕过 hawk-memory-api）
+
+hawk-memory-api: LanceDBClient（Python）
+                 → 向量检索（无 BM25）
+```
+
+**问题**：
+- hawk-capture 写 LanceDB 走 `http.ts` → hawk-memory-api（正确）
+- hawk-recall 用 `HybridRetriever` 直接读 LanceDB（绕过 hawk-memory-api）
+- 两边的 filter/scope/recall 逻辑各自独立，行为可能不一致
+- soul-engine 若接入，不知道该读哪份数据
+
+**根因**：http.ts HTTPAdapter 只用于 health check，recall 走的是 `lancedb.ts` 直接 adapter
+
+**解决方案**：#116——hawk-bridge recall 改走 hawk-memory-api `/recall`
+
+---
+
+### 🔴 架构问题 2：soul-engine BridgeClient 方向错误
+
+**现状**：
+- soul-engine `BridgeClient.ts` 设计是连接 **hawk-bridge**
+- 但 hawk-bridge 是 OpenClaw 插件（TypeScript），没有对外 HTTP API
+- hawk-memory-api 才是有 HTTP API 的存储服务
+
+**问题**：soul-engine 连接 hawk-bridge 走不通
+
+**解决方案**：soul-engine BridgeClient 改为连接 hawk-memory-api（hawk-memory-api #260 HawkMemoryClient）
+
+---
+
+### 🔴 架构问题 3：缺乏跨系统事件通知
+
+**现状**：记忆变化后，soul-engine 不知道，无法触发进化
+
+**问题**：
+- hawk-memory-api capture 后没有推送事件
+- soul-engine 要么轮询（低效），要么依赖不存在的事件监听
+
+**解决方案**：#118 hawk-memory-api 提供 WebSocket/SSE 事件通知，soul-engine 订阅
+
+---
+
+### 🟡 架构问题 4：MemoryCompiler 接口三系统都无实现
+
+**现状**：
+- hawk-bridge #72 MemoryCompiler（Recall → 自然语言答案）
+- hawk-memory-api #220 Pipeline 重构
+- soul-engine #106 MemoryCompiler
+
+三个系统各自设计，但 **编译逻辑在哪里都是白纸**。
+
+**影响**：recall 返回 `MemoryItem[]`，无法直接生成答案
+
+**建议**：明确 MemoryCompiler 在 hawk-memory-api Pipeline 内实现（#220 Pipeline Runner 的一部分）
+
+---
+
+### 🟡 架构问题 5：三层无统一 v1.0 里程碑
+
+**现状**：
+```
+hawk-bridge: v1.2+ Backlog
+hawk-memory-api: v2.x 升级路线图
+soul-engine: v0.1-v1.0 版本规划
+```
+
+**问题**：三个版本路线图没有共同的发布时间节点
+
+**建议**：定义「三系统协同 v1.0」里程碑（见下方）
+
+---
+
+### 🟢 架构问题 6：存储所有权模糊
+
+**现状**：hawk-bridge 和 hawk-memory-api 都能直接读写 LanceDB
+
+**问题**：没有写锁或主从约定，可能产生写入冲突
+
+**解决方案**：#116——hawk-memory-api 成为唯一写入节点
+
+---
+
+## 📍 三系统协同 v1.0 里程碑
+
+> 三个系统各自完成以下目标，才算三系统协同 v1.0 完成
+
+| 系统 | v1.0 目标 |
+|------|---------|
+| **hawk-bridge** | 所有写操作经 hawk-memory-api；recall 改走 hawk-memory-api `/recall`（#116）；支持事件订阅 |
+| **hawk-memory-api** | StorageEngine 抽象（#201-#204）；BM25 支持（#220）；WebSocket 事件通知（#118）；HawkMemoryClient（#260） |
+| **soul-engine** | BridgeClient 连接 hawk-memory-api（#151 修订）；StoragePort + HawkMemoryAdapter（#164）；Raw→Pattern 提炼可跑通（#101） |
+
+**v1.0 完成后态**：
+- hawk-bridge → hawk-memory-api → LanceDB/Neo4j（一主一从）
+- soul-engine → hawk-memory-api HTTP → 触发进化
+- hawk-memory-api → WebSocket 事件 → soul-engine
+
+---
+
+## 📊 战略 TODO 汇总（完整）
+
+| 编号 | 功能 | 阶段 | 优先级 | 备注 |
+|------|------|------|--------|------|
+| #109 | GraphStage 图拓扑检索 | Phase 0b | 🔴 | M-flow 核心技术 |
+| #110 | Coreference 指代消解 | Phase 1b | 🟡 | M-flow 对齐 |
+| #111 | Procedural Memory | Phase 1b | 🟡 | M-flow 对齐 |
+| #112 | StorageEngine 多后端 | Phase 0b | 🔴 | GraphStage 依赖 |
+| #113 | Rule Engine 核心 | Phase 0a | 🔴 | 其他规则基础 |
+| #114 | Memory 格式契约 | Phase 0a | 🔴 | 三系统集成前提 |
+| #115 | 三系统集成测试 | Phase 2 | 🟡 | 长期健康度保障 |
+| **#116** | **Recall 统一走 hawk-memory-api** | **Phase 0a** | **🔴** | **废弃直接 LanceDB 读，统一存储路径** |
+| **#117** | **hawk-memory-api BM25 支持** | **Phase 0a** | **🔴** | **#220 Pipeline 重构的一部分，recall 质量保障** |
+| **#118** | **事件通知系统（WebSocket/SSE）** | **Phase 1** | **🟡** | **hawk-memory-api 提供，soul-engine 订阅** |
+
+---
+
+**最后更新**：2026-04-23
+**维护者**：maomao <maomao@gql.ai>
