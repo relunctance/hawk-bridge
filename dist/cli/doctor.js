@@ -1,12 +1,6 @@
 #!/usr/bin/env node
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
-var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
-  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
-}) : x)(function(x) {
-  if (typeof require !== "undefined") return require.apply(this, arguments);
-  throw Error('Dynamic require of "' + x + '" is not supported');
-});
 var __esm = (fn, res) => function __init() {
   return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
 };
@@ -2965,137 +2959,6 @@ var init_env = __esm({
   }
 });
 
-// src/logger.ts
-import pino from "pino";
-import { join, dirname } from "path";
-import { existsSync, mkdirSync, unlinkSync, readdirSync, statSync } from "fs";
-import { homedir } from "os";
-function getTimestamp() {
-  const now = /* @__PURE__ */ new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  const h = String(now.getHours()).padStart(2, "0");
-  const min = String(now.getMinutes()).padStart(2, "0");
-  const s = String(now.getSeconds()).padStart(2, "0");
-  return `${y}${m}${d}-${h}${min}${s}`;
-}
-function basename(p) {
-  return p.split("/").pop() ?? p;
-}
-function patchConsole() {
-  if (process.env.NODE_ENV !== "production" && process.env.HAWK_STRICT_LOG !== "1") return;
-  const origError = console.error.bind(console);
-  const origWarn = console.warn.bind(console);
-  const origLog = console.log.bind(console);
-  console.error = (...args) => {
-    logger.error({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
-  };
-  console.warn = (...args) => {
-    logger.warn({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
-  };
-  console.log = (...args) => {
-    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
-  };
-  console.info = (...args) => {
-    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
-  };
-  console.debug = (...args) => {
-    logger.debug({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
-  };
-}
-var LOG_DIR, LOG_FILE_BASE, MAX_FILE_SIZE, MAX_FILES, RotatingFileStream, rotatingStream, logLevel, logger;
-var init_logger = __esm({
-  "src/logger.ts"() {
-    "use strict";
-    LOG_DIR = process.env.HAWK_LOG_DIR ?? join(homedir(), ".hawk", "logs");
-    LOG_FILE_BASE = join(LOG_DIR, "hawk-bridge.log");
-    MAX_FILE_SIZE = parseInt(process.env.HAWK_LOG_MAX_SIZE ?? String(50 * 1024 * 1024), 10);
-    MAX_FILES = parseInt(process.env.HAWK_LOG_MAX_FILES ?? "14", 10);
-    RotatingFileStream = class {
-      stream;
-      size = 0;
-      constructor(filePath) {
-        this.ensureDir(dirname(filePath));
-        this.stream = this.openStream(filePath);
-      }
-      ensureDir(dir) {
-        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-      }
-      openStream(filePath) {
-        const fd = existsSync(filePath) ? void 0 : void 0;
-        const s = __require("fs").createWriteStream(filePath, { flags: "a", highWaterMark: 64 * 1024 });
-        if (existsSync(filePath)) {
-          this.size = statSync(filePath).size;
-        }
-        return s;
-      }
-      rotate() {
-        this.stream.end();
-        const rotatedPath = `${LOG_FILE_BASE}.${getTimestamp()}.log`;
-        try {
-          const dir = dirname(LOG_FILE_BASE);
-          if (existsSync(LOG_FILE_BASE)) {
-            const fs3 = __require("fs");
-            fs3.renameSync(LOG_FILE_BASE, rotatedPath);
-          }
-        } catch {
-        }
-        this.stream = this.openStream(LOG_FILE_BASE);
-        this.size = 0;
-        this.cleanupOldRotations();
-      }
-      cleanupOldRotations() {
-        try {
-          const dir = dirname(LOG_FILE_BASE);
-          const base = basename(LOG_FILE_BASE);
-          const files = readdirSync(dir).filter((f) => f.startsWith(base + ".") && f.endsWith(".log")).map((f) => ({
-            name: f,
-            path: join(dir, f),
-            mtime: statSync(join(dir, f)).mtime.getTime()
-          })).sort((a, b) => a.mtime - b.mtime);
-          const excess = files.length - MAX_FILES;
-          if (excess > 0) {
-            for (const f of files.slice(0, excess)) {
-              try {
-                unlinkSync(f.path);
-              } catch {
-              }
-            }
-          }
-        } catch {
-        }
-      }
-      write(chunk, cb) {
-        const len = Buffer.byteLength(chunk, "utf8");
-        if (this.size + len > MAX_FILE_SIZE) {
-          this.rotate();
-        }
-        this.size += len;
-        this.stream.write(chunk, cb);
-      }
-      end(cb) {
-        this.stream.end(cb);
-      }
-      // Expose for pino
-      get fd() {
-        return this.stream.fd ?? -1;
-      }
-    };
-    if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
-    rotatingStream = new RotatingFileStream(LOG_FILE_BASE);
-    logLevel = process.env.HAWK__LOGGING__LEVEL || process.env.HAWK_LOG_LEVEL || "info";
-    logger = pino({
-      level: logLevel,
-      formatters: {
-        level: (label) => ({ level: label })
-      },
-      timestamp: pino.stdTimeFunctions.isoTime
-    }, rotatingStream);
-    patchConsole();
-  }
-});
-
 // src/config.ts
 var config_exports = {};
 __export(config_exports, {
@@ -3170,7 +3033,7 @@ function loadYamlConfig() {
       const resolved = resolveEnvVars(raw);
       return load(resolved);
     } catch (e) {
-      logger.warn({ err: e }, "[hawk-bridge] Failed to load config.yaml");
+      console.warn("[hawk-bridge] Failed to load config.yaml:", e);
     }
   }
   return {};
@@ -3328,7 +3191,7 @@ function printConfigHistory(limit = 20) {
     }
     console.log("\u2500".repeat(60) + "\n");
   } catch (err) {
-    logger.error({ err: err.message }, "Failed to read config history");
+    console.error("Failed to read config history:", err.message);
   }
 }
 var OPENCLAW_CONFIG_PATH, OPENCLAW_AGENT_MODELS, HAWK_CONFIG_DIR, cachedOpenClawConfig, cachedAgentModels, DEFAULT_CONFIG, configPromise, cachedConfig, HAWK_CONFIG_VERSION;
@@ -3338,7 +3201,6 @@ var init_config = __esm({
     init_js_yaml();
     init_constants();
     init_env();
-    init_logger();
     OPENCLAW_CONFIG_PATH = path.join(os.homedir(), ".openclaw", "openclaw.json");
     OPENCLAW_AGENT_MODELS = path.join(os.homedir(), ".openclaw", "agents", "main", "agent", "models.json");
     HAWK_CONFIG_DIR = path.join(os.homedir(), ".hawk");

@@ -15038,7 +15038,6 @@ function deepMerge(base, override) {
 }
 
 // src/config.ts
-init_logger();
 var OPENCLAW_CONFIG_PATH = path.join(os.homedir(), ".openclaw", "openclaw.json");
 var OPENCLAW_AGENT_MODELS = path.join(os.homedir(), ".openclaw", "agents", "main", "agent", "models.json");
 var HAWK_CONFIG_DIR = path.join(os.homedir(), ".hawk");
@@ -15142,7 +15141,7 @@ function loadYamlConfig() {
       const resolved = resolveEnvVars(raw);
       return load(resolved);
     } catch (e) {
-      logger.warn({ err: e }, "[hawk-bridge] Failed to load config.yaml");
+      console.warn("[hawk-bridge] Failed to load config.yaml:", e);
     }
   }
   return {};
@@ -23302,6 +23301,14 @@ function startMetricsServer() {
     const start = Date.now();
     const requestId = req.headers["x-request-id"] || `hawk-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     res.setHeader("X-Request-ID", requestId);
+    if (pathname === "/metrics" && METRICS_TOKEN) {
+      const token = queryParams["token"] ?? req.headers["x-hawk-token"] ?? "";
+      if (token !== METRICS_TOKEN) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+    }
     if (pathname === "/metrics" && METRICS_TOKEN) {
       const token = queryParams["token"] ?? req.headers["x-hawk-token"] ?? "";
       if (token !== METRICS_TOKEN) {
