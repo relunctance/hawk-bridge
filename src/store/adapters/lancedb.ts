@@ -160,7 +160,7 @@ export class LanceDBAdapter implements MemoryStore {
             { name: 'platform', type: { type: 'utf8' } },
             { name: 'confidence', type: { type: 'float' } },
             { name: 'supersedes', type: { type: 'utf8' } },
-            { name: 'supersededBy', type: { type: 'utf8' } },
+            { name: 'superseded_by', type: { type: 'utf8' } },
             { name: 'generation_version', type: { type: 'int32' } },
             { name: 'soul_pattern_id', type: { type: 'utf8' } },
             { name: 'soul_verified', type: { type: 'int8' } },
@@ -274,7 +274,7 @@ export class LanceDBAdapter implements MemoryStore {
       confidence: data.confidence ?? 0.0,
       // Use empty string for null supersedes/supersededBy (LanceDB makeArrowTable can't infer null)
       supersedes: data.supersedes ?? '',
-      supersededBy: data.supersededBy ?? '',
+      superseded_by: data.supersededBy ?? '',
       drift_note: data.drift_note ?? '',
       drift_detected_at: BigInt(data.drift_detected_at ?? 0),
       last_used_at: BigInt(data.last_used_at ?? 0),

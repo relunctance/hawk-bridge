@@ -15404,7 +15404,7 @@ var LanceDBAdapter = class {
             { name: "platform", type: { type: "utf8" } },
             { name: "confidence", type: { type: "float" } },
             { name: "supersedes", type: { type: "utf8" } },
-            { name: "supersededBy", type: { type: "utf8" } },
+            { name: "superseded_by", type: { type: "utf8" } },
             { name: "generation_version", type: { type: "int32" } },
             { name: "soul_pattern_id", type: { type: "utf8" } },
             { name: "soul_verified", type: { type: "int8" } }
@@ -15472,7 +15472,7 @@ var LanceDBAdapter = class {
       confidence: data.confidence ?? 0,
       // Use empty string for null supersedes/supersededBy (LanceDB makeArrowTable can't infer null)
       supersedes: data.supersedes ?? "",
-      supersededBy: data.supersededBy ?? "",
+      superseded_by: data.supersededBy ?? "",
       drift_note: data.drift_note ?? "",
       drift_detected_at: BigInt(data.drift_detected_at ?? 0),
       last_used_at: BigInt(data.last_used_at ?? 0),
@@ -17146,8 +17146,7 @@ async function getRetriever() {
   if (!retrieverPromise) {
     retrieverPromise = (async () => {
       const config = await getConfig();
-      const db2 = getSharedDb();
-      await db2.init();
+      const db2 = await getSharedDb();
       const { Embedder: Embedder3 } = await Promise.resolve().then(() => (init_embeddings(), embeddings_exports));
       const embedder2 = new Embedder3(config.embedding);
       const r = new HybridRetriever(db2, embedder2);
@@ -17384,8 +17383,16 @@ function checkDriftVerifyQueue() {
   }
 }
 var recallHandler = async (event) => {
-  if (event.type !== "agent" || event.action !== "bootstrap") return;
+  const isAgentBootstrap = event.type === "agent" && event.action === "bootstrap";
+  const isMessageSent = event.type === "message" && event.action === "sent";
+  console.error("[hawk-recall] handler called", { type: event.type, action: event.action, isAgentBootstrap, isMessageSent });
+  if (!isAgentBootstrap && !isMessageSent) {
+    console.error("[hawk-recall] rejected: wrong event type");
+    return;
+  }
+  console.error("[hawk-recall] passed event check, starting try block");
   try {
+    console.error("[hawk-recall] step1: checkDriftVerifyQueue");
     const pending = checkDriftVerifyQueue();
     if (pending.length > 0) {
       const lines = [`\u26A0\uFE0F ** hawk \u5F85\u9A8C\u8BC1\u8FC7\u671F\u8BB0\u5FC6 (${pending.length}\u6761) **`];
@@ -17397,24 +17404,32 @@ var recallHandler = async (event) => {
 \u63D0\u793A: \u4F7F\u7528 hawk\u8FC7\u671F \u67E5\u770B\u8BE6\u60C5\uFF0Chawk\u786E\u8BA4 N \u5BF9 \u9A8C\u8BC1\u8BB0\u5FC6`);
       event.messages?.push("\n" + lines.join("\n") + "\n");
     }
+    console.error("[hawk-recall] step2: getConfig");
     const config = await getConfig();
+    console.error("[hawk-recall] step2b: config loaded", { recall: config.recall });
     const { topK, injectEmoji, minScore } = config.recall;
     const sessionEntry = event.context?.sessionEntry;
-    if (!sessionEntry) return;
-    const messages = sessionEntry.messages || [];
     let latestUserMessage = "";
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.role === "user" && msg.content) {
-        latestUserMessage = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
-        break;
+    let sessionId = void 0;
+    if (isMessageSent) {
+      latestUserMessage = event.context?.content ?? "";
+      sessionId = event.context?.conversationId ?? void 0;
+    } else if (sessionEntry) {
+      const messages = sessionEntry.messages || [];
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg.role === "user" && msg.content) {
+          latestUserMessage = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+          break;
+        }
       }
+      sessionId = sessionEntry.sessionId ?? void 0;
+    } else {
+      latestUserMessage = event.context?.workspaceDir ?? "";
     }
     if (!latestUserMessage?.trim()) return;
-    const db2 = getSharedDb();
-    await db2.init();
+    const db2 = await getSharedDb();
     const trimmed = latestUserMessage.trim();
-    const sessionId = sessionEntry.sessionId ?? void 0;
     const ctx = event.context;
     if (m = trimmed.match(MEMORY_LIST_PATTERN)) {
       const category = m[1] || "";
@@ -18384,6 +18399,7 @@ ${formatRecallResults(withReasons, injectEmoji)}
       }
     }
   } catch (err) {
+    console.error("[hawk-recall] CATCH ERROR:", err);
     logger2.error({ err }, "hawk-recall handler error");
     memoryErrors.inc({ type: "recall_handler" });
   }

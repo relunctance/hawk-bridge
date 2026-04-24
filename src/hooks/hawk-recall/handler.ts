@@ -101,8 +101,7 @@ async function getRetriever(): Promise<HybridRetriever> {
   if (!retrieverPromise) {
     retrieverPromise = (async () => {
       const config = await getConfig();
-      const db = getSharedDb();
-      await db.init();
+      const db = await getSharedDb();
       const { Embedder } = await import('../../embeddings.js');
       const embedder = new Embedder(config.embedding);
       const r = new HybridRetriever(db, embedder);
@@ -383,9 +382,18 @@ function checkDriftVerifyQueue(): string[] {
 }
 
 const recallHandler = async (event: HookEvent) => {
-  if (event.type !== 'agent' || event.action !== 'bootstrap') return;
+  // Support: agent:bootstrap (standard) and message:sent (after AI composes response)
+  const isAgentBootstrap = event.type === 'agent' && event.action === 'bootstrap';
+  const isMessageSent = event.type === 'message' && event.action === 'sent';
+  console.error('[hawk-recall] handler called', { type: event.type, action: event.action, isAgentBootstrap, isMessageSent });
+  if (!isAgentBootstrap && !isMessageSent) {
+    console.error('[hawk-recall] rejected: wrong event type');
+    return;
+  }
 
+  console.error('[hawk-recall] passed event check, starting try block');
   try {
+    console.error('[hawk-recall] step1: checkDriftVerifyQueue');
     // Check drift verify queue on every bootstrap
     const pending = checkDriftVerifyQueue();
     if (pending.length > 0) {
@@ -398,26 +406,39 @@ const recallHandler = async (event: HookEvent) => {
       event.messages?.push('\n' + lines.join('\n') + '\n');
     }
 
+    console.error('[hawk-recall] step2: getConfig');
     const config = await getConfig();
+    console.error('[hawk-recall] step2b: config loaded', { recall: config.recall });
     const { topK, injectEmoji, minScore } = config.recall;
     const sessionEntry = event.context?.sessionEntry;
-    if (!sessionEntry) return;
 
-    const messages: any[] = sessionEntry.messages || [];
     let latestUserMessage = '';
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.role === 'user' && msg.content) {
-        latestUserMessage = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-        break;
+    let sessionId: string | undefined = undefined;
+
+    if (isMessageSent) {
+      // message:sent: use the AI's outgoing content as the recall query
+      latestUserMessage = (event.context as any)?.content ?? '';
+      sessionId = (event.context as any)?.conversationId ?? undefined;
+    } else if (sessionEntry) {
+      // agent:bootstrap: extract from session messages
+      const messages: any[] = sessionEntry.messages || [];
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg.role === 'user' && msg.content) {
+          latestUserMessage = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+          break;
+        }
       }
+      sessionId = sessionEntry.sessionId ?? undefined;
+    } else {
+      // agent:bootstrap without sessionEntry: use workspaceDir as query
+      latestUserMessage = (event.context as any)?.workspaceDir ?? '';
     }
+
     if (!latestUserMessage?.trim()) return;
 
-    const db = getSharedDb();
-    await db.init();
+    const db = await getSharedDb();
     const trimmed = latestUserMessage.trim();
-    const sessionId = sessionEntry.sessionId ?? undefined;
     const ctx: any = event.context;
 
     // ─── hawk记忆 [category] [page] ──────────────────────────────────────
@@ -1259,6 +1280,7 @@ const recallHandler = async (event: HookEvent) => {
     }
 
   } catch (err) {
+    console.error('[hawk-recall] CATCH ERROR:', err);
     logger.error({ err }, 'hawk-recall handler error');
     memoryErrors.inc({ type: 'recall_handler' });
   }
