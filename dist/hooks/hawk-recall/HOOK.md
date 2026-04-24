@@ -3,9 +3,13 @@ name: hawk-recall
 description: "Inject relevant hawk memories before agent starts"
 homepage: https://github.com/relunctance/hawk-bridge
 metadata:
-  { "openclaw": { "emoji": "🦅", "events": ["agent:bootstrap", "message:sent"], "requires": {} } }
+  { "openclaw": { "emoji": "🦅", "events": ["agent:bootstrap"], "requires": {} } }
 ---
 
 # hawk-recall
 
 Hybrid search (vector + BM25 + RRF + rerank + noise filter) → inject memories before agent bootstrap.
+
+⚠️ **OpenClaw Hook Event Format**: events MUST use underscore format in plugin registration:
+- ✅ `agent_bootstrap` (underscore)
+- ❌ `agent:bootstrap` (colon — will NOT match gateway hook check)

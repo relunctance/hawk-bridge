@@ -1,4 +1,13 @@
 // hawk-recall hook
+//
+// ⚠️ OpenClaw Hook Event Format IMPORTANT:
+// Events MUST use UNDERSCORE format in openclaw.plugin.json (not colon):
+//   ✅ message_received  ✅ message_sent  ✅ agent_bootstrap
+//   ❌ message:received  ❌ message:sent  ❌ agent:bootstrap
+//
+// Gateway uses hookRunner.hasHooks("message_received") to check (underscore),
+// NOT createInternalHookEvent which uses colon format internally.
+//
 // Triggered on: agent:bootstrap
 // Action: Hybrid search + reliability UX commands
 
