@@ -1,5 +1,11 @@
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
+var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
+  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
+}) : x)(function(x) {
+  if (typeof require !== "undefined") return require.apply(this, arguments);
+  throw Error('Dynamic require of "' + x + '" is not supported');
+});
 var __esm = (fn, res) => function __init() {
   return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
 };
@@ -3457,6 +3463,7 @@ function deepMerge(base, override) {
 }
 
 // src/config.ts
+init_logger();
 var OPENCLAW_CONFIG_PATH = path.join(os.homedir(), ".openclaw", "openclaw.json");
 var OPENCLAW_AGENT_MODELS = path.join(os.homedir(), ".openclaw", "agents", "main", "agent", "models.json");
 var HAWK_CONFIG_DIR = path.join(os.homedir(), ".hawk");
@@ -3560,7 +3567,7 @@ function loadYamlConfig() {
       const resolved = resolveEnvVars(raw);
       return load(resolved);
     } catch (e) {
-      console.warn("[hawk-bridge] Failed to load config.yaml:", e);
+      logger.warn({ err: e }, "[hawk-bridge] Failed to load config.yaml");
     }
   }
   return {};

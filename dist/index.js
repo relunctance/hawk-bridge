@@ -23309,6 +23309,14 @@ function startMetricsServer() {
         return;
       }
     }
+    if (pathname === "/metrics" && METRICS_TOKEN) {
+      const token = queryParams["token"] ?? req.headers["x-hawk-token"] ?? "";
+      if (token !== METRICS_TOKEN) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+    }
     try {
       const recordMetrics = (status) => {
         httpRequestsTotal.inc({ method: req.method || "GET", path: pathname, status: String(status) });
