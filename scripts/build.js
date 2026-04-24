@@ -16,9 +16,9 @@ const EXTERNALS = [
 
 const builds = [
   { entry: 'src/index.ts', out: 'dist/index.js' },
-  { entry: 'src/hooks/hawk-recall/handler.ts', out: 'dist/hooks/hawk-recall/hawk-recall.js' },
-  { entry: 'src/hooks/hawk-capture/handler.ts', out: 'dist/hooks/hawk-capture/hawk-capture.js' },
-  { entry: 'src/hooks/hawk-decay/handler.ts', out: 'dist/hooks/hawk-decay/hawk-decay.js' },
+  { entry: 'src/hooks/hawk-recall/handler.ts', out: 'dist/hooks/hawk-recall/handler.js' },
+  { entry: 'src/hooks/hawk-capture/handler.ts', out: 'dist/hooks/hawk-capture/handler.js' },
+  { entry: 'src/hooks/hawk-decay/handler.ts', out: 'dist/hooks/hawk-decay/handler.js' },
   { entry: 'src/cli/decay.ts', out: 'dist/cli/decay.js' },
   { entry: 'src/cli/verify.ts', out: 'dist/cli/verify.js' },
   { entry: 'src/seed.ts', out: 'dist/seed.js' },
