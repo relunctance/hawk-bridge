@@ -247,6 +247,67 @@ var init_circuit_breaker = __esm({
   }
 });
 
+// src/utils/circuit-breaker.ts
+var CircuitBreaker = class {
+  constructor(threshold = 5, resetMs = 3e4, halfOpenMax = 2) {
+    this.threshold = threshold;
+    this.resetMs = resetMs;
+    this.halfOpenMax = halfOpenMax;
+  }
+  failures = 0;
+  lastFailure = 0;
+  state = "closed";
+  halfOpenCount = 0;
+  async run(fn) {
+    if (this.state === "open") {
+      if (Date.now() - this.lastFailure > this.resetMs) {
+        this.state = "half-open";
+        this.halfOpenCount = 0;
+      } else {
+        throw new CircuitOpenError(`Circuit is open, retry after ${this.resetMs}ms`);
+      }
+    }
+    if (this.state === "half-open") {
+      if (this.halfOpenCount >= this.halfOpenMax) {
+        throw new CircuitOpenError("Circuit half-open limit reached");
+      }
+      this.halfOpenCount++;
+    }
+    try {
+      const result = await fn();
+      this.onSuccess();
+      return result;
+    } catch (e) {
+      this.onFailure();
+      throw e;
+    }
+  }
+  onSuccess() {
+    this.failures = 0;
+    this.state = "closed";
+  }
+  onFailure() {
+    this.failures++;
+    this.lastFailure = Date.now();
+    if (this.failures >= this.threshold) {
+      this.state = "open";
+    }
+  }
+  getStatus() {
+    return {
+      state: this.state,
+      failures: this.failures,
+      lastFailure: this.lastFailure
+    };
+  }
+};
+var CircuitOpenError = class extends Error {
+  constructor(msg) {
+    super(msg);
+    this.name = "CircuitOpenError";
+  }
+};
+
 // src/embeddings.ts
 var embeddings_exports = {};
 __export(embeddings_exports, {
@@ -3551,7 +3612,7 @@ function loadYamlConfig() {
       const resolved = resolveEnvVars(raw);
       return load(resolved);
     } catch (e) {
-      console.warn("[hawk-bridge] Failed to load config.yaml:", e);
+      logger.warn({ err: e }, "[hawk-bridge] Failed to load config.yaml");
     }
   }
   return {};
