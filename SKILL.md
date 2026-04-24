@@ -25,6 +25,10 @@ metadata:
   }
 ---
 
+> ⚠️ **六件套全局认知**：开发任何仓库之前，必须先读
+> [`~/repos/hawk-sla/docs/SYSTEM_MAP.md`](https://github.com/relunctance/hawk-sla/blob/main/docs/SYSTEM_MAP.md)
+> 了解全局定位和协作规则。
+
 # hawk-bridge — OpenClaw 记忆系统 Skill
 
 > **OpenClaw Hook Bridge + context-hawk Python Memory Engine**
