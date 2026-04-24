@@ -14,10 +14,10 @@
     {
       "name": "hawk-capture",
       "events": [
-        "message:sent",
-        "message:received",
-        "message:preprocessed",
-        "session:compact:after"
+        "message_sent",
+        "message_received",
+        "message_preprocessed",
+        "session_compact_after"
       ],
       "description": "Auto-extract and store memories from both inbound user messages and outbound agent responses"
     },
@@ -48,11 +48,11 @@
               "openclaw"
             ],
             "default": "jina",
-            "description": "jina=Jina AI free tier (default, no GPU), qianwen=阿里云 DashScope, ollama=local GPU, openai=paid, cohere=free tier"
+            "description": "jina=Jina AI free tier (default, no GPU), qianwen=\u963f\u91cc\u4e91 DashScope, ollama=local GPU, openai=paid, cohere=free tier"
           },
           "apiKey": {
             "type": "string",
-            "description": "API key — not needed for ollama"
+            "description": "API key \u2014 not needed for ollama"
           },
           "model": {
             "type": "string",
@@ -106,7 +106,7 @@
           },
           "injectEmoji": {
             "type": "string",
-            "default": "🦅"
+            "default": "\ud83e\udd85"
           }
         }
       },
