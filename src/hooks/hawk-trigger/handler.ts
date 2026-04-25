@@ -46,7 +46,7 @@ interface TriggerEvaluateResponse {
 
 // ─── hawk-memory-api HTTP client ─────────────────────────────────────────────────────────
 
-const API_BASE = process.env.HAWK_API_URL || 'http://127.0.0.1:18360';
+const API_BASE = process.env.HAWK_API_URL || 'http://127.0.0.1:18368';
 
 function httpPost(path: string, body: object): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -132,6 +132,12 @@ export async function onMessageReceived(event: HookEvent): Promise<void> {
       context: null,
       include_negative: true,
     }) as TriggerEvaluateResponse;
+
+    // Go binary has no /rules/evaluate endpoint — this will 404
+    // Catch below handles gracefully so hawk-trigger doesn't crash
+    if (!result || !('should_trigger' in result)) {
+      throw new Error('unexpected response shape');
+    }
 
     if (result.should_trigger && result.procedures.length > 0) {
       // Cache the trigger context for hawk-recall to consume

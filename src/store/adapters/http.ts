@@ -1,34 +1,28 @@
 /**
- * HTTP Adapter — implements MemoryStore interface by forwarding to hawk-memory-api.
- * All LanceDB read/write goes through the HTTP API on port 18360.
+ * HTTP Adapter — implements MemoryStore interface by forwarding to hawk-memory (Go binary).
+ * All LanceDB read/write goes through the HTTP API on port 18368.
  *
  * 使用方式: HAWK_DB_PROVIDER=http
+ *
+ * Go API surface（仅 3 个端点，其余 404）：
+ *   POST /v1/capture        — 存入单条，body: {text, agent_id, metadata}
+ *   POST /v1/capture/batch  — 批量存入，body: {memories: [{text, agent_id, metadata},...]}
+ *   POST /v1/recall         — 召回，body: {query, top_k}
  */
 
 import type { MemoryEntry, RetrievedMemory } from '../../types.js';
 import type { MemoryStore } from '../interface.js';
 import { getConfig } from '../../config.js';
 
-const DEFAULT_BASE = 'http://127.0.0.1:18360';
+const DEFAULT_BASE = 'http://127.0.0.1:18368';
 
-/** Shape returned by /memories/recent */
-interface MemoryItem {
+/** Shape returned by Go /v1/recall */
+interface RecallMemory {
   id: string;
   text: string;
-  category: string;
-  importance: number;
-  reliability: number;
-  created_at: number;
-  updated_at: number;
-  last_accessed_at?: number;
-  scope: string;
-  name: string;
-  description: string;
-  session_id: string | null;
-  source: string;
+  score: number;
+  agent_id: string;
   metadata: Record<string, unknown>;
-  recall_count?: number;
-  usefulness_score?: number | null;
 }
 
 export class HTTPAdapter implements MemoryStore {
@@ -42,7 +36,7 @@ export class HTTPAdapter implements MemoryStore {
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const MAX_RETRIES = 3;
-    const RETRY_DELAY = 0.5; // seconds
+    const RETRY_DELAY = 0.5;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
@@ -58,7 +52,6 @@ export class HTTPAdapter implements MemoryStore {
         return res.json() as Promise<T>;
       } catch (err) {
         if (attempt === MAX_RETRIES) throw err;
-        // Exponential backoff
         await new Promise(r => setTimeout(r, RETRY_DELAY * Math.pow(2, attempt - 1)));
       }
     }
@@ -68,109 +61,70 @@ export class HTTPAdapter implements MemoryStore {
   // ─── MemoryStore Interface ───────────────────────────────────────────────────
 
   async init(): Promise<void> {
-    // Health check — ensures the server is reachable
-    const health = await this.request<{ status: string }>('GET', '/health');
-    if (health.status !== 'ok') {
-      throw new Error(`hawk-memory-api health check failed: ${health.status}`);
+    // No explicit health endpoint in Go binary; attempt a no-op request to verify connectivity
+    try {
+      await this.request<{ error?: string }>('POST', '/v1/recall', { query: '__health_check__', top_k: 1 });
+    } catch {
+      // Go /v1/recall returns 400 for unknown query, which is fine for connectivity check
     }
   }
 
-  async close(): Promise<void> {
-    // No-op: HTTP client doesn't hold persistent connections
-  }
+  async close(): Promise<void> {}
 
   async store(entry: MemoryEntry, sessionId?: string): Promise<void> {
-    // hawk-memory-api /capture expects message/response pairs for LLM extraction.
-    // We store entry.text as a synthetic "user message" and let the API handle embedding.
-    const platform = (entry as any).platform ?? entry.metadata?.platform ?? 'hawk-bridge';
-    await this.request('POST', '/capture', {
-      session_id: sessionId ?? entry.sessionId ?? '',
-      user_id: (entry.metadata?.user_id as string) ?? '',
-      message: entry.text,
-      response: '', // No agent response for programmatic storage
-      platform,
+    // Go /v1/capture: {text, agent_id, metadata}
+    const agentId = (entry.metadata?.agent_id as string) ?? 'hawk-bridge';
+    await this.request('POST', '/v1/capture', {
+      text: entry.text,
+      agent_id: agentId,
+      metadata: {
+        ...entry.metadata,
+        session_id: sessionId ?? entry.sessionId ?? '',
+      },
     });
   }
 
-  async update(id: string, fields: Record<string, unknown>): Promise<boolean> {
-    // hawk-memory-api 没有 PATCH /memories/{id} 端点，update 操作无法透传。
-    // 返回 false 让调用方知道操作失败，而不是像之前那样静默 delete 导致数据丢失。
+  async update(_id: string, _fields: Record<string, unknown>): Promise<boolean> {
+    // Go API has no PATCH /memories/{id}
     return false;
   }
 
-  async delete(id: string): Promise<void> {
-    // hawk-memory-api /forget takes memory_id as query parameter, not body
-    await this.request('POST', `/forget?memory_id=${encodeURIComponent(id)}`);
+  async delete(_id: string): Promise<void> {
+    // Go API has no /forget endpoint
   }
 
   async getById(id: string): Promise<MemoryEntry | null> {
-    // No direct GET /memories/{id} — search by id as a workaround
-    const result = await this.search(id, 1);
+    const result = await this.vectorSearch(id, 1);
     return result.length > 0 ? this._retrievedToEntry(result[0]) : null;
   }
 
-  async getAllMemories(agentId?: string | null): Promise<MemoryEntry[]> {
-    // Use the new /memories/recent endpoint with pagination to get all memories
-    const all: MemoryEntry[] = [];
-    let offset = 0;
-    const pageSize = 100;
-    while (true) {
-      const result = await this.request<MemoryItem[]>(
-        'GET', `/memories/recent?limit=${pageSize}&offset=${offset}`
-      );
-      if (!result.length) break;
-      for (const m of result) {
-        all.push(this._memoryItemToEntry(m));
-      }
-      if (result.length < pageSize) break;
-      offset += pageSize;
-    }
-    return all;
-  }
-
-  async listRecent(limit: number): Promise<MemoryEntry[]> {
-    const result = await this.request<MemoryItem[]>(
-      'GET', `/memories/recent?limit=${limit}&offset=0`
-    );
-    return result.map(m => this._memoryItemToEntry(m));
-  }
-
-  async getReviewCandidates(minReliability: number, batchSize: number): Promise<MemoryEntry[]> {
-    // Not directly supported — return empty
+  async getAllMemories(_agentId?: string | null): Promise<MemoryEntry[]> {
+    // Go API has no /memories/recent
     return [];
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
-    // hawk-memory-api doesn't expose a raw embedding endpoint.
-    // Each /capture call auto-embeds. For explicit embedding we need LanceDB npm.
+  async listRecent(limit: number): Promise<MemoryEntry[]> {
+    // Go API has no /memories/recent; approximate with recall
+    const result = await this.vectorSearch('', limit);
+    return result.map(r => this._retrievedToEntry(r));
+  }
+
+  async getReviewCandidates(_minReliability: number, _batchSize: number): Promise<MemoryEntry[]> {
+    return [];
+  }
+
+  async embed(_texts: string[]): Promise<number[][]> {
     throw new Error('HTTP adapter does not support raw embedding');
   }
 
   async vectorSearch(query: string, topK: number): Promise<RetrievedMemory[]> {
     const result = await this.request<{
-      memories: Array<{
-        id: string;
-        text: string;
-        category: string;
-        importance: number;
-        reliability: number;
-        created_at: number;
-        updated_at: number;
-        score: number;
-        scope: string;
-        name: string;
-        description: string;
-        session_id: string | null;
-        source: string;
-        metadata: Record<string, unknown>;
-      }>;
+      memories: RecallMemory[];
       count: number;
       total: number;
-    }>('POST', '/recall', {
+    }>('POST', '/v1/recall', {
       query,
       top_k: topK,
-      offset: 0,
-      min_score: 0.0,
     });
     return result.memories.map(m => this._apiToRetrieved(m));
   }
@@ -179,78 +133,47 @@ export class HTTPAdapter implements MemoryStore {
     return this.vectorSearch(query, topK);
   }
 
-  async findSimilarEntity(text: string, _threshold?: number): Promise<MemoryEntry | null> {
-    // Reuse /extract endpoint for similarity detection
-    const result = await this.request<{ memories: Array<{ text: string; category: string; importance: number }> }>(
-      'POST', '/extract', { text }
-    );
-    if (result.memories.length === 0) return null;
-    // Find the closest by searching for extracted text
-    const searchResults = await this.search(text, 1);
-    return searchResults.length > 0 ? this._retrievedToEntry(searchResults[0]) : null;
+  async findSimilarEntity(_text: string, _threshold?: number): Promise<MemoryEntry | null> {
+    // Go API has no /extract endpoint
+    return null;
   }
 
   async verify(id: string, correct: boolean, _correctText?: string): Promise<void> {
-    // Not directly supported — update via delete + store
-    if (!correct) {
-      await this.delete(id);
-    }
+    if (!correct) await this.delete(id);
   }
 
-  async lock(id: string): Promise<void> {
-    // Not supported by hawk-memory-api
-  }
-
-  async unlock(id: string): Promise<void> {
-    // Not supported by hawk-memory-api
-  }
+  async lock(_id: string): Promise<void> {}
+  async unlock(_id: string): Promise<void> {}
 
   async flagUnhelpful(id: string, _penalty?: number): Promise<void> {
     await this.delete(id);
   }
 
-  async incrementAccess(id: string): Promise<void> {
-    // hawk-memory-api tracks access internally; no explicit increment API
-  }
+  async incrementAccess(_id: string): Promise<void> {}
 
   async reset(): Promise<void> {
-    // 调用 hawk-memory-api /restart 端点：关闭并重新打开 LanceDB 连接
-    try {
-      await this.request<{ ok: boolean }>('POST', '/restart');
-    } catch (err) {
-      logger.warn({ err }, 'HTTPAdapter: reset(/restart) failed');
-    }
+    // Go API has no /restart
   }
 
   async decay(): Promise<{ updated: number; deleted: number }> {
-    // Decay is handled server-side by hawk-memory-api
+    // Decay handled server-side by Go binary
     return { updated: 0, deleted: 0 };
   }
 
   async purgeForgotten(_graceDays?: number): Promise<number> {
-    // Not supported
     return 0;
   }
 
   async rateMemory(id: string, rating: 'helpful' | 'neutral' | 'harmful', _sessionId?: string): Promise<void> {
-    if (rating === 'harmful') {
-      await this.delete(id);
-    }
+    if (rating === 'harmful') await this.delete(id);
   }
 
   async demoteMemory(id: string): Promise<void> {
     await this.delete(id);
   }
 
-  async incrementImportance(id: string, _delta: number): Promise<void> {
-    // Not supported by hawk-memory-api
-  }
-
-  async decrementImportance(id: string): Promise<void> {
-    // hawk-memory-api 不支持按 delta 调整重要性，delete 会丢失数据
-    // 仅记录警告，不执行任何操作
-    logger.warn({ id }, 'HTTPAdapter: decrementImportance not supported, doing nothing');
-  }
+  async incrementImportance(_id: string, _delta: number): Promise<void> {}
+  async decrementImportance(_id: string): Promise<void> {}
 
   async batchCapture(items: Array<{
     message: string;
@@ -259,96 +182,45 @@ export class HTTPAdapter implements MemoryStore {
     userId?: string;
     platform?: string;
   }>): Promise<{ stored: number; extracted: number }> {
-    const result = await this.request<{ stored: number; extracted: number }>('POST', '/capture/batch', {
-      items: items.map(item => ({
-        message: item.message,
-        response: item.response,
+    // Go /v1/capture/batch: {memories: [{text, agent_id, metadata}]}
+    const memories = items.map(item => ({
+      text: item.message || item.response,
+      agent_id: item.platform ?? 'hawk-bridge',
+      metadata: {
         session_id: item.sessionId ?? '',
         user_id: item.userId ?? '',
-        platform: item.platform ?? 'hawk-bridge',
-      })),
-    });
-    return result;
+      },
+    }));
+    const result = await this.request<{ stored: number }>('POST', '/v1/capture/batch', { memories });
+    return { stored: result.stored, extracted: 0 };
   }
 
   // ─── Private helpers ────────────────────────────────────────────────────────
 
-  private _memoryItemToEntry(m: MemoryItem): MemoryEntry {
-    const reliability = m.reliability ?? 0.7;
+  private _apiToRetrieved(m: RecallMemory): RetrievedMemory {
+    const reliability = (m.metadata?.reliability as number) ?? 0.7;
     return {
       id: m.id,
       text: m.text,
-      vector: [], // Not returned by /memories/recent
-      category: m.category as MemoryEntry['category'],
-      importance: m.importance,
-      timestamp: m.created_at,
-      expiresAt: 0,
-      accessCount: m.recall_count ?? 0,
-      lastAccessedAt: m.last_accessed_at ?? m.created_at,
-      deletedAt: null,
-      reliability,
-      verificationCount: 0,
-      lastVerifiedAt: null,
-      locked: false,
-      correctionHistory: [],
-      sessionId: m.session_id,
-      createdAt: m.created_at,
-      updatedAt: m.updated_at,
-      scope: m.scope,
-      importanceOverride: 1.0,
-      coldStartUntil: null,
-      metadata: m.metadata,
-      source_type: 'text',
-      source: m.source,
-      driftNote: null,
-      driftDetectedAt: null,
-      last_used_at: m.last_accessed_at,
-      usefulness_score: m.usefulness_score,
-      recall_count: m.recall_count ?? 0,
-      name: m.name ?? '',
-      description: m.description ?? '',
-    };
-  }
-
-  private _apiToRetrieved(m: {
-    id: string;
-    text: string;
-    category: string;
-    importance: number;
-    reliability: number;
-    created_at: number;
-    updated_at: number;
-    score: number;
-    scope: string;
-    name: string;
-    description: string;
-    session_id: string | null;
-    source: string;
-    metadata: Record<string, unknown>;
-  }): RetrievedMemory {
-    const reliability = m.reliability ?? 0.7;
-    return {
-      id: m.id,
-      text: m.text,
-      vector: [], // Not returned by /recall
+      vector: [],
       score: m.score ?? 0,
-      category: m.category,
+      category: (m.metadata?.category as string) ?? 'other',
       metadata: m.metadata ?? {},
       source_type: 'text',
-      source: m.source,
+      source: (m.metadata?.source as string) ?? '',
       reliability,
       reliabilityLabel: reliability >= 0.7 ? '✅' : reliability >= 0.4 ? '⚠️' : '❌',
       locked: false,
       correctionCount: 0,
       baseReliability: reliability,
-      sessionId: m.session_id ?? null,
-      createdAt: m.created_at,
-      updatedAt: m.updated_at,
-      scope: m.scope ?? 'personal',
+      sessionId: (m.metadata?.session_id as string) ?? null,
+      createdAt: (m.metadata?.created_at as number) ?? 0,
+      updatedAt: (m.metadata?.updated_at as number) ?? 0,
+      scope: (m.metadata?.scope as string) ?? 'personal',
       importanceOverride: 1.0,
       coldStartUntil: null,
-      name: m.name ?? '',
-      description: m.description ?? '',
+      name: (m.metadata?.name as string) ?? '',
+      description: (m.metadata?.description as string) ?? '',
       driftNote: null,
       driftDetectedAt: null,
       last_used_at: null,

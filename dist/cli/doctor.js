@@ -3245,7 +3245,7 @@ var init_config = __esm({
         pythonPath: "python3",
         hawkDir: "~/.openclaw/hawk",
         httpMode: false,
-        httpBase: "http://127.0.0.1:18360"
+        httpBase: "http://127.0.0.1:18368"
       }
     };
     configPromise = null;

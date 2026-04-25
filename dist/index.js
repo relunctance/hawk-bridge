@@ -62,22 +62,22 @@ function patchConsole() {
   const origWarn = console.warn.bind(console);
   const origLog = console.log.bind(console);
   console.error = (...args) => {
-    logger2.error({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+    logger.error({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
   };
   console.warn = (...args) => {
-    logger2.warn({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+    logger.warn({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
   };
   console.log = (...args) => {
-    logger2.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
   };
   console.info = (...args) => {
-    logger2.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+    logger.info({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
   };
   console.debug = (...args) => {
-    logger2.debug({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
+    logger.debug({ ctx: "console" }, ...args.map((v) => typeof v === "string" ? v : JSON.stringify(v)));
   };
 }
-var LOG_DIR, LOG_FILE_BASE, MAX_FILE_SIZE, MAX_FILES, RotatingFileStream, rotatingStream, logLevel, logger2;
+var LOG_DIR, LOG_FILE_BASE, MAX_FILE_SIZE, MAX_FILES, RotatingFileStream, rotatingStream, logLevel, logger;
 var init_logger = __esm({
   "src/logger.ts"() {
     "use strict";
@@ -157,7 +157,7 @@ var init_logger = __esm({
     if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
     rotatingStream = new RotatingFileStream(LOG_FILE_BASE);
     logLevel = process.env.HAWK__LOGGING__LEVEL || process.env.HAWK_LOG_LEVEL || "info";
-    logger2 = pino({
+    logger = pino({
       level: logLevel,
       formatters: {
         level: (label) => ({ level: label })
@@ -300,11 +300,11 @@ async function fetchWithRetry(url2, options = {}, retries = 3) {
       const isNetworkError = err?.message?.includes("timeout") || err?.message?.includes("ECONNREFUSED") || err?.message?.includes("ENOTFOUND") || err?.message?.includes("socket hang up") || err?.code === "ECONNREFUSED" || err?.code === "ENOTFOUND" || err?.code === "ETIMEDOUT";
       if (isNetworkError && attempt < retries) {
         const delay = 500 * Math.pow(2, attempt - 1);
-        logger2.warn({ attempt, retries, delayMs: delay, url: url2, error: err.message }, "fetchWithRetry: retrying after network error");
+        logger.warn({ attempt, retries, delayMs: delay, url: url2, error: err.message }, "fetchWithRetry: retrying after network error");
         await new Promise((res) => setTimeout(res, delay));
       } else if (attempt < retries && err?.message?.includes("status code 5")) {
         const delay = 500 * Math.pow(2, attempt - 1);
-        logger2.warn({ attempt, retries, delayMs: delay, url: url2, error: err.message }, "fetchWithRetry: retrying after 5xx error");
+        logger.warn({ attempt, retries, delayMs: delay, url: url2, error: err.message }, "fetchWithRetry: retrying after 5xx error");
         await new Promise((res) => setTimeout(res, delay));
       } else {
         throw err;
@@ -14900,7 +14900,7 @@ function printDeprecationWarnings() {
   deprecationWarningsPrinted = true;
   for (const { var: v, message } of DEPRECATED_VARS) {
     if (process.env[v] !== void 0) {
-      logger2.warn({ var: v }, `DEPRECATED: ${v} is deprecated. ${message}`);
+      logger.warn({ var: v }, `DEPRECATED: ${v} is deprecated. ${message}`);
     }
   }
 }
@@ -15125,7 +15125,7 @@ var DEFAULT_CONFIG = {
     pythonPath: "python3",
     hawkDir: "~/.openclaw/hawk",
     httpMode: false,
-    httpBase: "http://127.0.0.1:18360"
+    httpBase: "http://127.0.0.1:18368"
   }
 };
 function resolveEnvVars(raw) {
@@ -15364,16 +15364,16 @@ var LanceDBAdapter = class {
           const { Index } = await import("@lancedb/lancedb");
           await this.table.createIndex("text", Index.fts());
         } catch (err) {
-          logger2.error({ err: err?.message }, "FTS index creation failed \u2014 search will fall back to full-table scan; rebuild with: npx hawk-bridge rebuild-index");
+          logger.error({ err: err?.message }, "FTS index creation failed \u2014 search will fall back to full-table scan; rebuild with: npx hawk-bridge rebuild-index");
         }
       } else {
         this.table = await this.db.openTable(TABLE_NAME);
         try {
           const { Index } = await import("@lancedb/lancedb");
           await this.table.createIndex("text", Index.fts());
-          logger2.info("FTS index ensured on text column");
+          logger.info("FTS index ensured on text column");
         } catch (err) {
-          logger2.warn({ err: err?.message }, "FTS index creation warning (index may already exist \u2014 search quality unaffected if FTS was previously built)");
+          logger.warn({ err: err?.message }, "FTS index creation warning (index may already exist \u2014 search quality unaffected if FTS was previously built)");
         }
         try {
           const schema2 = await this.table.describe();
@@ -15416,7 +15416,7 @@ var LanceDBAdapter = class {
         }
       }
     } catch (err) {
-      logger2.error({ err }, "LanceDB init failed");
+      logger.error({ err }, "LanceDB init failed");
       throw err;
     }
   }
@@ -15436,7 +15436,7 @@ var LanceDBAdapter = class {
     const tableNames = await this.db.tableNames();
     if (tableNames.includes(TABLE_NAME)) {
       await this.db.dropTable(TABLE_NAME);
-      logger2.info({ table: TABLE_NAME }, "Dropped table");
+      logger.info({ table: TABLE_NAME }, "Dropped table");
     }
     this.table = null;
   }
@@ -15755,7 +15755,7 @@ var LanceDBAdapter = class {
       await this.table.update(args, { where });
       return true;
     } catch (err) {
-      logger2.warn({ err, id }, "LanceDBAdapter.update failed");
+      logger.warn({ err, id }, "LanceDBAdapter.update failed");
       return false;
     }
   }
@@ -15936,7 +15936,7 @@ var LanceDBAdapter = class {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch (err) {
-      logger2.warn({ err }, "lock failed");
+      logger.warn({ err }, "lock failed");
     }
   }
   async unlock(id) {
@@ -15947,7 +15947,7 @@ var LanceDBAdapter = class {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch (err) {
-      logger2.warn({ err }, "unlock failed");
+      logger.warn({ err }, "unlock failed");
     }
   }
   async flagUnhelpful(id, penalty = 0.05) {
@@ -15962,7 +15962,7 @@ var LanceDBAdapter = class {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch (err) {
-      logger2.warn({ err }, "flagUnhelpful failed");
+      logger.warn({ err }, "flagUnhelpful failed");
     }
   }
   async incrementAccess(id) {
@@ -16200,12 +16200,12 @@ var LanceDBAdapter = class {
         body: JSON.stringify({ query, texts, model: rerankModel })
       });
       if (!resp.ok) {
-        logger2.warn({ status: resp.status }, "Rerank endpoint returned error, skipping rerank");
+        logger.warn({ status: resp.status }, "Rerank endpoint returned error, skipping rerank");
         return results;
       }
       const data = await resp.json();
       if (!Array.isArray(data.results)) {
-        logger2.warn({ data }, "Unexpected rerank response format, skipping");
+        logger.warn({ data }, "Unexpected rerank response format, skipping");
         return results;
       }
       const scoreMap = /* @__PURE__ */ new Map();
@@ -16213,10 +16213,10 @@ var LanceDBAdapter = class {
         scoreMap.set(item.index, item.relevance_score ?? 0);
       }
       const reranked = results.map((r, idx) => ({ r, score: scoreMap.get(idx) ?? 0 })).sort((a, b) => b.score - a.score).map(({ r }) => r);
-      logger2.debug({ reranked: reranked.length }, "Reranking applied");
+      logger.debug({ reranked: reranked.length }, "Reranking applied");
       return reranked;
     } catch (err) {
-      logger2.warn({ err }, "Reranking failed, returning original results");
+      logger.warn({ err }, "Reranking failed, returning original results");
       return results;
     }
   }
@@ -16284,7 +16284,7 @@ var LanceDBAdapter = class {
       const memory = await this.getById(id);
       if (!memory) return false;
       if (memory.locked) {
-        logger2.warn({ memoryId: id }, "Cannot forget locked memory");
+        logger.warn({ memoryId: id }, "Cannot forget locked memory");
         return false;
       }
       await this.table.update(
@@ -16293,7 +16293,7 @@ var LanceDBAdapter = class {
       );
       return true;
     } catch (err) {
-      logger2.warn({ err }, "forget failed");
+      logger.warn({ err }, "forget failed");
       return false;
     }
   }
@@ -16320,7 +16320,7 @@ var LanceDBAdapter = class {
       );
       return true;
     } catch (err) {
-      logger2.warn({ err }, "verifyMemory failed");
+      logger.warn({ err }, "verifyMemory failed");
       return false;
     }
   }
@@ -16389,7 +16389,7 @@ var LanceDBAdapter = class {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch (e) {
-      logger2.warn({ err: e }, "rateMemory update failed");
+      logger.warn({ err: e }, "rateMemory update failed");
       return;
     }
     if (rating === "harmful") {
@@ -16406,7 +16406,7 @@ var LanceDBAdapter = class {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch (e) {
-      logger2.warn({ err: e, memoryId: id }, "demoteMemory failed");
+      logger.warn({ err: e, memoryId: id }, "demoteMemory failed");
     }
   }
   async incrementImportance(id, delta) {
@@ -16420,7 +16420,7 @@ var LanceDBAdapter = class {
         { where: `id = '${id.replace(/'/g, "''")}'` }
       );
     } catch (e) {
-      logger2.warn({ err: e, memoryId: id }, "incrementImportance failed");
+      logger.warn({ err: e, memoryId: id }, "incrementImportance failed");
     }
   }
   async batchCapture(items) {
@@ -16489,7 +16489,7 @@ var LanceDBAdapter = class {
         totalStored++;
       }
     }
-    logger2.info({ items: items.length, extracted: totalExtracted, stored: totalStored }, "batchCapture complete");
+    logger.info({ items: items.length, extracted: totalExtracted, stored: totalStored }, "batchCapture complete");
     return { stored: totalStored, extracted: totalExtracted };
   }
   /**
@@ -16539,14 +16539,14 @@ ${conversation}
         return { memories: Array.isArray(parsed.memories) ? parsed.memories : [] };
       }
     } catch (err) {
-      logger2.warn({ err }, "batchCapture _extractMemories failed");
+      logger.warn({ err }, "batchCapture _extractMemories failed");
     }
     return { memories: [] };
   }
 };
 
 // src/store/adapters/http.ts
-var DEFAULT_BASE = "http://127.0.0.1:18360";
+var DEFAULT_BASE = "http://127.0.0.1:18368";
 var HTTPAdapter = class {
   baseUrl;
   constructor(baseUrl) {
@@ -16578,107 +16578,72 @@ var HTTPAdapter = class {
   }
   // ─── MemoryStore Interface ───────────────────────────────────────────────────
   async init() {
-    const health = await this.request("GET", "/health");
-    if (health.status !== "ok") {
-      throw new Error(`hawk-memory-api health check failed: ${health.status}`);
+    try {
+      await this.request("POST", "/v1/recall", { query: "__health_check__", top_k: 1 });
+    } catch {
     }
   }
   async close() {
   }
   async store(entry, sessionId) {
-    const platform = entry.platform ?? entry.metadata?.platform ?? "hawk-bridge";
-    await this.request("POST", "/capture", {
-      session_id: sessionId ?? entry.sessionId ?? "",
-      user_id: entry.metadata?.user_id ?? "",
-      message: entry.text,
-      response: "",
-      // No agent response for programmatic storage
-      platform
+    const agentId = entry.metadata?.agent_id ?? "hawk-bridge";
+    await this.request("POST", "/v1/capture", {
+      text: entry.text,
+      agent_id: agentId,
+      metadata: {
+        ...entry.metadata,
+        session_id: sessionId ?? entry.sessionId ?? ""
+      }
     });
   }
-  async update(id, fields) {
+  async update(_id, _fields) {
     return false;
   }
-  async delete(id) {
-    await this.request("POST", `/forget?memory_id=${encodeURIComponent(id)}`);
+  async delete(_id) {
   }
   async getById(id) {
-    const result = await this.search(id, 1);
+    const result = await this.vectorSearch(id, 1);
     return result.length > 0 ? this._retrievedToEntry(result[0]) : null;
   }
-  async getAllMemories(agentId) {
-    const all3 = [];
-    let offset = 0;
-    const pageSize = 100;
-    while (true) {
-      const result = await this.request(
-        "GET",
-        `/memories/recent?limit=${pageSize}&offset=${offset}`
-      );
-      if (!result.length) break;
-      for (const m of result) {
-        all3.push(this._memoryItemToEntry(m));
-      }
-      if (result.length < pageSize) break;
-      offset += pageSize;
-    }
-    return all3;
-  }
-  async listRecent(limit) {
-    const result = await this.request(
-      "GET",
-      `/memories/recent?limit=${limit}&offset=0`
-    );
-    return result.map((m) => this._memoryItemToEntry(m));
-  }
-  async getReviewCandidates(minReliability, batchSize) {
+  async getAllMemories(_agentId) {
     return [];
   }
-  async embed(texts) {
+  async listRecent(limit) {
+    const result = await this.vectorSearch("", limit);
+    return result.map((r) => this._retrievedToEntry(r));
+  }
+  async getReviewCandidates(_minReliability, _batchSize) {
+    return [];
+  }
+  async embed(_texts) {
     throw new Error("HTTP adapter does not support raw embedding");
   }
   async vectorSearch(query, topK) {
-    const result = await this.request("POST", "/recall", {
+    const result = await this.request("POST", "/v1/recall", {
       query,
-      top_k: topK,
-      offset: 0,
-      min_score: 0
+      top_k: topK
     });
     return result.memories.map((m) => this._apiToRetrieved(m));
   }
   async search(query, topK, _scope) {
     return this.vectorSearch(query, topK);
   }
-  async findSimilarEntity(text, _threshold) {
-    const result = await this.request(
-      "POST",
-      "/extract",
-      { text }
-    );
-    if (result.memories.length === 0) return null;
-    const searchResults = await this.search(text, 1);
-    return searchResults.length > 0 ? this._retrievedToEntry(searchResults[0]) : null;
+  async findSimilarEntity(_text, _threshold) {
+    return null;
   }
   async verify(id, correct, _correctText) {
-    if (!correct) {
-      await this.delete(id);
-    }
+    if (!correct) await this.delete(id);
   }
-  async lock(id) {
+  async lock(_id) {
   }
-  async unlock(id) {
+  async unlock(_id) {
   }
   async flagUnhelpful(id, _penalty) {
     await this.delete(id);
   }
-  async incrementAccess(id) {
+  async incrementAccess(_id) {
   }
   async reset() {
-    try {
-      await this.request("POST", "/restart");
-    } catch (err) {
-      logger.warn({ err }, "HTTPAdapter: reset(/restart) failed");
-    }
   }
   async decay() {
     return { updated: 0, deleted: 0 };
@@ -16687,93 +16652,52 @@ var HTTPAdapter = class {
     return 0;
   }
   async rateMemory(id, rating, _sessionId) {
-    if (rating === "harmful") {
-      await this.delete(id);
-    }
+    if (rating === "harmful") await this.delete(id);
   }
   async demoteMemory(id) {
     await this.delete(id);
   }
-  async incrementImportance(id, _delta) {
+  async incrementImportance(_id, _delta) {
   }
-  async decrementImportance(id) {
-    logger.warn({ id }, "HTTPAdapter: decrementImportance not supported, doing nothing");
+  async decrementImportance(_id) {
   }
   async batchCapture(items) {
-    const result = await this.request("POST", "/capture/batch", {
-      items: items.map((item) => ({
-        message: item.message,
-        response: item.response,
+    const memories = items.map((item) => ({
+      text: item.message || item.response,
+      agent_id: item.platform ?? "hawk-bridge",
+      metadata: {
         session_id: item.sessionId ?? "",
-        user_id: item.userId ?? "",
-        platform: item.platform ?? "hawk-bridge"
-      }))
-    });
-    return result;
+        user_id: item.userId ?? ""
+      }
+    }));
+    const result = await this.request("POST", "/v1/capture/batch", { memories });
+    return { stored: result.stored, extracted: 0 };
   }
   // ─── Private helpers ────────────────────────────────────────────────────────
-  _memoryItemToEntry(m) {
-    const reliability = m.reliability ?? 0.7;
-    return {
-      id: m.id,
-      text: m.text,
-      vector: [],
-      // Not returned by /memories/recent
-      category: m.category,
-      importance: m.importance,
-      timestamp: m.created_at,
-      expiresAt: 0,
-      accessCount: m.recall_count ?? 0,
-      lastAccessedAt: m.last_accessed_at ?? m.created_at,
-      deletedAt: null,
-      reliability,
-      verificationCount: 0,
-      lastVerifiedAt: null,
-      locked: false,
-      correctionHistory: [],
-      sessionId: m.session_id,
-      createdAt: m.created_at,
-      updatedAt: m.updated_at,
-      scope: m.scope,
-      importanceOverride: 1,
-      coldStartUntil: null,
-      metadata: m.metadata,
-      source_type: "text",
-      source: m.source,
-      driftNote: null,
-      driftDetectedAt: null,
-      last_used_at: m.last_accessed_at,
-      usefulness_score: m.usefulness_score,
-      recall_count: m.recall_count ?? 0,
-      name: m.name ?? "",
-      description: m.description ?? ""
-    };
-  }
   _apiToRetrieved(m) {
-    const reliability = m.reliability ?? 0.7;
+    const reliability = m.metadata?.reliability ?? 0.7;
     return {
       id: m.id,
       text: m.text,
       vector: [],
-      // Not returned by /recall
       score: m.score ?? 0,
-      category: m.category,
+      category: m.metadata?.category ?? "other",
       metadata: m.metadata ?? {},
       source_type: "text",
-      source: m.source,
+      source: m.metadata?.source ?? "",
       reliability,
       reliabilityLabel: reliability >= 0.7 ? "\u2705" : reliability >= 0.4 ? "\u26A0\uFE0F" : "\u274C",
       locked: false,
       correctionCount: 0,
       baseReliability: reliability,
-      sessionId: m.session_id ?? null,
-      createdAt: m.created_at,
-      updatedAt: m.updated_at,
-      scope: m.scope ?? "personal",
+      sessionId: m.metadata?.session_id ?? null,
+      createdAt: m.metadata?.created_at ?? 0,
+      updatedAt: m.metadata?.updated_at ?? 0,
+      scope: m.metadata?.scope ?? "personal",
       importanceOverride: 1,
       coldStartUntil: null,
-      name: m.name ?? "",
-      description: m.description ?? "",
+      name: m.metadata?.name ?? "",
+      description: m.metadata?.description ?? "",
       driftNote: null,
       driftDetectedAt: null,
       last_used_at: null,
@@ -16855,7 +16779,7 @@ var HybridRetriever = class {
   // ---------- Noise Prototype Setup ----------
   async buildNoisePrototypes() {
     if (!hasEmbeddingProvider()) {
-      logger2.info("No embedding provider, skipping noise prototypes");
+      logger.info("No embedding provider, skipping noise prototypes");
       return;
     }
     const noiseTexts = [
@@ -16881,7 +16805,7 @@ var HybridRetriever = class {
         this.noisePrototypes = await this.embedder.embed(noiseTexts);
       }
     } catch (e) {
-      logger2.warn({ err: e.message }, "Noise prototype embedding failed, noise filter disabled");
+      logger.warn({ err: e.message }, "Noise prototype embedding failed, noise filter disabled");
     }
   }
   isNoise(embedding) {
@@ -17043,10 +16967,10 @@ var HybridRetriever = class {
         }
         return results;
       } catch (err) {
-        logger2.warn({ err }, "Vector search failed, falling back to FTS-only");
+        logger.warn({ err }, "Vector search failed, falling back to FTS-only");
       }
     }
-    logger2.info("Running in FTS-only mode (LanceDB native full-text search)");
+    logger.info("Running in FTS-only mode (LanceDB native full-text search)");
     try {
       const ftsResults = await this.db.ftsSearch(query, topK * 3, scope, sourceTypes, platform);
       const idToScore = new Map(ftsResults.map((r) => [r.id, r.score]));
@@ -17069,7 +16993,7 @@ var HybridRetriever = class {
       }
       return results;
     } catch (err) {
-      logger2.error({ err }, "FTS search failed");
+      logger.error({ err }, "FTS search failed");
       return [];
     }
   }
@@ -17090,7 +17014,7 @@ init_embeddings();
 // src/hooks/hawk-trigger/handler.ts
 init_logger();
 import * as http2 from "http";
-var API_BASE = process.env.HAWK_API_URL || "http://127.0.0.1:18360";
+var API_BASE = process.env.HAWK_API_URL || "http://127.0.0.1:18368";
 function httpPost(path5, body) {
   return new Promise((resolve, reject) => {
     const url2 = new URL(path5, API_BASE);
@@ -17146,13 +17070,16 @@ async function onMessageReceived(event) {
   const sessionId = event.data?.session_id ?? event.data?.sessionId ?? event.context?.sessionId ?? "default";
   const query = typeof message === "string" ? message : String(message);
   if (!query.trim()) return;
-  logger2.debug(`[hawk-trigger] evaluating session=${sessionId} query=${query.slice(0, 80)}`);
+  logger.debug(`[hawk-trigger] evaluating session=${sessionId} query=${query.slice(0, 80)}`);
   try {
     const result = await httpPost("/rules/evaluate", {
       query,
       context: null,
       include_negative: true
     });
+    if (!result || !("should_trigger" in result)) {
+      throw new Error("unexpected response shape");
+    }
     if (result.should_trigger && result.procedures.length > 0) {
       _triggerCache.set(sessionId, {
         sessionId,
@@ -17160,15 +17087,15 @@ async function onMessageReceived(event) {
         response: result,
         timestamp: Date.now()
       });
-      logger2.info(
+      logger.info(
         `[hawk-trigger] triggered rules=${result.matched_rule_ids.join(",")} procedures=${result.procedures.length} session=${sessionId}`
       );
     } else if (result.negative_blocked) {
-      logger2.debug(`[hawk-trigger] negative blocked session=${sessionId}`);
+      logger.debug(`[hawk-trigger] negative blocked session=${sessionId}`);
       _triggerCache.delete(sessionId);
     }
   } catch (err) {
-    logger2.warn(`[hawk-trigger] evaluation failed: ${err}`);
+    logger.warn(`[hawk-trigger] evaluation failed: ${err}`);
   }
 }
 
@@ -17305,7 +17232,7 @@ ${body}` }
     const verified = ids.filter((id) => validIds.has(id));
     return verified.slice(0, topN);
   } catch (e) {
-    logger2.warn({ err: e }, "dualSelect failed");
+    logger.warn({ err: e }, "dualSelect failed");
     return [];
   }
 }
@@ -18465,7 +18392,7 @@ ${tips}
     const triggerCtx = getTriggerContext(sessionId ?? "default");
     if (triggerCtx?.response?.procedures?.length) {
       const procedures = triggerCtx.response.procedures;
-      logger2.info(`[hawk-recall] injecting ${procedures.length} triggered procedures`);
+      logger.info(`[hawk-recall] injecting ${procedures.length} triggered procedures`);
       for (const proc of procedures.slice(0, 3)) {
         if (result.length >= INJECTION_LIMIT) break;
         result.push({
@@ -18505,7 +18432,7 @@ ${formatRecallResults(withReasons, injectEmoji)}
     }
   } catch (err) {
     console.error("[hawk-recall] CATCH ERROR:", err);
-    logger2.error({ err }, "hawk-recall handler error");
+    logger.error({ err }, "hawk-recall handler error");
     memoryErrors.inc({ type: "recall_handler" });
   }
 };
@@ -18581,10 +18508,10 @@ async function withRetry(fn, maxAttempts = 3, delayMs = 1e3) {
     } catch (err) {
       lastErr = err;
       if (attempt < maxAttempts) {
-        logger2.warn({ attempt, maxAttempts, delayMs: delayMs * attempt, err: err.message }, "Capture attempt failed, retrying");
+        logger.warn({ attempt, maxAttempts, delayMs: delayMs * attempt, err: err.message }, "Capture attempt failed, retrying");
         await new Promise((res) => setTimeout(res, delayMs * attempt));
       } else {
-        logger2.error({ err: err.message }, "All capture attempts failed");
+        logger.error({ err: err.message }, "All capture attempts failed");
       }
     }
   }
@@ -18605,7 +18532,7 @@ function audit(action, reason, text) {
     }
     fs4.appendFileSync(AUDIT_LOG_PATH, entry);
   } catch (err) {
-    logger2.error({ err: err?.message }, "Failed to write audit log");
+    logger.error({ err: err?.message }, "Failed to write audit log");
   }
 }
 function _stripInvisible(text) {
@@ -18847,7 +18774,7 @@ async function handleSaturation(text, threshold = 0.7) {
   return false;
 }
 var captureHandler = async (event) => {
-  logger2.debug({ type: event.type, action: event.action, sessionKey: event.sessionKey }, "hawk-capture: event received");
+  logger.debug({ type: event.type, action: event.action, sessionKey: event.sessionKey }, "hawk-capture: event received");
   if (event.type !== "message") return;
   if (!["sent", "received"].includes(event.action)) return;
   if (event.action === "sent" && !event.context?.success) return;
@@ -19033,7 +18960,7 @@ var captureHandler = async (event) => {
       try {
         vectors = await withRetry(() => embedderInstance.embed(textsToEmbed), 3, 1e3);
       } catch (embedErr) {
-        logger2.warn({ err: embedErr }, "Batch embedding failed, falling back to per-item");
+        logger.warn({ err: embedErr }, "Batch embedding failed, falling back to per-item");
         vectors = [];
         for (const p of toEmbed) {
           try {
@@ -19099,12 +19026,12 @@ var captureHandler = async (event) => {
       }
     }
     if (storedCount > 0) {
-      logger2.info({ storedCount }, "Stored memories");
+      logger.info({ storedCount }, "Stored memories");
       audit("capture", "stored", `Stored ${storedCount} memories`);
       markBm25Dirty();
     }
   } catch (err) {
-    logger2.error({ err }, "hawk-capture handler error");
+    logger.error({ err }, "hawk-capture handler error");
     memoryErrors.inc({ type: "capture_handler" });
   }
 };
@@ -19144,7 +19071,7 @@ function callExtractor(conversationText, config) {
           });
           res.on("end", () => {
             if (res.statusCode !== 200) {
-              logger2.warn({ status: res.statusCode }, "HTTP extractor error, falling back to subprocess");
+              logger.warn({ status: res.statusCode }, "HTTP extractor error, falling back to subprocess");
               resolve(callExtractorSubprocess(conversationText, config));
               return;
             }
@@ -19152,19 +19079,19 @@ function callExtractor(conversationText, config) {
               const data = JSON.parse(body);
               resolve(Array.isArray(data.memories) ? data.memories : []);
             } catch {
-              logger2.warn("HTTP extractor JSON parse failed, falling back to subprocess");
+              logger.warn("HTTP extractor JSON parse failed, falling back to subprocess");
               resolve(callExtractorSubprocess(conversationText, config));
             }
           });
         }
       );
       req.on("error", (err) => {
-        logger2.warn({ err: err.message }, "HTTP extractor connection error, falling back to subprocess");
+        logger.warn({ err: err.message }, "HTTP extractor connection error, falling back to subprocess");
         resolve(callExtractorSubprocess(conversationText, config));
       });
       req.on("timeout", () => {
         req.destroy();
-        logger2.warn("HTTP extractor timeout, falling back to subprocess");
+        logger.warn("HTTP extractor timeout, falling back to subprocess");
         resolve(callExtractorSubprocess(conversationText, config));
       });
       req.write(postData);
@@ -19189,7 +19116,7 @@ function callExtractorSubprocess(conversationText, config) {
       let stdout = "";
       let stderr = "";
       const timer = setTimeout(() => {
-        logger2.warn("Subprocess timeout, killing");
+        logger.warn("Subprocess timeout, killing");
         proc.kill("SIGTERM");
       }, 3e4);
       proc.stdout.on("data", (d) => {
@@ -19202,7 +19129,7 @@ function callExtractorSubprocess(conversationText, config) {
         clearTimeout(timer);
         releaseSubprocessSlot();
         if (code !== 0) {
-          logger2.error({ code, stderr }, "Extractor subprocess error");
+          logger.error({ code, stderr }, "Extractor subprocess error");
           resolve([]);
           return;
         }
@@ -19211,23 +19138,23 @@ function callExtractorSubprocess(conversationText, config) {
           if (Array.isArray(result)) {
             resolve(result);
           } else {
-            logger2.warn({ output: stdout.slice(0, 200) }, "Unexpected extractor output, discarding");
+            logger.warn({ output: stdout.slice(0, 200) }, "Unexpected extractor output, discarding");
             resolve([]);
           }
         } catch {
-          logger2.warn("Extractor JSON parse failed, discarding output");
+          logger.warn("Extractor JSON parse failed, discarding output");
           resolve([]);
         }
       });
       proc.on("error", (err) => {
         clearTimeout(timer);
         releaseSubprocessSlot();
-        logger2.error({ err: err.message }, "Subprocess error");
+        logger.error({ err: err.message }, "Subprocess error");
         resolve([]);
       });
     } catch (err) {
       releaseSubprocessSlot();
-      logger2.error({ err }, "callExtractorSubprocess unexpected error");
+      logger.error({ err }, "callExtractorSubprocess unexpected error");
       resolve([]);
     }
   });
@@ -19284,7 +19211,7 @@ function restoreMetricsCounters() {
     const snap = JSON.parse(raw);
     const age = Date.now() - snap.timestamp;
     if (age > 3e5) {
-      logger2.info({ age }, "[metrics] stale dump, skipping restore");
+      logger.info({ age }, "[metrics] stale dump, skipping restore");
       return;
     }
     const collected = register3.getMetricsAsJSON();
@@ -19292,13 +19219,13 @@ function restoreMetricsCounters() {
       if (metric.type === "counter") {
         const saved = snap.counters[metric.name];
         if (saved !== void 0) {
-          logger2.debug({ metric: metric.name, saved }, "[metrics] would restore counter");
+          logger.debug({ metric: metric.name, saved }, "[metrics] would restore counter");
         }
       }
     }
-    logger2.info({ counters: Object.keys(snap.counters).length }, "[metrics] restored from dump");
+    logger.info({ counters: Object.keys(snap.counters).length }, "[metrics] restored from dump");
   } catch (e) {
-    logger2.warn({ err: e }, "[metrics] failed to restore from dump");
+    logger.warn({ err: e }, "[metrics] failed to restore from dump");
   }
 }
 var dumpTimer = null;
@@ -19323,9 +19250,9 @@ function startMetricsDump() {
         counters
       };
       writeFileSync(DUMP_FILE, JSON.stringify(snap), "utf8");
-      logger2.debug({ counters: Object.keys(counters).length }, "[metrics] dumped");
+      logger.debug({ counters: Object.keys(counters).length }, "[metrics] dumped");
     } catch (e) {
-      logger2.warn({ err: e }, "[metrics] dump failed");
+      logger.warn({ err: e }, "[metrics] dump failed");
     }
   }, DUMP_INTERVAL_MS);
   dumpTimer.unref();
@@ -23326,7 +23253,7 @@ async function healthCheck() {
       checks.embedder = true;
     } catch (e) {
       error = `embedder: ${e?.message ?? e}`;
-      logger2.warn({ err: e }, "[health] embedder check failed");
+      logger.warn({ err: e }, "[health] embedder check failed");
     }
     try {
       const store = await getMemoryStore();
@@ -23352,7 +23279,7 @@ async function healthCheck() {
       }
     } catch (e) {
       error = `lancedb: ${e?.message ?? String(e)}`;
-      logger2.warn({ err: e }, "[health] lancedb check failed");
+      logger.warn({ err: e }, "[health] lancedb check failed");
     }
     try {
       const hawkHome = join7(homedir7(), ".hawk");
@@ -23361,7 +23288,7 @@ async function healthCheck() {
       checks.disk = true;
     } catch (e) {
       error = `disk: ${e?.message ?? String(e)}`;
-      logger2.warn({ err: e }, "[health] disk check failed");
+      logger.warn({ err: e }, "[health] disk check failed");
     }
     const allOk = checks.embedder && checks.lancedb && checks.disk;
     return {
@@ -23395,7 +23322,7 @@ async function sendAlert(webhookUrl, result) {
       timestamp: (/* @__PURE__ */ new Date()).toISOString()
     }, { timeout: 5e3 });
   } catch (e) {
-    logger2.warn({ err: e }, "[health] alert webhook failed");
+    logger.warn({ err: e }, "[health] alert webhook failed");
   }
 }
 function startMetricsServer() {
@@ -23459,15 +23386,15 @@ function startMetricsServer() {
     }
   });
   server.listen(METRICS_PORT, "127.0.0.1", () => {
-    logger2.info({ port: METRICS_PORT }, `[hawk-bridge] Metrics server listening on http://127.0.0.1:${METRICS_PORT}`);
-    logger2.info("[hawk-bridge]   /health  \u2014 health check (embedder + lancedb + disk)");
-    logger2.info("[hawk-bridge]   /metrics \u2014 Prometheus scrape endpoint");
-    if (METRICS_TOKEN) logger2.info("[hawk-bridge]   /metrics auth enabled (HAWK_METRICS_TOKEN)");
-    if (ALERT_WEBHOOK_URL) logger2.info("[hawk-bridge]   degraded alerts enabled (HAWK_ALERT_WEBHOOK_URL)");
+    logger.info({ port: METRICS_PORT }, `[hawk-bridge] Metrics server listening on http://127.0.0.1:${METRICS_PORT}`);
+    logger.info("[hawk-bridge]   /health  \u2014 health check (embedder + lancedb + disk)");
+    logger.info("[hawk-bridge]   /metrics \u2014 Prometheus scrape endpoint");
+    if (METRICS_TOKEN) logger.info("[hawk-bridge]   /metrics auth enabled (HAWK_METRICS_TOKEN)");
+    if (ALERT_WEBHOOK_URL) logger.info("[hawk-bridge]   degraded alerts enabled (HAWK_ALERT_WEBHOOK_URL)");
   });
   server.on("error", (err) => {
     if (err.code !== "EADDRINUSE") {
-      logger2.warn({ err: err.message }, "[hawk-bridge] Metrics server error");
+      logger.warn({ err: err.message }, "[hawk-bridge] Metrics server error");
     }
   });
   startMetricsDump();

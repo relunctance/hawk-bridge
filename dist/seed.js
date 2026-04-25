@@ -3535,7 +3535,7 @@ var DEFAULT_CONFIG = {
     pythonPath: "python3",
     hawkDir: "~/.openclaw/hawk",
     httpMode: false,
-    httpBase: "http://127.0.0.1:18360"
+    httpBase: "http://127.0.0.1:18368"
   }
 };
 function resolveEnvVars(raw) {
