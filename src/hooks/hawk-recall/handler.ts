@@ -21,6 +21,8 @@ import { HybridRetriever } from '../../retriever.js';
 import { Embedder } from '../../embeddings.js';
 import { getConfig } from '../../config.js';
 import { t } from '../../i18n/index.js';
+// hawk-trigger: read trigger context cached by hawk-trigger hook
+import { getTriggerContext } from '../hawk-trigger/handler.js';
 
 // Language from env (set via HAWK_LANG=zh or HAWK_LANG=en)
 // Full i18n Phase 2: migrate output strings to t() calls
@@ -1262,6 +1264,27 @@ const recallHandler = async (event: HookEvent) => {
       if (totalChars + compressed.length > MAX_INJECTION_CHARS) continue;
       result.push(m);
       totalChars += compressed.length;
+    }
+
+    // ─── hawk-trigger: inject triggered procedure memories ────────────────────
+    // Check if hawk-trigger cached trigger context for this session
+    const triggerCtx = getTriggerContext(sessionId ?? 'default');
+    if (triggerCtx?.response?.procedures?.length) {
+      const procedures = triggerCtx.response.procedures;
+      logger.info(`[hawk-recall] injecting ${procedures.length} triggered procedures`);
+      for (const proc of procedures.slice(0, 3)) {
+        if (result.length >= INJECTION_LIMIT) break;
+        // Add procedure as a special memory entry
+        result.push({
+          id: proc.memory_id,
+          text: `[Procedure] ${proc.title}\n${proc.text}`,
+          category: 'procedure',
+          importance: proc.importance,
+          reliability: 0.9,
+          score: proc.score,
+          _isTriggeredProcedure: true,
+        });
+      }
     }
 
     if (!result.length) return;

@@ -264,7 +264,7 @@ __export(embeddings_exports, {
 });
 import http from "http";
 import https from "https";
-import { URL } from "url";
+import { URL as URL2 } from "url";
 import { HttpsProxyAgent } from "https-proxy-agent";
 async function fetchWithRetry(url, options = {}, retries = 3) {
   let lastError = null;
@@ -306,7 +306,7 @@ function getProxyAgent() {
   return _proxyAgent;
 }
 async function fetchWithTimeout(url, init, timeoutMs) {
-  const parsedUrl = new URL(url);
+  const parsedUrl = new URL2(url);
   const isHttps = parsedUrl.protocol === "https:";
   const agent = getProxyAgent();
   const body = init?.body || null;
@@ -5507,6 +5507,22 @@ function cosineSimilarity(a, b) {
 
 // src/hooks/hawk-recall/handler.ts
 init_embeddings();
+
+// src/hooks/hawk-trigger/handler.ts
+init_logger();
+var API_BASE = process.env.HAWK_API_URL || "http://127.0.0.1:18360";
+var _triggerCache = /* @__PURE__ */ new Map();
+function getTriggerContext(sessionId) {
+  const ctx = _triggerCache.get(sessionId);
+  if (!ctx) return null;
+  if (Date.now() - ctx.timestamp > 3e4) {
+    _triggerCache.delete(sessionId);
+    return null;
+  }
+  return ctx;
+}
+
+// src/hooks/hawk-recall/handler.ts
 init_logger();
 init_metrics();
 var LANG = process.env.HAWK_LANG || "zh";
@@ -6795,6 +6811,24 @@ ${tips}
       if (totalChars + compressed.length > MAX_INJECTION_CHARS) continue;
       result.push(m2);
       totalChars += compressed.length;
+    }
+    const triggerCtx = getTriggerContext(sessionId ?? "default");
+    if (triggerCtx?.response?.procedures?.length) {
+      const procedures = triggerCtx.response.procedures;
+      logger2.info(`[hawk-recall] injecting ${procedures.length} triggered procedures`);
+      for (const proc of procedures.slice(0, 3)) {
+        if (result.length >= INJECTION_LIMIT) break;
+        result.push({
+          id: proc.memory_id,
+          text: `[Procedure] ${proc.title}
+${proc.text}`,
+          category: "procedure",
+          importance: proc.importance,
+          reliability: 0.9,
+          score: proc.score,
+          _isTriggeredProcedure: true
+        });
+      }
     }
     if (!result.length) return;
     const withReasons = result.map((m2) => ({

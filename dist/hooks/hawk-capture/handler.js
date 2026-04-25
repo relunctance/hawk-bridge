@@ -5269,6 +5269,12 @@ init_logger();
 
 // src/hooks/hawk-recall/handler.ts
 init_embeddings();
+
+// src/hooks/hawk-trigger/handler.ts
+init_logger();
+var API_BASE = process.env.HAWK_API_URL || "http://127.0.0.1:18360";
+
+// src/hooks/hawk-recall/handler.ts
 init_logger();
 init_metrics();
 var LANG = process.env.HAWK_LANG || "zh";

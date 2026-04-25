@@ -10,6 +10,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import recallHandler from './hooks/hawk-recall/handler.js';
 import captureHandler from './hooks/hawk-capture/handler.js';
+import { onMessageReceived as triggerHandler } from './hooks/hawk-trigger/handler.js';
 import { getMemoryStore } from './store/factory.js';
 import { getConfig } from './config.js';
 import { Embedder } from './embeddings.js';
@@ -26,7 +27,7 @@ patchConsole();
 // Restore metrics counters from previous run (if any)
 restoreMetricsCounters();
 
-export { recallHandler as 'hawk-recall', captureHandler as 'hawk-capture' };
+export { recallHandler as 'hawk-recall', captureHandler as 'hawk-capture', triggerHandler as 'hawk-trigger' };
 
 /**
  * Public feedback API — rate a recalled memory.

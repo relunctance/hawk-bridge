@@ -27,6 +27,13 @@
         "agent:heartbeat"
       ],
       "description": "Periodic memory decay, layer management, and garbage collection"
+    },
+    {
+      "name": "hawk-trigger",
+      "events": [
+        "message_received"
+      ],
+      "description": "Evaluate trigger rules on every user message; cache results for hawk-recall"
     }
   ],
   "config": {
