@@ -23,7 +23,7 @@ logger = logging.getLogger("hooks.hawk-bridge-hermes")
 
 # ─── Config ────────────────────────────────────────────────────────────────────
 
-HAWK_API_BASE = os.environ.get("HAWK_API_BASE", "http://127.0.0.1:18360")
+HAWK_API_BASE = os.environ.get("HAWK_API_BASE", "http://127.0.0.1:18368")
 HAWK_API_TIMEOUT = float(os.environ.get("HAWK_API_TIMEOUT", "10.0"))
 HAWK_INJECTION_LIMIT = int(os.environ.get("HAWK_INJECTION_LIMIT", "5"))
 HAWK_INJECTION_MAX_CHARS = int(os.environ.get("HAWK_INJECTION_MAX_CHARS", "2000"))
@@ -119,7 +119,7 @@ async def handle_agent_start(context: dict) -> None:
         query = message or f"session {session_id}"
 
         resp = await client.post(
-            "/recall",
+            "/v1/recall",
             json={
                 "query": query,
                 "session_id": session_id,
@@ -183,7 +183,7 @@ async def handle_agent_end(context: dict) -> None:
         client = await get_http_client()
 
         await client.post(
-            "/capture",
+            "/v1/capture",
             json={
                 "session_id": session_id,
                 "user_id": user_id,

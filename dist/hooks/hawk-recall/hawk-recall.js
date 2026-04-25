@@ -3547,7 +3547,7 @@ var DEFAULT_CONFIG = {
     pythonPath: "python3",
     hawkDir: "~/.openclaw/hawk",
     httpMode: false,
-    httpBase: "http://127.0.0.1:18360"
+    httpBase: "http://127.0.0.1:18368"
   }
 };
 function resolveEnvVars(raw) {
@@ -4968,7 +4968,7 @@ ${conversation}
 };
 
 // src/store/adapters/http.ts
-var DEFAULT_BASE = "http://127.0.0.1:18360";
+var DEFAULT_BASE = "http://127.0.0.1:18368";
 var HTTPAdapter = class {
   baseUrl;
   constructor(baseUrl) {
@@ -5002,14 +5002,14 @@ var HTTPAdapter = class {
   async init() {
     const health = await this.request("GET", "/health");
     if (health.status !== "ok") {
-      throw new Error(`hawk-memory-api health check failed: ${health.status}`);
+      throw new Error(`hawk-memory health check failed: ${health.status}`);
     }
   }
   async close() {
   }
   async store(entry, sessionId) {
     const platform = entry.platform ?? entry.metadata?.platform ?? "hawk-bridge";
-    await this.request("POST", "/capture", {
+    await this.request("POST", "/v1/capture", {
       session_id: sessionId ?? entry.sessionId ?? "",
       user_id: entry.metadata?.user_id ?? "",
       message: entry.text,
@@ -5060,7 +5060,7 @@ var HTTPAdapter = class {
     throw new Error("HTTP adapter does not support raw embedding");
   }
   async vectorSearch(query, topK) {
-    const result = await this.request("POST", "/recall", {
+    const result = await this.request("POST", "/v1/recall", {
       query,
       top_k: topK,
       offset: 0,
@@ -5074,7 +5074,7 @@ var HTTPAdapter = class {
   async findSimilarEntity(text, _threshold) {
     const result = await this.request(
       "POST",
-      "/extract",
+      "/v1/extract",
       { text }
     );
     if (result.memories.length === 0) return null;
