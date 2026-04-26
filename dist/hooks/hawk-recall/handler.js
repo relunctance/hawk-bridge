@@ -5036,8 +5036,9 @@ var HTTPAdapter = class {
   async getReviewCandidates(_minReliability, _batchSize) {
     return [];
   }
-  async embed(_texts) {
-    throw new Error("HTTP adapter does not support raw embedding");
+  async embed(texts) {
+    const result = await this.request("POST", "/v1/embed_batch", { texts });
+    return result.embeddings;
   }
   async vectorSearch(query, topK) {
     const result = await this.request("POST", "/v1/recall", {
