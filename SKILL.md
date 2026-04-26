@@ -576,7 +576,7 @@ nohup python3 ~/repos/hawk-memory-api/server.py > ~/.hawk/api.log 2>&1 &
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `HAWK__PYTHON__HTTP_MODE` | `false` | 启用 HTTP 模式（替代 subprocess） |
-| `HAWK__PYTHON__HTTP_BASE` | `http://127.0.0.1:18360` | hawk-memory-api 地址 |
+| `HAWK__PYTHON__HTTP_BASE` | `http://127.0.0.1:18368` | hawk-memory Go 地址 |
 | `HAWK_API_BASE` | — | 同上（deprecated） |
 | `HAWK_PYTHON_HTTP_MODE` | — | 同上（deprecated） |
 
@@ -585,11 +585,11 @@ nohup python3 ~/repos/hawk-memory-api/server.py > ~/.hawk/api.log 2>&1 &
 ```bash
 # 推荐方式（HAWK__ 前缀嵌套）
 export HAWK__PYTHON__HTTP_MODE=true
-export HAWK__PYTHON__HTTP_BASE=http://127.0.0.1:18360
+export HAWK__PYTHON__HTTP_BASE=http://127.0.0.1:18368
 
 # 兼容旧方式（deprecated）
 export HAWK_PYTHON_HTTP_MODE=true
-export HAWK_API_BASE=http://127.0.0.1:18360
+export HAWK_API_BASE=http://127.0.0.1:18368
 ```
 
 **注意：** HTTP 模式默认为 `false`（subprocess），设为 `true` 后优先走 HTTP，连接失败自动 fallback 到 subprocess。

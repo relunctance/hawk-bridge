@@ -5806,7 +5806,7 @@ function callExtractor(conversationText, config) {
         api_key: apiKey,
         base_url: baseURL
       });
-      const url = new URL(httpBase + "/v1/extract");
+      const url = new URL(httpBase + "/extract");
       const isHttps = url.protocol === "https:";
       const client = isHttps ? https2 : http2;
       const req = client.request(

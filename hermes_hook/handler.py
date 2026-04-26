@@ -5,7 +5,7 @@ Triggered on:
   - agent:start  → recall memories from LanceDB, inject into context
   - agent:end    → capture conversation into LanceDB
 
-Communication: HTTP API (hawk-memory-api FastAPI server)
+Communication: HTTP API (hawk-memory Go server)
 """
 
 import os
@@ -91,7 +91,7 @@ def format_recall_results(memories: list, emoji: str = "🦅") -> str:
 async def handle_agent_start(context: dict) -> None:
     """
     Called on agent:start.
-    Action: recall memories from hawk-memory-api and inject into context dict.
+    Action: recall memories from hawk-memory Go and inject into context dict.
 
     The gateway reads context["_hawk_recall"] after all hooks run and appends
     the value to the context_prompt fed to the agent.
@@ -160,7 +160,7 @@ async def handle_agent_start(context: dict) -> None:
 async def handle_agent_end(context: dict) -> None:
     """
     Called on agent:end.
-    Action: capture the conversation into hawk-memory-api (LanceDB).
+    Action: capture the conversation into hawk-memory Go (LanceDB).
 
     context keys (from Hermes HookRegistry):
         - platform: str        (e.g. "feishu")
@@ -208,7 +208,7 @@ async def handle(event_type: str, context: dict) -> None:
     context: dict with keys described above
 
     For agent:start: writes formatted recall string into context["_hawk_recall"]
-    For agent:end: side-effect only (capture to hawk-memory-api)
+    For agent:end: side-effect only (capture to hawk-memory Go)
     """
     if event_type == "agent:start":
         await handle_agent_start(context)
