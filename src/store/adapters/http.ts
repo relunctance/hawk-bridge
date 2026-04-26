@@ -113,8 +113,10 @@ export class HTTPAdapter implements MemoryStore {
     return [];
   }
 
-  async embed(_texts: string[]): Promise<number[][]> {
-    throw new Error('HTTP adapter does not support raw embedding');
+  async embed(texts: string[]): Promise<number[][]> {
+    // Go API: POST /v1/embed_batch — {texts: string[]}
+    const result = await this.request<{ embeddings: number[][]; count: number }>('POST', '/v1/embed_batch', { texts });
+    return result.embeddings;
   }
 
   async vectorSearch(query: string, topK: number): Promise<RetrievedMemory[]> {
