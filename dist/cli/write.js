@@ -5315,7 +5315,9 @@ async function writeEntry() {
     vector,
     category,
     importance,
+    createdAt: now,
     timestamp: now,
+    // ← fix: BigInt(undefined) bug（entry.timestamp 之前从未设置）
     expiresAt: 0,
     accessCount: 0,
     lastAccessedAt: now,
@@ -5326,7 +5328,6 @@ async function writeEntry() {
     locked: false,
     correctionHistory: [],
     sessionId: null,
-    createdAt: now,
     updatedAt: now,
     scope: "personal",
     importanceOverride: 1,
