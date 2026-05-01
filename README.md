@@ -1,9 +1,10 @@
 # 🦅 hawk-bridge
 
-> **多 Agent 记忆架构 — 让 AI 团队共享记忆、分工协作**
+> **你的 AI 团队还在当"金鱼"？**
 >
-> Session 结束就忘、跨 Agent 就失忆、Context 爆 Token ——
-> hawk-bridge 给 AI 装上持久记忆，autoCapture + autoRecall，零手动，帮你省 Token 省钱。
+> Session 结束就忘、跨 Agent 就失忆 ——个人+企业
+> hawk-bridge 给 AI 装上持久记忆，18 个功能覆盖记忆全生命周期：
+> 记忆捕获 → 召回注入 → 置信度校准 → 遗忘预警 → 因果推理 → 自我进化。
 
 [![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![OpenClaw 兼容](https://img.shields.io/badge/OpenClaw-2026.3%2B-brightgreen)](https://github.com/openclaw/openclaw)
