@@ -14,7 +14,7 @@ Triggered on:
 - **`message:preprocessed`**: preprocessed message content
 - **`session:compact:after`**: session compaction
 
-Action: extract meaningful content (facts, code, URLs) from conversation → store in LanceDB via hawk-memory-api.
+Action: extract meaningful content (facts, code, URLs) from conversation → store in LanceDB via hawk-memory (Go).
 
 ⚠️ **OpenClaw Hook Event Format**: events MUST use underscore format in plugin registration:
 - ✅ `message_received` (underscore)

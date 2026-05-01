@@ -801,7 +801,7 @@ function callExtractor(conversationText: string, config: any): Promise<any[]> {
     const httpMode = config.python?.httpMode ?? false;
     const httpBase = config.python?.httpBase || process.env.HAWK_API_BASE || 'http://127.0.0.1:18789';
 
-    // ── HTTP mode: call hawk-memory-api /extract endpoint ──────────────────────
+    // ── HTTP mode: call hawk-memory (Go) /extract endpoint ──────────────────────
     if (httpMode) {
       const postData = JSON.stringify({
         text: conversationText,

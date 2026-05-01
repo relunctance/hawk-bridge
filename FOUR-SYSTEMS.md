@@ -2,7 +2,7 @@
 
 > 建立时间：2026-04-23
 > 维护者：maomao + tseng
-> 目的：hawk-bridge / hawk-memory-api / soul-engine / hawk-eval 四个项目的协同演进指南
+> 目的：hawk-bridge / hawk-memory (Go) / soul-engine / hawk-eval 四个项目的协同演进指南
 
 ---
 
@@ -38,7 +38,7 @@
 └──────────────────────┬──────────────────────────────┘
                        │ HTTP 调用
 ┌──────────────────────▼──────────────────────────────┐
-│              hawk-memory-api (存储引擎)                │
+│              hawk-memory (Go) (存储引擎)                │
 │    LanceDB + Embedding + recall/distill/compile       │
 └──────────────────────┬──────────────────────────────┘
                        │ benchmark 数据
@@ -51,7 +51,7 @@
 | 项目 | 仓库 | 定位 | 层级 |
 |------|------|------|------|
 | hawk-bridge | `~/repos/hawk-bridge` | OpenClaw Hook Bridge | L0 |
-| hawk-memory-api | `~/repos/hawk-memory-api` | 记忆存储与检索 | L0 |
+| hawk-memory (Go) | `~/repos/hawk-memory (Go)` | 记忆存储与检索 | L0 |
 | soul-engine | `~/repos/soul-engine` | 记忆进化引擎 | L1+ |
 | hawk-eval | `https://github.com/relunctance/hawk-eval` | 评测体系 | 基础设施 |
 
@@ -59,7 +59,7 @@
 
 ## 三、当前状态（2026-04-23）
 
-### 3.1 hawk-memory-api ✅ 最活跃
+### 3.1 hawk-memory (Go) ✅ 最活跃
 
 **分支**：master
 **最新 commit**：`37ed36b` feat: health monitor 脚本 + cron job
@@ -122,7 +122,7 @@ master   ← v1.1 ← 当前开发分支（v1.1 还没合并回 master）
 - 架构设计完整（52 项功能规划）
 - Batch 1-2 完成（LLM 抽象层 + BridgeClient + MemoryCompiler）
 - **但核心进化逻辑没有真正跑通**
-- 没有和 hawk-memory-api / hawk-bridge 形成闭环
+- 没有和 hawk-memory (Go) / hawk-bridge 形成闭环
 
 **核心障碍**：
 ```
@@ -139,7 +139,7 @@ soul-engine 进化逻辑 ← 不知道评测结果，无法生成 Pattern/Princi
 **最新 commit**：`683bccb` feat: 完整集成测试套件 (12 tests)
 
 **当前能力**：
-- hawk-memory-api recall benchmark ✅
+- hawk-memory (Go) recall benchmark ✅
 - LoCoMo-10 / Evolving Events / hawk_memory 数据集 ✅（300 条中文）
 - m_flow procedural 数据集 ✅（20 条）
 - 完整评测引擎 + 报告生成 ✅
@@ -163,19 +163,19 @@ BLEU-1 = 0.15（目标 > 0.4）
 ## 四、互相依赖关系
 
 ```
-hawk-memory-api
+hawk-memory (Go)
   ↑ 依赖
   │  • 用 hawk-eval 的 benchmark 验证 recall 质量
   │  • 为 soul-engine 提供使用数据（evolve 驱动）
   │
 hawk-bridge
   ↑ 依赖
-  │  • HTTP 调用 hawk-memory-api
+  │  • HTTP 调用 hawk-memory (Go)
   │  • 接入 soul-engine 做 Pattern 提炼
   │
 soul-engine
   ↑ 驱动
-  │  • 读取 hawk-memory-api 使用日志
+  │  • 读取 hawk-memory (Go) 使用日志
   │  • 生成 Pattern → Principle → Skill
   │  • 下发 Skill 到 hawk-bridge 执行
   │
@@ -186,9 +186,9 @@ hawk-eval
 ```
 
 **关键依赖链**：
-1. hawk-eval → hawk-memory-api：每次 recall 改动都要重新跑 benchmark
-2. hawk-memory-api → hawk-bridge：hawk-bridge 调用 hawk-memory-api 的 capture/recall
-3. hawk-bridge + hawk-memory-api → soul-engine：使用数据流向进化层
+1. hawk-eval → hawk-memory (Go)：每次 recall 改动都要重新跑 benchmark
+2. hawk-memory (Go) → hawk-bridge：hawk-bridge 调用 hawk-memory (Go) 的 capture/recall
+3. hawk-bridge + hawk-memory (Go) → soul-engine：使用数据流向进化层
 4. hawk-eval → soul-engine：评测结果驱动进化方向
 
 **四件套改动规则**：
@@ -202,15 +202,15 @@ hawk-eval
 
 | 项目 | 原因 |
 |------|------|
-| hawk-bridge | 架构设计文档完成但代码未实现；核心逻辑在 hawk-memory-api，bridge 只是调用方 |
-| soul-engine | 进化逻辑依赖 hawk-memory-api 的使用数据；hawk-eval 建好后才知道数据在哪里 |
+| hawk-bridge | 架构设计文档完成但代码未实现；核心逻辑在 hawk-memory (Go)，bridge 只是调用方 |
+| soul-engine | 进化逻辑依赖 hawk-memory (Go) 的使用数据；hawk-eval 建好后才知道数据在哪里 |
 
 ### 5.2 根本问题
 
 **我们把四件套当成了四个独立项目，而不是一个系统。**
 
 具体表现：
-1. hawk-memory-api 改了 6 个 commit，hawk-bridge 没有相应更新
+1. hawk-memory (Go) 改了 6 个 commit，hawk-bridge 没有相应更新
 2. hawk-eval 建好了，但没有想好怎么用它驱动 soul-engine
 3. hawk-bridge 的 v2.0 架构文档和实际代码是两套东西
 
@@ -219,7 +219,7 @@ hawk-eval
 | 时间 | 发生了什么 | 缺失 |
 |------|-----------|------|
 | 2026-04-19 | hawk-bridge v2.0 架构设计 + soul-engine 新建 | 没有一起推进代码实现 |
-| 2026-04-23 | hawk-memory-api + hawk-eval 大规模开发 | hawk-bridge / soul-engine 停滞 |
+| 2026-04-23 | hawk-memory (Go) + hawk-eval 大规模开发 | hawk-bridge / soul-engine 停滞 |
 
 **问题**：我们花了大量时间建 hawk-eval 评测体系，但评测结果没有用来驱动任何进化动作。
 
@@ -240,7 +240,7 @@ hawk-eval
 
 | 优先级 | 任务 | 负责 | 关联项目 |
 |--------|------|------|---------|
-| 🔴 | hawk-memory-api recall 质量提升（MRR > 0.5） | TBD | hawk-memory-api + hawk-bridge |
+| 🔴 | hawk-memory (Go) recall 质量提升（MRR > 0.5） | TBD | hawk-memory (Go) + hawk-bridge |
 | 🟡 | B2: 数据集扩充到 200 条 | maomao | hawk-eval |
 | 🟡 | B3: CI Gate for hawk-eval | maomao | hawk-eval |
 | 🟡 | soul-engine Batch 3-5 实现 | TBD | soul-engine |
@@ -249,7 +249,7 @@ hawk-eval
 
 | 目标 | 指标 |
 |------|------|
-| hawk-memory-api recall 超过 Mem0 基线 | MRR@5 > 0.9 |
+| hawk-memory (Go) recall 超过 Mem0 基线 | MRR@5 > 0.9 |
 | m_flow 打榜 | Recall@5 > 0.7 |
 | hawk-bridge v2.0 核心功能落地 | Pipeline + Observer |
 | soul-engine 进化闭环跑通 | Pattern → Skill 产出 |

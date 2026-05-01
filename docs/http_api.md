@@ -1,6 +1,6 @@
 # hawk-bridge HTTP API Reference
 
-> hawk-memory-api server (default: `http://127.0.0.1:18360`)
+> hawk-memory (Go) server (default: `http://127.0.0.1:18360`)
 > Used when `HAWK_DB_PROVIDER=http`
 
 ---
@@ -303,7 +303,7 @@ When `HAWK_METRICS_TOKEN` is set, protected endpoints return `401` for missing/i
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HAWK_DB_PROVIDER` | `lancedb` | Use `http` for hawk-memory-api backend |
+| `HAWK_DB_PROVIDER` | `lancedb` | Use `http` for hawk-memory (Go) backend |
 | `HAWK_METRICS_TOKEN` | (none) | Auth token for metrics endpoint |
 | `HAWK_METRICS_PORT` | `9090` | Port for metrics server |
 | `HAWK_ALERT_WEBHOOK_URL` | (none) | Webhook URL for degraded alerts |

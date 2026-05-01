@@ -44,7 +44,7 @@ interface TriggerEvaluateResponse {
   negative_blocked: boolean;
 }
 
-// ─── hawk-memory-api HTTP client ─────────────────────────────────────────────────────────
+// ─── hawk-memory (Go) HTTP client ─────────────────────────────────────────────────────────
 
 const API_BASE = process.env.HAWK_API_URL || 'http://127.0.0.1:18368';
 

@@ -454,7 +454,7 @@ embedding space 污染问题：
 ┌──────────────────────────────────────────────────────────────────┐
 │                    独立进程 / 独立仓库                             │
 │  ┌──────────────────┐    ┌───────────────────────────────────┐  │
-│  │  Decay Worker    │    │    hawk-memory-api (Python)      │  │
+│  │  Decay Worker    │    │    hawk-memory (Go) (Python)      │  │
 │  │  (hawk-bridge    │    │    独立仓库（已是独立项目）       │  │
 │  │   同仓库，systemd │    │    LLM 提取 / 矛盾检测 / 蒸馏   │  │
 │  │   timer 触发)    │    │                                   │  │
@@ -475,7 +475,7 @@ embedding space 污染问题：
 | **Storage Engine** | 主进程 | 多引擎适配器（ LanceDB / Pg / S3） | `StorageEngine` |
 | **Pipeline Observer** | 主进程 | Stage 级 tracing + metrics | `PipelineObserver` |
 | **Decay Worker** | 独立进程（非独立仓库） | 定时 decay/归档/GC | `DecayWorker` |
-| **LLM Service** | 独立仓库（hawk-memory-api） | LLM 提取、矛盾检测、质量评估 | `HawkMemoryAPI` |
+| **LLM Service** | 独立仓库（hawk-memory (Go)） | LLM 提取、矛盾检测、质量评估 | `HawkMemoryAPI` |
 
 ---
 
@@ -1163,7 +1163,7 @@ class LLMExtractionStage implements PipelineStage<ConversationSegment[], MemoryC
     input: ConversationSegment[],
     ctx: PipelineContext
   ): Promise<MemoryCandidate[]> {
-    // 调用 hawk-memory-api（HTTP）进行 LLM 提取
+    // 调用 hawk-memory (Go)（HTTP）进行 LLM 提取
     const result = await this.llmService.extract({
       segments: input,
       sessionId: ctx.sessionId,
@@ -1357,7 +1357,7 @@ class PipelineFactory {
 > - ❌ Pipeline Stage 不要拆分进程（接口调用即可，IPC 开销大）
 > - ❌ Decay Worker 不要拆分仓库（技术栈相同，共享代码多）
 > - ✅ Decay Worker 应该独立进程部署（定时任务不需要常驻内存）
-> - ✅ hawk-memory-api 应该拆分仓库（Python 技术栈不同，已是独立项目）
+> - ✅ hawk-memory (Go) 应该拆分仓库（Python 技术栈不同，已是独立项目）
 > - ❌ Storage Engine 不要拆分进程（存储引擎本身是独立服务）
 
 ### 6.1 拆分决策矩阵
@@ -1369,7 +1369,7 @@ class PipelineFactory {
 | **Embedder** | ❌ 否 | 纯计算，调用频率高，IPC 开销大 | 主进程 |
 | **Storage Engine** | ❌ 否 | LanceDB/Pg/S3 本身是独立服务，通过接口调用 | 主进程 |
 | **Decay Worker** | ✅ 独立进程（不是独立仓库） | 定时任务，不需要常驻内存，可以独立部署/扩展 | **缺失，需新建，但不放独立仓库** |
-| **LLM Service** | ✅ 是 | Python 运行时独立，GPU 资源独立，已拆分 | **hawk-memory-api** |
+| **LLM Service** | ✅ 是 | Python 运行时独立，GPU 资源独立，已拆分 | **hawk-memory (Go)** |
 | **Event Bus** | ❌ 否 | 抽象层，默认 in-memory，可选 Redis | 主进程 |
 
 ### 6.2 Decay Worker — 独立进程设计
@@ -1563,7 +1563,7 @@ systemctl --user list-timers decay-worker.timer
             ┌───────────────────┼───────────────────┐
             ▼                   ▼                   ▼
 ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────┐
-│   Decay Worker    │  │ hawk-memory-api   │  │   External        │
+│   Decay Worker    │  │ hawk-memory (Go)   │  │   External        │
 │   (定时触发)       │  │   (Python)        │  │   Clients         │
 │                   │  │                   │  │                   │
 │ - Cron/Timer      │  │ - /extract        │  │ - REST API       │
@@ -1577,7 +1577,7 @@ systemctl --user list-timers decay-worker.timer
 ## 7. LLM 服务集成层
 
 > **核心改进**：Python LLM 提取从 subprocess execSync 升级为 HTTP Service。
-> hawk-memory-api 从「被 Python 脚本调用的工具」变成「正式的微服务」。
+> hawk-memory (Go) 从「被 Python 脚本调用的工具」变成「正式的微服务」。
 
 ### 7.1 当前问题 vs 目标状态
 
@@ -1595,7 +1595,7 @@ systemctl --user list-timers decay-worker.timer
 
 ```typescript
 /**
- * LLM Service 客户端 — 封装与 hawk-memory-api 的 HTTP 通信
+ * LLM Service 客户端 — 封装与 hawk-memory (Go) 的 HTTP 通信
  * 替代当前的 subprocess execSync 调用
  */
 interface LLMService {
@@ -1673,7 +1673,7 @@ class HawkMemoryAPIClient implements LLMService {
 
     // 2. 断路器检查
     if (this.circuitBreaker.isOpen()) {
-      throw new ServiceUnavailableError('hawk-memory-api circuit breaker open');
+      throw new ServiceUnavailableError('hawk-memory (Go) circuit breaker open');
     }
 
     // 3. 带重试的 HTTP 请求
@@ -1754,11 +1754,11 @@ class HawkMemoryAPIClient implements LLMService {
 }
 ```
 
-### 7.3 hawk-memory-api HTTP 接口定义
+### 7.3 hawk-memory (Go) HTTP 接口定义
 
 ```typescript
 /**
- * hawk-memory-api HTTP 接口（FastAPI）
+ * hawk-memory (Go) HTTP 接口（FastAPI）
  * 路径前缀：/api/v1
  */
 
@@ -1830,7 +1830,7 @@ interface HealthEndpoint {
 ```yaml
 # hawk-bridge/config.yaml
 llm_service:
-  # hawk-memory-api 服务地址
+  # hawk-memory (Go) 服务地址
   base_url: "http://localhost:8080"
 
   # HTTP 超时（毫秒）
@@ -2559,7 +2559,7 @@ const result = await client.extract({ segments: [...] });
 // 1. HTTP 500 → 自动重试 3 次
 // 2. 连续 5 次失败 → 断路器打开，30s 内不调用
 // 3. 相同文本 1 分钟内不重复调用（缓存）
-// 4. traceId 透传到 hawk-memory-api
+// 4. traceId 透传到 hawk-memory (Go)
 ```
 
 ---
@@ -2769,7 +2769,7 @@ class RecallFinalizerStage implements PipelineStage<MemoryCandidate[], CompiledR
     // 1. 检测是否有冲突记忆
     const conflicts = this.detectConflicts(memories);
 
-    // 2. LLM 综合（调用 hawk-memory-api）
+    // 2. LLM 综合（调用 hawk-memory (Go)）
     const summary = await this.llmService.summarize({
       memories: memories.map(m => ({ id: m.id, text: m.text })),
       query: ctx.config.query ?? '',

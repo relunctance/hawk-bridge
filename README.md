@@ -64,12 +64,12 @@ L1 Raw（原始记忆）    ← 单次对话记录
 │                    🦅 hawk-bridge                          │
 │            OpenClaw Hook 系统 + 多 Agent 记忆               │
 │                                                              │
-│   Hook 触发 → capture（自动提取记忆）→ hawk-memory-api      │
-│   新会话   → recall（自动注入记忆）← hawk-memory-api        │
+│   Hook 触发 → capture（自动提取记忆）→ hawk-memory (Go)      │
+│   新会话   → recall（自动注入记忆）← hawk-memory (Go)        │
 └──────────────────────────────────────────────────────────────┘
                             ↕
 ┌──────────────────────────────────────────────────────────────┐
-│                  📡 hawk-memory-api                          │
+│                  📡 hawk-memory (Go)                          │
 │              统一记忆 API 服务（Python）                      │
 │                                                              │
 │   RRF Fusion 召回 + agent namespace + trigger 规则           │
@@ -89,7 +89,7 @@ L1 Raw（原始记忆）    ← 单次对话记录
 
 **组件分工**：
 - **hawk-bridge**（开源）：OpenClaw Hook + 多 Agent 可见性控制
-- **hawk-memory-api**（开源）：RRF Fusion 召回 + agent namespace
+- **hawk-memory (Go)**（开源）：RRF Fusion 召回 + agent namespace
 - **hawk-eval**（开源）：MRR/Recall/BLEU 评测体系
 - **soul-engine**（私有）：Pattern→Principle→Skill 进化链路
 

@@ -29,9 +29,9 @@ message_received → hawk-trigger evaluates rules → caches trigger context
 - **implicit_task**: Match on trigger phrases (照旧/老办法/跟之前一样/继续/按惯例)
 - **negative**: Block trigger if any keyword matches
 
-## hawk-memory-api Integration
+## hawk-memory (Go) Integration
 
-The hook calls `POST /rules/evaluate` on hawk-memory-api:
+The hook calls `POST /rules/evaluate` on hawk-memory (Go):
 
 ```json
 POST /rules/evaluate
@@ -56,4 +56,4 @@ Response:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HAWK_API_URL` | `http://127.0.0.1:18360` | hawk-memory-api base URL |
+| `HAWK_API_URL` | `http://127.0.0.1:18360` | hawk-memory (Go) base URL |
