@@ -69,35 +69,28 @@ hawk recall "我的偏好"   # 召回个人偏好
 
 ## 🧠 核心功能（18 个 COMPLETE）
 
-### 免费版 — 9 个核心能力
+| 功能 | 说明 |
+|------|------|
+| **Working Memory** | 任务连续性召回，跨 Session 保持上下文 |
+| **Deprecation** | 过时决策自动标记，演进历史完整保留 |
+| **Learning Memory** | 从对话中学习提取，高准确率 |
+| **Confidence Calibration** | 置信度校准，目标 85% 准确率 |
+| **Memory Chronology** | 认知演变可视化，记录思维成长轨迹 |
+| **Belief Timeline** | 信念提取与追踪，理解用户观点变化 |
+| **TIL（Today I Learned）** | 每日学习总结，形成结构化知识 |
+| **Almost Lost** | 遗忘预警，记忆消失前主动保护 |
+| **Memory Branching** | 分支记忆，实验性推理独立存档 |
+| **Self-Awareness** | 认知边界感知，知道自己不知道什么 |
+| **Memory Coach** | 记忆教练，主动建议优化记忆质量 |
+| **Counterfactual Memory** | 反事实推理，"如果当初…会怎样" |
+| **Consensus Memory** | 决策共识追溯，多版本决策对比 |
+| **Memory Hygiene Score** | 记忆健康分，定量评估系统状态 |
+| **Strategic Memory** | 目标追踪，长期规划与执行监控 |
+| **Task-Aware Recall** | 任务感知召回，上下文相关的精准召回 |
+| **Active Memory** | 主动推送，基于触发规则主动提醒 |
+| **Implicit Knowledge** | 隐式知识提取，从行为中归纳规律 |
 
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| **Working Memory** | ✅ | 任务连续性召回，跨 Session 保持上下文 |
-| **Deprecation** | ✅ | 过时决策自动标记，演进历史完整保留 |
-| **Learning Memory** | ✅ | 从对话中学习提取，高准确率 |
-| **Confidence Calibration** | ✅ | 置信度校准，85% 准确率目标 |
-| **Memory Chronology** | ✅ | 认知演变可视化，记录思维成长轨迹 |
-| **Belief Timeline** | ✅ | 信念提取与追踪，理解用户观点变化 |
-| **TIL（Today I Learned）** | ✅ | 每日学习总结，形成结构化知识 |
-| **Almost Lost** | ✅ | 遗忘预警，记忆消失前主动保护 |
-| **Memory Branching** | ✅ | 分支记忆，实验性推理独立存档 |
-
-### Pro 版 — 9 个进阶能力
-
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| **Self-Awareness** | ✅ | 认知边界感知，知道自己不知道什么 |
-| **Memory Coach** | ✅ | 记忆教练，主动建议优化记忆质量 |
-| **Counterfactual Memory** | ✅ | 反事实推理，"如果当初…会怎样" |
-| **Consensus Memory** | ✅ | 决策共识追溯，多版本决策对比 |
-| **Memory Hygiene Score** | ✅ | 记忆健康分，定量评估记忆系统状态 |
-| **Strategic Memory** | ✅ | 目标追踪，长期规划与执行监控 |
-| **Task-Aware Recall** | ✅ | 任务感知召回，上下文相关的精准召回 |
-| **Active Memory** | ✅ | 主动推送，基于触发规则主动提醒 |
-| **Implicit Knowledge** | ✅ | 隐式知识提取，从行为中归纳规律 |
-
-> **18/22 功能 COMPLETE** — 基础设施完善，覆盖记忆全生命周期
+> **18/22 功能 COMPLETE** — 覆盖记忆全生命周期
 
 ---
 
